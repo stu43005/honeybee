@@ -6,7 +6,7 @@ const Chat = require("../lib/models/Chat.js").default;
 const SuperChat = require("../lib/models/SuperChat.js").default;
 const Deletion = require("../lib/models/Deletion.js").default;
 const BanAction = require("../lib/models/BanAction.js").default;
-const toVideoId = require("masterchat").toVideoId;
+const toVideoId = require("@stu43005/masterchat").toVideoId;
 
 const MONGO_URI = process.env.MONGO_URI || "mongodb://localhost/honeybee";
 

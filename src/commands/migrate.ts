@@ -1,4 +1,4 @@
-import { stringify, YTEmojiRun } from "masterchat";
+import { stringify, YTEmojiRun } from "@stu43005/masterchat";
 import Chat from "../models/Chat";
 import Milestone from "../models/Milestone";
 import SuperChat from "../models/SuperChat";

@@ -1,6 +1,3 @@
-import axios from "axios";
-import BeeQueue from "bee-queue";
-import https from "https";
 import {
   Action,
   delay,
@@ -9,7 +6,10 @@ import {
   Membership as MCMembership,
   stringify,
   YTEmojiRun,
-} from "masterchat";
+} from "@stu43005/masterchat";
+import axios from "axios";
+import BeeQueue from "bee-queue";
+import https from "https";
 import { MongoError } from "mongodb";
 import { FetchError } from "node-fetch";
 import { JOB_CONCURRENCY, SHUTDOWN_TIMEOUT } from "../constants";
