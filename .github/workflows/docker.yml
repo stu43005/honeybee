@@ -25,8 +25,8 @@ jobs:
             context: kafka-connect
           - platforms: linux/amd64
             os: ubuntu-latest
-          - platforms: linux/arm64
-            os: [self-hosted, arm64]
+          # - platforms: linux/arm64
+          #   os: [self-hosted, arm64]
 
     runs-on: ${{ matrix.os }}
     permissions:
