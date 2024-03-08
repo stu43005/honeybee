@@ -1,29 +1,36 @@
-FROM node:16-alpine
+# --------------> The build image
+FROM node:20-bookworm AS build
+
+# setup tini
+ENV TINI_VERSION v0.19.0
+ADD https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini /tini
+RUN chmod +x /tini
 
 WORKDIR /app
 
-# terraform deps
-RUN apk add terraform --repository=http://dl-cdn.alpinelinux.org/alpine/edge/community
-RUN apk add git ruby ruby-dev docker-cli build-base openssh
-RUN gem install json
-
-# node modules
-COPY package.json yarn.lock /app/
-RUN yarn --frozen-lockfile
-
-# masterchat dev
-RUN git clone https://github.com/holodata/masterchat /masterchat && cd /masterchat && git switch dev && yarn install --frozen-lockfile && yarn build && yarn link
-RUN yarn link masterchat
-
 # build app
+COPY package*.json yarn.lock /app
+RUN yarn install --frozen-lockfile --production=false
 COPY tsconfig.json /app/
 COPY src /app/src
-RUN yarn build && yarn link
+RUN yarn build
+RUN yarn install --frozen-lockfile --production=true
 
-# terraform init
-# COPY tf /app/tf
-# WORKDIR /app/tf
-# RUN terraform init -no-color -input=false
-# WORKDIR /app
+# --------------> The production image
+FROM node:20-bookworm-slim
 
-CMD ["node", "lib/index.js", "worker"]
+ENV NODE_ENV production
+
+# setup tini
+COPY --from=build /tini /tini
+ENTRYPOINT ["/tini", "--"]
+
+USER node
+WORKDIR /app
+
+# setup app
+COPY --chown=node:node package*.json yarn.lock /app
+COPY --chown=node:node --from=build /app/node_modules /app/node_modules
+COPY --chown=node:node --from=build /app/lib /app/lib
+
+CMD ["node", "lib/index.js"]
