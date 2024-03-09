@@ -23,7 +23,6 @@ ENV NODE_ENV production
 
 # setup tini
 COPY --from=build /tini /tini
-ENTRYPOINT ["/tini", "--"]
 
 USER node
 WORKDIR /app
@@ -33,4 +32,5 @@ COPY --chown=node:node package*.json yarn.lock /app
 COPY --chown=node:node --from=build /app/node_modules /app/node_modules
 COPY --chown=node:node --from=build /app/lib /app/lib
 
-CMD ["node", "lib/index.js"]
+ENTRYPOINT ["/tini", "--", "node", "lib/index.js"]
+CMD ["--help"]
