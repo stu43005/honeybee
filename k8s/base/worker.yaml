@@ -1,10 +1,14 @@
 apiVersion: apps/v1
-kind: DaemonSet
+kind: Deployment
 metadata:
-  name: worker-daemonset
+  name: worker
   labels:
     app: worker
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/name: honeybee
+    app.kubernetes.io/version: dev
 spec:
+  replicas: 1
   selector:
     matchLabels:
       app: worker
@@ -12,14 +16,35 @@ spec:
     metadata:
       labels:
         app: worker
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/name: honeybee
+        app.kubernetes.io/version: dev
     spec:
       containers:
-        - image: pkg.uechi.io/honeybee
-          name: worker
+        - name: worker
+          image: ghcr.io/stu43005/honeybee/honeybee
+          imagePullPolicy: Always
+          args:
+            - "worker"
           envFrom:
             - configMapRef:
-                name: cm
+                name: honeybee-config
+          env:
+            - name: REDIS_URI
+              valueFrom:
+                secretKeyRef:
+                  name: honeybee-secrets
+                  key: REDIS_URI
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: honeybee-secrets
+                  key: MONGO_URI
           resources: {}
-      restartPolicy: Always
-      imagePullSecrets:
-        - name: regcred
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: worker

@@ -1,16 +1,21 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
+buildMetadata: [managedByLabel]
+generatorOptions:
+  disableNameSuffixHash: true
 
 resources:
-  - db.yaml
-  - redis.yaml
+  # - db.yaml
+  # - redis.yaml
   - scheduler.yaml
   - worker.yaml
 
 secretGenerator:
-  - name: secrets
-    env: .env.secrets
+  - name: honeybee-secrets
+    envs:
+      - .env.secrets
 
 configMapGenerator:
-  - name: cm
-    env: .env
+  - name: honeybee-config
+    envs:
+      - .env

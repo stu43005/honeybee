@@ -1,35 +1,43 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: scheduler-deployment
+  name: scheduler
   labels:
     app: scheduler
+    app.kubernetes.io/component: scheduler
+    app.kubernetes.io/name: honeybee
+    app.kubernetes.io/version: dev
 spec:
   replicas: 1
   selector:
     matchLabels:
       app: scheduler
-  strategy:
-    type: Recreate
   template:
     metadata:
       labels:
         app: scheduler
+        app.kubernetes.io/component: scheduler
+        app.kubernetes.io/name: honeybee
+        app.kubernetes.io/version: dev
     spec:
       containers:
-        - image: pkg.uechi.io/honeybee
-          name: scheduler
-          args: ["node", "lib/index.js", "scheduler"]
+        - name: scheduler
+          image: ghcr.io/stu43005/honeybee/honeybee
+          imagePullPolicy: Always
+          args:
+            - "scheduler"
           envFrom:
             - configMapRef:
-                name: cm
+                name: honeybee-config
           env:
             - name: HOLODEX_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: secrets
+                  name: honeybee-secrets
                   key: HOLODEX_API_KEY
+            - name: REDIS_URI
+              valueFrom:
+                secretKeyRef:
+                  name: honeybee-secrets
+                  key: REDIS_URI
           resources: {}
-      restartPolicy: Always
-      imagePullSecrets:
-        - name: regcred
