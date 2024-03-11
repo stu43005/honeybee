@@ -69,7 +69,7 @@ async function handleJob(job: BeeQueue.Job<Job>): Promise<Result> {
   const {
     videoId,
     stream: {
-      channel: { id: channelId },
+      channel: { channelId: channelId },
     },
   } = job.data;
 
@@ -482,7 +482,7 @@ async function handleJob(job: BeeQueue.Job<Job>): Promise<Result> {
           // immediately fail so that the scheduler can push the job to delayed queue
           // TODO: handle when querying archived stream
           throw new Error(
-            `chat is disabled OR archived stream (start_scheduled: ${job.data.stream.start_scheduled})`
+            `chat is disabled OR archived stream (start_scheduled: ${job.data.stream.scheduledStart.toISOString()})`
           );
         }
         case "unavailable": {

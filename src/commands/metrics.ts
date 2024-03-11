@@ -1,16 +1,17 @@
+import { HolodexApiClient } from "holodex.js";
+import { HOLODEX_API_KEY } from "../constants";
+import { CURRENCY_TO_TLS_MAP } from "../data/currency";
 import BanAction from "../models/BanAction";
 import Chat from "../models/Chat";
 import DeleteAction from "../models/Deletion";
+import Membership from "../models/Membership";
+import Milestone from "../models/Milestone";
+import Placeholder from "../models/Placeholder";
 import SuperChat from "../models/SuperChat";
+import SuperSticker from "../models/SuperSticker";
 import { initMongo } from "../modules/db";
 import { getQueueInstance } from "../modules/queue";
 import { groupBy } from "../util";
-import { CURRENCY_TO_TLS_MAP } from "../data/currency";
-import { fetchChannel } from "../modules/holodex";
-import Membership from "../models/Membership";
-import Milestone from "../models/Milestone";
-import SuperSticker from "../models/SuperSticker";
-import Placeholder from "../models/Placeholder";
 
 // https://docs.influxdata.com/influxdb/v1.8/write_protocols/line_protocol_tutorial/
 
@@ -28,9 +29,13 @@ type AggregatorModule = (
   key: string
 ) => AsyncGenerator<InfluxPayload>;
 
+const holoapi = new HolodexApiClient({
+  apiKey: HOLODEX_API_KEY,
+});
+
 async function getChannelName(cid: string) {
-  const channel = await fetchChannel(cid);
-  return channel.english_name || channel.name;
+  const channel = await holoapi.getChannel(cid);
+  return channel.englishName || channel.name;
 }
 
 function normalize(input: string): string {

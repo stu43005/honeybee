@@ -1,17 +1,17 @@
 import assert from "assert";
+import { HolodexApiClient, type Video } from "holodex.js";
 import schedule from "node-schedule";
 import {
   HOLODEX_API_KEY,
+  HOLODEX_FETCH_ORG,
+  HOLODEX_MAX_UPCOMING_HOURS,
   IGNORE_FREE_CHAT,
   JOB_CONCURRENCY,
-  HOLODEX_MAX_UPCOMING_HOURS,
   SHUTDOWN_TIMEOUT,
 } from "../constants";
 import { ErrorCode, Result, Stats } from "../interfaces";
-import { fetchLiveStreams } from "../modules/holodex";
-import { HolodexLiveStreamInfo } from "../modules/holodex/types";
 import { getQueueInstance } from "../modules/queue";
-import { guessFreeChat, timeoutThen } from "../util";
+import { guessFreeChat } from "../util";
 
 function schedulerLog(...obj: any) {
   console.log(...obj);
@@ -19,6 +19,9 @@ function schedulerLog(...obj: any) {
 
 export async function runScheduler() {
   assert(HOLODEX_API_KEY);
+  const holoapi = new HolodexApiClient({
+    apiKey: HOLODEX_API_KEY,
+  });
 
   const queue = getQueueInstance({ isWorker: false });
   const handledVideoIdCache: Set<string> = new Set();
@@ -34,10 +37,10 @@ export async function runScheduler() {
     process.exit(0);
   });
 
-  async function handleStream(stream: HolodexLiveStreamInfo) {
-    const videoId = stream.id;
+  async function handleStream(stream: Video) {
+    const videoId = stream.videoId;
     const title = stream.title;
-    const scheduledStartTime = stream.start_scheduled;
+    const scheduledStartTime = stream.scheduledStart;
 
     const startUntil = scheduledStartTime
       ? new Date(scheduledStartTime).getTime() - Date.now()
@@ -104,13 +107,13 @@ export async function runScheduler() {
       await queue.getJobs("active", { start: 0, end: 1000 })
     ).map((job) => job.data.videoId);
 
-    const liveAndUpcomingStreams = await fetchLiveStreams({
-      maxUpcomingHours: HOLODEX_MAX_UPCOMING_HOURS,
-      apiKey: HOLODEX_API_KEY!,
+    const liveAndUpcomingStreams = await holoapi.getLiveVideos({
+      org: HOLODEX_FETCH_ORG,
+      max_upcoming_hours: HOLODEX_MAX_UPCOMING_HOURS,
     });
 
     const unscheduledStreams = liveAndUpcomingStreams.filter(
-      (stream) => !alreadyActiveJobs.includes(stream.id)
+      (stream) => !alreadyActiveJobs.includes(stream.videoId)
     );
 
     schedulerLog(`currently ${alreadyActiveJobs.length} job(s) are running`);

@@ -1,11 +1,11 @@
 import assert from "assert";
 import Queue from "bee-queue";
+import type { Video } from "holodex.js";
 import redis from "redis";
-import { HolodexLiveStreamInfo } from "./holodex/types";
 
 export interface Job {
   videoId: string;
-  stream: HolodexLiveStreamInfo;
+  stream: Video;
 }
 
 // feature flags
