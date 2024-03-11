@@ -139,3 +139,20 @@ export async function fetchJsonWithRetry(
     }
   }
 }
+
+export function castBool(value: unknown) {
+  const val = typeof value === "string" ? value.trim().toLowerCase() : value;
+
+  switch (val) {
+    case true:
+    case "true":
+    case 1:
+    case "1":
+    case "on":
+    case "y":
+    case "yes":
+      return true;
+    default:
+      return false;
+  }
+}
