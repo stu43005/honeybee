@@ -1,7 +1,7 @@
 import { mongoose } from "@typegoose/typegoose";
 import assert from "assert";
 
-const MONGO_URI = process.env.MONGO_URI;
+export const MONGO_URI = process.env.MONGO_URI;
 
 export async function initMongo() {
   assert(MONGO_URI);

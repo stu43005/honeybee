@@ -1,19 +1,19 @@
+import type { Job } from "agenda";
 import assert from "assert";
 import { HolodexApiClient, type Video as HolodexVideo } from "holodex.js";
-import schedule from "node-schedule";
 import {
   HOLODEX_API_KEY,
   HOLODEX_FETCH_ORG,
   HOLODEX_MAX_UPCOMING_HOURS,
   IGNORE_FREE_CHAT,
-  JOB_CONCURRENCY,
   SHUTDOWN_TIMEOUT,
 } from "../constants";
 import { ErrorCode, Result, Stats } from "../interfaces";
+import VideoModel from "../models/Video";
 import { initMongo } from "../modules/db";
 import { getQueueInstance } from "../modules/queue";
+import { getAgenda } from "../modules/schedule";
 import { guessFreeChat } from "../util";
-import VideoModel, { Video } from "../models/Video";
 
 function schedulerLog(...obj: any) {
   console.log(...obj);
@@ -27,16 +27,18 @@ export async function runScheduler() {
 
   const disconnectFromMongo = await initMongo();
   const queue = getQueueInstance({ isWorker: false });
+  const agenda = getAgenda();
   const handledVideoIdCache: Set<string> = new Set();
 
   process.on("SIGTERM", async () => {
     schedulerLog("quitting scheduler (SIGTERM) ...");
 
     try {
+      await agenda.drain();
       await queue.close(SHUTDOWN_TIMEOUT);
       await disconnectFromMongo();
     } catch (err) {
-      schedulerLog("bee-queue failed to shut down gracefully", err);
+      schedulerLog("scheduler failed to shut down gracefully", err);
     }
     process.exit(0);
   });
@@ -93,19 +95,19 @@ export async function runScheduler() {
     );
 
     handledVideoIdCache.add(videoId);
-
-    // await timeoutThen(500);
   }
 
-  async function checkStalledJobs() {
+  const checkStalledJobs = "scheduler checkStalledJobs";
+  agenda.define(checkStalledJobs, async (job: Job): Promise<void> => {
     const res = await queue.checkStalledJobs();
     if (res > 0) {
       console.log("enqueue stalled jobs:", res);
     }
-  }
+  });
 
-  async function rearrange(invokedAt: Date) {
-    schedulerLog("[updating index]", invokedAt);
+  const rearrange = "scheduler rearrange";
+  agenda.define(rearrange, async (job: Job): Promise<void> => {
+    schedulerLog("[updating index]", new Date());
 
     const alreadyActiveJobs = (
       await queue.getJobs("active", { start: 0, end: 1000 })
@@ -158,7 +160,7 @@ WarmingUp=${nbWarmingUp}
 Waiting=${health.waiting}
 Delayed=${health.delayed}`
     );
-  }
+  });
 
   queue.on("stalled", (jobId) => {
     schedulerLog("[stalled]:", jobId);
@@ -230,16 +232,12 @@ Delayed=${health.delayed}`
   });
 
   queue.on("ready", async () => {
-    console.log(
-      `scheduler is ready (concurrency: ${JOB_CONCURRENCY}, max_upcoming_hours=${HOLODEX_MAX_UPCOMING_HOURS})`
+    await agenda.start();
+    agenda.every("5 minutes", rearrange);
+    agenda.every("1 minute", checkStalledJobs);
+
+    schedulerLog(
+      `scheduler is ready (org=${HOLODEX_FETCH_ORG}, max_upcoming_hours=${HOLODEX_MAX_UPCOMING_HOURS}, ignoreFreeChat=${IGNORE_FREE_CHAT})`
     );
-
-    handledVideoIdCache.clear();
-
-    await checkStalledJobs();
-    await rearrange(new Date());
-
-    schedule.scheduleJob("*/5 * * * *", rearrange);
-    schedule.scheduleJob("*/1 * * * *", checkStalledJobs);
   });
 }

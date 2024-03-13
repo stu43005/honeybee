@@ -520,7 +520,7 @@ export async function runWorker() {
       await queue.close(SHUTDOWN_TIMEOUT);
       await disconnectFromMongo();
     } catch (err) {
-      console.log("bee-queue failed to shut down gracefully", err);
+      console.log("worker failed to shut down gracefully", err);
     }
 
     process.exit(0);

@@ -5,7 +5,6 @@
 
 import assert from "assert";
 import execa from "execa";
-import schedule from "node-schedule";
 import { JOB_CONCURRENCY, SHUTDOWN_TIMEOUT } from "../constants";
 import { getQueueInstance } from "../modules/queue";
 
@@ -115,7 +114,7 @@ export async function runManager() {
       `manager has been started (concurrency=${JOB_CONCURRENCY} perm=${PERMANENT_WORKER_SIZE})`
     );
 
-    schedule.scheduleJob("10 */1 * * *", rearrange);
+    //schedule.scheduleJob("10 */1 * * *", rearrange);
     //schedule.scheduleJob("10 */6 * * *", sweep);
     await rearrange(new Date());
   });
