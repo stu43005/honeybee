@@ -1,5 +1,5 @@
 import assert from "assert";
-import { HolodexApiClient, type Video } from "holodex.js";
+import { HolodexApiClient, type Video as HolodexVideo } from "holodex.js";
 import schedule from "node-schedule";
 import {
   HOLODEX_API_KEY,
@@ -10,8 +10,10 @@ import {
   SHUTDOWN_TIMEOUT,
 } from "../constants";
 import { ErrorCode, Result, Stats } from "../interfaces";
+import { initMongo } from "../modules/db";
 import { getQueueInstance } from "../modules/queue";
 import { guessFreeChat } from "../util";
+import VideoModel, { Video } from "../models/Video";
 
 function schedulerLog(...obj: any) {
   console.log(...obj);
@@ -23,6 +25,7 @@ export async function runScheduler() {
     apiKey: HOLODEX_API_KEY,
   });
 
+  const disconnectFromMongo = await initMongo();
   const queue = getQueueInstance({ isWorker: false });
   const handledVideoIdCache: Set<string> = new Set();
 
@@ -31,13 +34,14 @@ export async function runScheduler() {
 
     try {
       await queue.close(SHUTDOWN_TIMEOUT);
+      await disconnectFromMongo();
     } catch (err) {
       schedulerLog("bee-queue failed to shut down gracefully", err);
     }
     process.exit(0);
   });
 
-  async function handleStream(stream: Video) {
+  async function handleStream(stream: HolodexVideo) {
     const videoId = stream.videoId;
     const title = stream.title;
     const scheduledStartTime = stream.scheduledStart;
@@ -129,6 +133,11 @@ export async function runScheduler() {
 
     for (const stream of unscheduledStreams) {
       await handleStream(stream);
+    }
+
+    // update database
+    for (const stream of liveAndUpcomingStreams) {
+      await VideoModel.updateFromHolodex(stream);
     }
 
     // show metrics

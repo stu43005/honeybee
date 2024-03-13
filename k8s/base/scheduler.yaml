@@ -40,4 +40,9 @@ spec:
                 secretKeyRef:
                   name: honeybee-secrets
                   key: REDIS_URI
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: honeybee-secrets
+                  key: MONGO_URI
           resources: {}

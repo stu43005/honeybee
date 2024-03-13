@@ -156,3 +156,12 @@ export function castBool(value: unknown) {
       return false;
   }
 }
+
+export function setIfDefine(key: string, value: unknown) {
+  if (typeof value !== "undefined" && value !== null) {
+    return {
+      [key]: value,
+    };
+  }
+  return {};
+}
