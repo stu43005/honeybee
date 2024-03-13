@@ -9,7 +9,7 @@ RUN chmod +x /tini
 WORKDIR /app
 
 # build app
-COPY package*.json yarn.lock /app
+COPY package*.json yarn.lock /app/
 RUN yarn install --frozen-lockfile --production=false
 COPY tsconfig.json /app/
 COPY src /app/src
@@ -28,7 +28,7 @@ USER node
 WORKDIR /app
 
 # setup app
-COPY --chown=node:node package*.json yarn.lock /app
+COPY --chown=node:node package*.json yarn.lock /app/
 COPY --chown=node:node --from=build /app/node_modules /app/node_modules
 COPY --chown=node:node --from=build /app/lib /app/lib
 

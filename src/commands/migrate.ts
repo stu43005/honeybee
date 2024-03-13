@@ -1,9 +1,8 @@
-import { stringify, YTEmojiRun } from "@stu43005/masterchat";
-import Chat from "../models/Chat";
+import { YTEmojiRun } from "@stu43005/masterchat";
+import { setTimeout } from "node:timers/promises";
 import Milestone from "../models/Milestone";
 import SuperChat from "../models/SuperChat";
 import { initMongo } from "../modules/db";
-import { timeoutThen } from "../util";
 
 export async function migrate(argv: any) {
   console.log("connecting to db");
@@ -16,7 +15,7 @@ export async function migrate(argv: any) {
   // await normalizeCurrencySymbol();
 
   console.log("assuring all processes to be finished");
-  await timeoutThen(5000);
+  await setTimeout(5000);
 
   console.log("disconnecting from db");
   await disconnect();

@@ -1,6 +1,6 @@
 import clc from "cli-color";
 import clui from "clui";
-const { Line, LineBuffer, Sparkline } = clui;
+import { setTimeout } from "node:timers/promises";
 import { Stats } from "../interfaces";
 import BanAction from "../models/BanAction";
 import Chat from "../models/Chat";
@@ -12,7 +12,8 @@ import SuperChat from "../models/SuperChat";
 import SuperSticker from "../models/SuperSticker";
 import { initMongo } from "../modules/db";
 import { getQueueInstance } from "../modules/queue";
-import { DeltaCollection, timeoutThen } from "../util";
+import { DeltaCollection } from "../util";
+const { Line, LineBuffer, Sparkline } = clui;
 
 const REFRESH_INTERVAL = Number(process.env.REFRESH_INTERVAL || 10);
 
@@ -157,6 +158,6 @@ export async function health() {
     console.log(clc.erase.screen);
     outputBuffer.output();
 
-    await timeoutThen(REFRESH_INTERVAL * 1000);
+    await setTimeout(REFRESH_INTERVAL * 1000);
   }
 }
