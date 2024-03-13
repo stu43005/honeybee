@@ -25,20 +25,23 @@ export class Channel extends TimeStamps {
   @prop({ index: true })
   public group?: string;
 
-  @prop({ index: true })
+  @prop()
   public avatarUrl?: string;
 
-  @prop({ index: true })
+  @prop()
   public bannerUrl?: string;
 
-  @prop({ index: true })
+  @prop()
   public subscriberCount?: number;
 
-  @prop({ index: true })
+  @prop()
   public viewCount?: number;
 
   @prop({ index: true })
   public isInactive?: Boolean;
+
+  @prop({ index: true })
+  public extraCrawl?: Boolean;
 
   public static async updateFromHolodex(
     this: ReturnModelType<typeof Channel>,

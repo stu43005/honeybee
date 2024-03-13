@@ -40,26 +40,32 @@ export class Video extends TimeStamps {
   @prop()
   public liveViewers?: LiveViewers;
 
-  @prop({ index: true })
+  @prop()
   public publishedAt?: Date;
 
   @prop({ required: true, index: true })
   public availableAt?: Date;
 
-  @prop({ index: true })
+  @prop()
   public scheduledStart?: Date;
 
-  @prop({ index: true })
+  @prop()
   public actualStart?: Date;
 
-  @prop({ index: true })
+  @prop()
   public actualEnd?: Date;
 
   @prop({ required: true, index: true })
   public hbStatus?: string;
 
-  @prop({ index: true })
+  @prop()
   public hbErrorCode?: string;
+
+  @prop()
+  public hbStart?: Date;
+
+  @prop()
+  public hbEnd?: Date;
 
   @prop()
   public hbStats?: Stats;
@@ -83,6 +89,7 @@ export class Video extends TimeStamps {
             last: stream.liveViewers,
           },
           hbStatus: HoneybeeStatus.Created,
+          hbStart: new Date(),
         },
         $set: {
           ...setIfDefine("title", stream.title),
@@ -135,6 +142,7 @@ export class Video extends TimeStamps {
         $set: {
           hbStatus: HoneybeeStatus.Finished,
           hbErrorCode: result.error,
+          hbEnd: new Date(),
         },
         $inc: {
           "hbStats.handled": result.result?.handled ?? 0,

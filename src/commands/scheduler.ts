@@ -1,6 +1,12 @@
 import type { Job } from "agenda";
 import assert from "assert";
-import { HolodexApiClient, type Video as HolodexVideo } from "holodex.js";
+import {
+  ExtraData,
+  HolodexApiClient,
+  VideoStatus,
+  VideoType,
+  type Video as HolodexVideo,
+} from "holodex.js";
 import {
   HOLODEX_API_KEY,
   HOLODEX_FETCH_ORG,
@@ -14,6 +20,7 @@ import {
   HoneybeeStats,
   HoneybeeStatus,
 } from "../interfaces";
+import ChannelModel from "../models/Channel";
 import VideoModel from "../models/Video";
 import { initMongo } from "../modules/db";
 import { getQueueInstance } from "../modules/queue";
@@ -118,10 +125,25 @@ export async function runScheduler() {
       await queue.getJobs("active", { start: 0, end: 1000 })
     ).map((job) => job.data.videoId);
 
-    const liveAndUpcomingStreams = await holoapi.getLiveVideos({
-      org: HOLODEX_FETCH_ORG,
-      max_upcoming_hours: HOLODEX_MAX_UPCOMING_HOURS,
-    });
+    const extraChannels: string[] = (
+      await ChannelModel.find({ extraCrawl: true }, { id: 1 })
+    ).map((channel) => channel.id);
+
+    const liveAndUpcomingStreams = (
+      await holoapi.getLiveVideos({
+        org: "All Vtubers",
+        max_upcoming_hours: HOLODEX_MAX_UPCOMING_HOURS,
+      })
+    ).filter(
+      (stream) =>
+        stream.channel.organization === HOLODEX_FETCH_ORG ||
+        extraChannels.includes(stream.channelId)
+    );
+
+    // update database
+    for (const stream of liveAndUpcomingStreams) {
+      await VideoModel.updateFromHolodex(stream);
+    }
 
     const unscheduledStreams = liveAndUpcomingStreams.filter(
       (stream) => !alreadyActiveJobs.includes(stream.videoId)
@@ -142,11 +164,6 @@ export async function runScheduler() {
       await handleStream(stream);
     }
 
-    // update database
-    for (const stream of liveAndUpcomingStreams) {
-      await VideoModel.updateFromHolodex(stream);
-    }
-
     // show metrics
     const health = await queue.checkHealth();
     const activeJobs = await queue.getJobs("active", { start: 0, end: 1000 });
@@ -165,6 +182,21 @@ WarmingUp=${nbWarmingUp}
 Waiting=${health.waiting}
 Delayed=${health.delayed}`
     );
+  });
+
+  const updatepast = "scheduler update past";
+  agenda.define(updatepast, async (job: Job): Promise<void> => {
+    schedulerLog("[updating past]", new Date());
+
+    const pastStreams = await holoapi.getVideos({
+      org: HOLODEX_FETCH_ORG,
+      status: VideoStatus.Past,
+      type: VideoType.Stream,
+      include: [ExtraData.LiveInfo],
+    });
+    for (const stream of pastStreams) {
+      await VideoModel.updateFromHolodex(stream);
+    }
   });
 
   queue.on("stalled", async (jobId) => {
@@ -254,6 +286,7 @@ Delayed=${health.delayed}`
   queue.on("ready", async () => {
     await agenda.start();
     agenda.every("5 minutes", rearrange);
+    agenda.every("10 minutes", updatepast);
     agenda.every("1 minute", checkStalledJobs);
 
     schedulerLog(
