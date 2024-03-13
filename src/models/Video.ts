@@ -3,10 +3,14 @@ import {
   modelOptions,
   prop,
   type Ref,
-  type ReturnModelType
+  type ReturnModelType,
 } from "@typegoose/typegoose";
 import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
 import { Video as HolodexVideo } from "holodex.js";
+import {
+  HoneybeeStatus,
+  type HoneybeeResult
+} from "../interfaces";
 import { setIfDefine } from "../util";
 import ChannelModel, { Channel } from "./Channel";
 
@@ -51,6 +55,15 @@ export class Video extends TimeStamps {
   @prop({ index: true })
   public actualEnd?: Date;
 
+  @prop({ required: true, index: true })
+  public hbStatus?: string;
+
+  @prop({ index: true })
+  public hbErrorCode?: string;
+
+  @prop()
+  public hbStats?: Stats;
+
   public static async updateFromHolodex(
     this: ReturnModelType<typeof Video>,
     stream: HolodexVideo
@@ -69,6 +82,7 @@ export class Video extends TimeStamps {
             max: stream.liveViewers,
             last: stream.liveViewers,
           },
+          hbStatus: HoneybeeStatus.Created,
         },
         $set: {
           ...setIfDefine("title", stream.title),
@@ -90,6 +104,45 @@ export class Video extends TimeStamps {
       }
     );
   }
+
+  public static async updateStatus(
+    this: ReturnModelType<typeof Video>,
+    videoId: string,
+    status: HoneybeeStatus
+  ) {
+    await this.updateOne(
+      {
+        id: videoId,
+      },
+      {
+        $set: {
+          hbStatus: status,
+        },
+      }
+    );
+  }
+
+  public static async updateResult(
+    this: ReturnModelType<typeof Video>,
+    videoId: string,
+    result: HoneybeeResult
+  ) {
+    await this.updateOne(
+      {
+        id: videoId,
+      },
+      {
+        $set: {
+          hbStatus: HoneybeeStatus.Finished,
+          hbErrorCode: result.error,
+        },
+        $inc: {
+          "hbStats.handled": result.result?.handled ?? 0,
+          "hbStats.errors": result.result?.errors ?? 0,
+        },
+      }
+    );
+  }
 }
 
 export class LiveViewers {
@@ -98,6 +151,14 @@ export class LiveViewers {
 
   @prop({ required: true })
   last!: number;
+}
+
+export class Stats {
+  @prop({ required: true })
+  handled!: number;
+
+  @prop({ required: true })
+  errors!: number;
 }
 
 export default getModelForClass(Video);

@@ -12,8 +12,14 @@ import BeeQueue from "bee-queue";
 import https from "https";
 import { MongoError } from "mongodb";
 import { FetchError } from "node-fetch";
+import { randomInt } from "node:crypto";
 import { JOB_CONCURRENCY, SHUTDOWN_TIMEOUT } from "../constants";
-import { ErrorCode, Result, Stats } from "../interfaces";
+import {
+  ErrorCode,
+  HoneybeeResult,
+  HoneybeeStats,
+  type HoneybeeJob,
+} from "../interfaces";
 import BanActionModel, { BanAction } from "../models/BanAction";
 import BannerActionModel, { BannerAction } from "../models/BannerAction";
 import ChatModel, { Chat } from "../models/Chat";
@@ -28,7 +34,7 @@ import RemoveChatActionModel, {
 import SuperChatModel, { SuperChat } from "../models/SuperChat";
 import SuperStickerModel, { SuperSticker } from "../models/SuperSticker";
 import { initMongo } from "../modules/db";
-import { getQueueInstance, Job } from "../modules/queue";
+import { getQueueInstance } from "../modules/queue";
 import { groupBy } from "../util";
 
 function emojiHandler(run: YTEmojiRun) {
@@ -65,7 +71,9 @@ const stringifyOptions = {
 };
 const insertOptions = { ordered: false };
 
-async function handleJob(job: BeeQueue.Job<Job>): Promise<Result> {
+async function handleJob(
+  job: BeeQueue.Job<HoneybeeJob>
+): Promise<HoneybeeResult> {
   const {
     videoId,
     stream: {
@@ -82,7 +90,7 @@ async function handleJob(job: BeeQueue.Job<Job>): Promise<Result> {
       }),
     }),
   });
-  let stats: Stats = { handled: 0, errors: 0, isWarmingUp: true };
+  let stats: HoneybeeStats = { handled: 0, errors: 0, isWarmingUp: true };
 
   function videoLog(...obj: any) {
     console.log(`${videoId} ${channelId} -`, ...obj);
@@ -449,7 +457,7 @@ async function handleJob(job: BeeQueue.Job<Job>): Promise<Result> {
 
   // wait up to 10 sec (max invalidation timeout) to scatter request timings
   job.reportProgress(stats);
-  const randomTimeoutMs = Math.floor(Math.random() * 1000 * 10);
+  const randomTimeoutMs = randomInt(1000 * 10);
   const interval = setInterval(() => {
     job.reportProgress(stats);
   }, 5000);
@@ -538,5 +546,5 @@ export async function runWorker() {
     process.exit(1);
   });
 
-  queue.process<Result>(JOB_CONCURRENCY, handleJob);
+  queue.process<HoneybeeResult>(JOB_CONCURRENCY, handleJob);
 }

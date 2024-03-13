@@ -1,7 +1,7 @@
 import clc from "cli-color";
 import clui from "clui";
 import { setTimeout } from "node:timers/promises";
-import { Stats } from "../interfaces";
+import { HoneybeeStats } from "../interfaces";
 import BanAction from "../models/BanAction";
 import Chat from "../models/Chat";
 import DeleteAction from "../models/Deletion";
@@ -46,7 +46,7 @@ export async function health() {
     let nbTotal = 0;
     for (const job of activeJobs) {
       nbTotal += 1;
-      const progress: Stats = job.progress;
+      const progress: HoneybeeStats = job.progress;
       if (progress.isWarmingUp) nbWarmingUp += 1;
     }
     const nbActive = nbTotal - nbWarmingUp;

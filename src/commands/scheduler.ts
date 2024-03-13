@@ -8,7 +8,12 @@ import {
   IGNORE_FREE_CHAT,
   SHUTDOWN_TIMEOUT,
 } from "../constants";
-import { ErrorCode, Result, Stats } from "../interfaces";
+import {
+  ErrorCode,
+  HoneybeeResult,
+  HoneybeeStats,
+  HoneybeeStatus,
+} from "../interfaces";
 import VideoModel from "../models/Video";
 import { initMongo } from "../modules/db";
 import { getQueueInstance } from "../modules/queue";
@@ -149,7 +154,7 @@ export async function runScheduler() {
     let nbTotal = 0;
     for (const job of activeJobs) {
       nbTotal += 1;
-      const progress: Stats = job.progress;
+      const progress: HoneybeeStats = job.progress;
       if (progress.isWarmingUp) nbWarmingUp += 1;
     }
     console.log(
@@ -162,8 +167,9 @@ Delayed=${health.delayed}`
     );
   });
 
-  queue.on("stalled", (jobId) => {
+  queue.on("stalled", async (jobId) => {
     schedulerLog("[stalled]:", jobId);
+    await VideoModel.updateStatus(jobId, HoneybeeStatus.Stalled);
   });
 
   // redis related error
@@ -172,9 +178,11 @@ Delayed=${health.delayed}`
     process.exit(1);
   });
 
-  queue.on("job succeeded", async (jobId, result: Result) => {
+  queue.on("job succeeded", async (jobId, result: HoneybeeResult) => {
     const job = await queue.getJob(jobId);
     await job.remove();
+
+    await VideoModel.updateResult(jobId, result);
 
     switch (result.error) {
       case ErrorCode.MembersOnly: {
@@ -200,16 +208,26 @@ Delayed=${health.delayed}`
       }
       default: {
         schedulerLog(`[job succeeded]: ${jobId}`, result);
+        break;
       }
     }
 
     handledVideoIdCache.delete(jobId);
   });
 
+  queue.on("job progress", async (jobId, progress: HoneybeeStats) => {
+    await VideoModel.updateStatus(
+      jobId,
+      progress.isWarmingUp ? HoneybeeStatus.WarmingUp : HoneybeeStatus.Progress
+    );
+  });
+
   queue.on("job retrying", async (jobId, err) => {
     const job = await queue.getJob(jobId);
     const retries = job.options.retries;
     const retryDelay = job.options.backoff.delay;
+
+    await VideoModel.updateStatus(jobId, HoneybeeStatus.Retrying);
 
     schedulerLog(
       "[job retrying]:",
@@ -225,6 +243,8 @@ Delayed=${health.delayed}`
     // chances that chat is disabled until live goes online
     handledVideoIdCache.delete(jobId);
     await queue.removeJob(jobId);
+
+    await VideoModel.updateStatus(jobId, HoneybeeStatus.Failed);
 
     schedulerLog(
       `[job failed]: removed ${jobId} from cache and job queue for later retry`

@@ -1,7 +1,13 @@
-export interface Stats {
-  handled: number;
-  errors: number;
-  isWarmingUp: boolean;
+import type { Video } from "holodex.js";
+
+export enum HoneybeeStatus {
+  Created = "Created",
+  Stalled = "Stalled",
+  WarmingUp = "WarmingUp",
+  Progress = "Progress",
+  Finished = "Finished",
+  Retrying = "Retrying",
+  Failed = "Failed",
 }
 
 export enum ErrorCode {
@@ -12,7 +18,18 @@ export enum ErrorCode {
   Unknown = "UNKNOWN",
 }
 
-export interface Result {
+export interface HoneybeeJob {
+  videoId: string;
+  stream: Video;
+}
+
+export interface HoneybeeResult {
   error: ErrorCode | null;
-  result?: Stats;
+  result?: HoneybeeStats;
+}
+
+export interface HoneybeeStats {
+  handled: number;
+  errors: number;
+  isWarmingUp: boolean;
 }
