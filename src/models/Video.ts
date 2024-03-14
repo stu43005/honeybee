@@ -100,10 +100,7 @@ export class Video extends TimeStamps {
           id: stream.videoId,
           channelId: stream.channelId,
           channel: channel,
-          liveViewers: {
-            max: stream.liveViewers,
-            last: stream.liveViewers,
-          },
+          "liveViewers.last": stream.liveViewers,
           hbStatus: HoneybeeStatus.Created,
           hbStart: new Date(),
         },
