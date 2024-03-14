@@ -119,8 +119,6 @@ export async function runScheduler() {
 
   const rearrange = "scheduler rearrange";
   agenda.define(rearrange, async (job: Job): Promise<void> => {
-    schedulerLog("[updating index]", new Date());
-
     const alreadyActiveJobs = (
       await queue.getJobs("active", { start: 0, end: 1000 })
     ).map((job) => job.data.videoId);
@@ -186,8 +184,6 @@ Delayed=${health.delayed}`
 
   const updatepast = "scheduler update past";
   agenda.define(updatepast, async (job: Job): Promise<void> => {
-    schedulerLog("[updating past]", new Date());
-
     const pastStreams = await holoapi.getVideos({
       org: HOLODEX_FETCH_ORG,
       status: VideoStatus.Past,
