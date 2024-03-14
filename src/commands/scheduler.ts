@@ -96,7 +96,7 @@ export async function runScheduler() {
       1000 * 60 * minimumWaits
     );
     await queue
-      .createJob({ videoId, stream })
+      .createJob({ videoId, stream: stream.toRaw() })
       .setId(videoId)
       .retries(divisor - 1)
       .backoff("fixed", estimatedDelay)

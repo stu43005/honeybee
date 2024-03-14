@@ -1,4 +1,4 @@
-import type { Video } from "holodex.js";
+import type { VideoRaw } from "holodex.js";
 
 export enum HoneybeeStatus {
   Created = "Created",
@@ -20,7 +20,7 @@ export enum ErrorCode {
 
 export interface HoneybeeJob {
   videoId: string;
-  stream: Video;
+  stream: VideoRaw;
 }
 
 export interface HoneybeeResult {

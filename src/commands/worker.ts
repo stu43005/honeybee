@@ -9,6 +9,7 @@ import {
 } from "@stu43005/masterchat";
 import axios from "axios";
 import BeeQueue from "bee-queue";
+import { Video } from "holodex.js";
 import https from "https";
 import { MongoError } from "mongodb";
 import { FetchError } from "node-fetch";
@@ -74,12 +75,9 @@ const insertOptions = { ordered: false };
 async function handleJob(
   job: BeeQueue.Job<HoneybeeJob>
 ): Promise<HoneybeeResult> {
-  const {
-    videoId,
-    stream: {
-      channel: { channelId: channelId },
-    },
-  } = job.data;
+  const { videoId } = job.data;
+  const stream = new Video(job.data.stream);
+  const { channelId } = stream;
 
   const mc = new Masterchat(videoId, channelId, {
     mode: "live",
@@ -490,7 +488,7 @@ async function handleJob(
           // immediately fail so that the scheduler can push the job to delayed queue
           // TODO: handle when querying archived stream
           throw new Error(
-            `chat is disabled OR archived stream (start_scheduled: ${job.data.stream.scheduledStart.toISOString()})`
+            `chat is disabled OR archived stream (start_scheduled: ${stream.scheduledStart.toISOString()})`
           );
         }
         case "unavailable": {
