@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import yargs from "yargs";
-import { removeDuplicatedActions } from "./commands/cleanup";
+import { cleanup, cleanupBuilder, removeDuplicatedActions } from "./commands/cleanup";
 import { health } from "./commands/health";
 import { metrics } from "./commands/metrics";
 import { migrate } from "./commands/migrate";
@@ -32,6 +32,7 @@ yargs(process.argv.slice(2))
   .command("manager", "start manager", runManager)
   .command("health", "show real-time cluster status", health)
   .command("metrics", "Telegraf metrics endpoint", metrics)
+  .command("cleanup", "cleanup ended streams", cleanupBuilder, cleanup)
   .command("cleanupDupes", "remove duplicated actions", removeDuplicatedActions)
   .command("migrate", "migrate datetime format", migrate)
   .command("inspect", "migrate datetime format", inspect)

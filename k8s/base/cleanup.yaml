@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cleanup
+  labels:
+    app: cleanup
+    app.kubernetes.io/component: cleanup
+    app.kubernetes.io/name: honeybee
+    app.kubernetes.io/version: dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cleanup
+  template:
+    metadata:
+      labels:
+        app: cleanup
+        app.kubernetes.io/component: cleanup
+        app.kubernetes.io/name: honeybee
+        app.kubernetes.io/version: dev
+    spec:
+      containers:
+        - name: cleanup
+          image: ghcr.io/stu43005/honeybee/honeybee
+          imagePullPolicy: Always
+          args:
+            - "cleanup"
+            - "--daemon"
+          envFrom:
+            - configMapRef:
+                name: honeybee-config
+          env:
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: honeybee-secrets
+                  key: MONGO_URI
+          resources: {}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: cleanup

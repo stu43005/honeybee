@@ -6,6 +6,9 @@ resources:
 images:
   - name: ghcr.io/stu43005/honeybee/honeybee
     newTag: dev
+    # newTag: ${IMAGE_TAG:=sha-${GITHUB_SHA:0:7}}
 replicas:
   - name: worker
     count: 2
+
+# Flux GitOps

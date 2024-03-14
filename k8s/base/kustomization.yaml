@@ -9,6 +9,7 @@ resources:
   # - redis.yaml
   - scheduler.yaml
   - worker.yaml
+  - cleanup.yaml
 
 secretGenerator:
   - name: honeybee-secrets
