@@ -32,7 +32,7 @@ function schedulerLog(...obj: any) {
 }
 
 export async function runScheduler() {
-  assert(HOLODEX_API_KEY);
+  assert(HOLODEX_API_KEY, "HOLODEX_API_KEY should be defined.");
   const holoapi = new HolodexApiClient({
     apiKey: HOLODEX_API_KEY,
   });

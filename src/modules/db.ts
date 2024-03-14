@@ -4,7 +4,7 @@ import assert from "assert";
 export const MONGO_URI = process.env.MONGO_URI;
 
 export async function initMongo() {
-  assert(MONGO_URI);
+  assert(MONGO_URI, "MONGO_URI should be defined.");
 
   // await mongoose.connect(MONGO_URI, {
   //   useNewUrlParser: true,

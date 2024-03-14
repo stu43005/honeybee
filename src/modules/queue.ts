@@ -8,7 +8,7 @@ const QUEUE_NAME = "honeybee";
 const REDIS_URI = process.env.REDIS_URI;
 
 export function getQueueInstance(args: any = {}) {
-  assert(REDIS_URI);
+  assert(REDIS_URI, "REDIS_URI should be defined.");
 
   return new Queue<HoneybeeJob>(QUEUE_NAME, {
     redis: redis.createClient(REDIS_URI),

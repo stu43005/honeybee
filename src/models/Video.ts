@@ -14,6 +14,22 @@ import {
 import { setIfDefine } from "../util";
 import ChannelModel, { Channel } from "./Channel";
 
+export class LiveViewers {
+  @prop({ required: true })
+  max!: number;
+
+  @prop({ required: true })
+  last!: number;
+}
+
+export class Stats {
+  @prop({ required: true })
+  handled!: number;
+
+  @prop({ required: true })
+  errorCount!: number;
+}
+
 @modelOptions({ schemaOptions: { collection: "videos" } })
 export class Video extends TimeStamps {
   @prop({ required: true, unique: true })
@@ -146,27 +162,11 @@ export class Video extends TimeStamps {
         },
         $inc: {
           "hbStats.handled": result.result?.handled ?? 0,
-          "hbStats.errors": result.result?.errors ?? 0,
+          "hbStats.errorCount": result.result?.errors ?? 0,
         },
       }
     );
   }
-}
-
-export class LiveViewers {
-  @prop({ required: true })
-  max!: number;
-
-  @prop({ required: true })
-  last!: number;
-}
-
-export class Stats {
-  @prop({ required: true })
-  handled!: number;
-
-  @prop({ required: true })
-  errors!: number;
 }
 
 export default getModelForClass(Video);

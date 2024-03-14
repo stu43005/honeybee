@@ -3,7 +3,7 @@ import assert from "assert";
 import { MONGO_URI } from "./db";
 
 export function getAgenda() {
-  assert(MONGO_URI);
+  assert(MONGO_URI, "MONGO_URI should be defined.");
 
   return new Agenda({
     db: {

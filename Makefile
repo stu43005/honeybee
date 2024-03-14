@@ -9,10 +9,12 @@ build:
 start:
 	kubectl scale -n honeybee --replicas=1 deployment/scheduler
 	kubectl scale -n honeybee --replicas=2 deployment/worker
+	kubectl scale -n honeybee --replicas=1 deployment/cleanup
 
 stop:
 	kubectl scale -n honeybee --replicas=0 deployment/scheduler
 	kubectl scale -n honeybee --replicas=0 deployment/worker
+	kubectl scale -n honeybee --replicas=0 deployment/cleanup
 
 deploy:
 	kubectl apply -k ./k8s/overlays/production
