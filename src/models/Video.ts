@@ -39,7 +39,7 @@ export class Video extends TimeStamps {
   public channelId!: string;
 
   @prop({ ref: () => Channel })
-  public channel: Ref<Channel>;
+  public channel?: Ref<Channel>;
 
   @prop({ required: true })
   public title!: string;

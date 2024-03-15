@@ -1,4 +1,4 @@
-const uuidv4 = require("uuid").v4;
+const { randomUUID } = require("crypto");
 const { Kafka } = require("kafkajs");
 
 const kafka = new Kafka({
@@ -6,7 +6,7 @@ const kafka = new Kafka({
   brokers: ["takos:9093"],
 });
 
-const consumer = kafka.consumer({ groupId: uuidv4() });
+const consumer = kafka.consumer({ groupId: randomUUID() });
 
 async function convertMessage(msg) {
   const payload = JSON.parse(msg.value.toString());
