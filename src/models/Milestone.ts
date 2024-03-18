@@ -13,7 +13,7 @@ export class Milestone {
   @prop({ required: true, unique: true })
   public id!: string;
 
-  @prop({ required: true })
+  @prop()
   public message!: string | null;
 
   @prop()
