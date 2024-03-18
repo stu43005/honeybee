@@ -4,6 +4,7 @@ import BanAction from "../models/BanAction";
 import BannerAction from "../models/BannerAction";
 import Chat from "../models/Chat";
 import Deletion from "../models/Deletion";
+import LiveViewers from "../models/LiveViewers";
 import Membership from "../models/Membership";
 import Milestone from "../models/Milestone";
 import ModeChange from "../models/ModeChange";
@@ -46,6 +47,25 @@ export async function removeDuplicatedActions(argv: any) {
   await disconnect();
 }
 
+async function cleanVideos(videoIds: string[]) {
+  await BanAction.deleteMany({ originVideoId: { $in: videoIds } });
+  await BannerAction.deleteMany({ originVideoId: { $in: videoIds } });
+  await Deletion.deleteMany({ originVideoId: { $in: videoIds } });
+  await ModeChange.deleteMany({ originVideoId: { $in: videoIds } });
+  await Placeholder.deleteMany({ originVideoId: { $in: videoIds } });
+  await RemoveChatAction.deleteMany({ originVideoId: { $in: videoIds } });
+  await Membership.deleteMany({ originVideoId: { $in: videoIds } });
+  await Milestone.deleteMany({ originVideoId: { $in: videoIds } });
+  await SuperChat.deleteMany({ originVideoId: { $in: videoIds } });
+  await SuperSticker.deleteMany({ originVideoId: { $in: videoIds } });
+  await Chat.deleteMany({ originVideoId: { $in: videoIds } });
+  await LiveViewers.deleteMany({ originVideoId: { $in: videoIds } });
+  await Video.updateMany(
+    { id: { $in: videoIds } },
+    { $set: { hbCleanedAt: new Date() } }
+  );
+}
+
 interface CleanupOptions {
   daemon: boolean;
 }
@@ -77,21 +97,31 @@ export async function cleanup(argv: Arguments<CleanupOptions>) {
 
     const videos = await Video.find(
       {
-        id: { $in: chatVideoIds },
-        // hbStatus: HoneybeeStatus.Finished,
-        // hbEnd: { $lt: new Date(Date.now() - 10 * 60 * 1000) },
+        $or: [
+          {
+            id: { $in: chatVideoIds },
+            hbCleanedAt: null,
+          },
+          {
+            hbStatus: { $in: [HoneybeeStatus.Finished, HoneybeeStatus.Failed] },
+            hbCleanedAt: null,
+          },
+        ],
       },
       {
         id: 1,
         hbStatus: 1,
         hbEnd: 1,
+        hbCleanedAt: 1,
       }
     );
 
     const toRemoveVideoIds = videos
       .filter(
         (video) =>
-          video.hbStatus === HoneybeeStatus.Finished &&
+          [HoneybeeStatus.Finished, HoneybeeStatus.Failed].includes(
+            video.hbStatus
+          ) &&
           video.hbEnd &&
           video.hbEnd.getTime() < Date.now() - 10 * 60 * 1000
       )
@@ -100,19 +130,7 @@ export async function cleanup(argv: Arguments<CleanupOptions>) {
         chatVideoIds.filter((id) => !videos.find((video) => video.id === id))
       );
 
-    await BanAction.deleteMany({ originVideoId: { $in: toRemoveVideoIds } });
-    await BannerAction.deleteMany({ originVideoId: { $in: toRemoveVideoIds } });
-    await Deletion.deleteMany({ originVideoId: { $in: toRemoveVideoIds } });
-    await ModeChange.deleteMany({ originVideoId: { $in: toRemoveVideoIds } });
-    await Placeholder.deleteMany({ originVideoId: { $in: toRemoveVideoIds } });
-    await RemoveChatAction.deleteMany({
-      originVideoId: { $in: toRemoveVideoIds },
-    });
-    await Membership.deleteMany({ originVideoId: { $in: toRemoveVideoIds } });
-    await Milestone.deleteMany({ originVideoId: { $in: toRemoveVideoIds } });
-    await SuperChat.deleteMany({ originVideoId: { $in: toRemoveVideoIds } });
-    await SuperSticker.deleteMany({ originVideoId: { $in: toRemoveVideoIds } });
-    await Chat.deleteMany({ originVideoId: { $in: toRemoveVideoIds } });
+    await cleanVideos(toRemoveVideoIds);
   }
 
   if (argv.daemon) {

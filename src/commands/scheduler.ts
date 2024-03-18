@@ -255,7 +255,7 @@ Delayed=${health.delayed}`
     const retries = job.options.retries;
     const retryDelay = job.options.backoff.delay;
 
-    await VideoModel.updateStatus(jobId, HoneybeeStatus.Retrying);
+    await VideoModel.updateStatus(jobId, HoneybeeStatus.Retrying, err);
 
     schedulerLog(
       "[job retrying]:",
@@ -272,7 +272,7 @@ Delayed=${health.delayed}`
     handledVideoIdCache.delete(jobId);
     await queue.removeJob(jobId);
 
-    await VideoModel.updateStatus(jobId, HoneybeeStatus.Failed);
+    await VideoModel.updateStatus(jobId, HoneybeeStatus.Failed, err);
 
     schedulerLog(
       `[job failed]: removed ${jobId} from cache and job queue for later retry`

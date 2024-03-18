@@ -72,7 +72,7 @@ export class Video extends TimeStamps {
   public actualEnd?: Date;
 
   @prop({ required: true, index: true })
-  public hbStatus?: string;
+  public hbStatus!: HoneybeeStatus;
 
   @prop()
   public hbErrorCode?: string;
@@ -82,6 +82,9 @@ export class Video extends TimeStamps {
 
   @prop()
   public hbEnd?: Date;
+
+  @prop()
+  public hbCleanedAt?: Date;
 
   @prop()
   public hbStats?: Stats;
@@ -128,7 +131,8 @@ export class Video extends TimeStamps {
   public static async updateStatus(
     this: ReturnModelType<typeof Video>,
     videoId: string,
-    status: HoneybeeStatus
+    status: HoneybeeStatus,
+    error?: Error
   ) {
     await this.updateOne(
       {
@@ -137,6 +141,7 @@ export class Video extends TimeStamps {
       {
         $set: {
           hbStatus: status,
+          ...setIfDefine("hbErrorCode", error?.message),
         },
       }
     );

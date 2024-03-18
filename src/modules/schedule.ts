@@ -13,11 +13,11 @@ export function getAgenda() {
   });
 
   agenda.on("start", (job) => {
-    console.log(`[${job.attrs.name}] starting at ${new Date()}`);
+    console.log(`[${job.attrs.name}] starting at ${new Date().toISOString()}`);
   });
 
   agenda.on("success", (job) => {
-    console.log(`[${job.attrs.name}] successed at ${new Date()}`);
+    console.log(`[${job.attrs.name}] successed at ${new Date().toISOString()}`);
   });
 
   agenda.on("fail", (err, job) => {
