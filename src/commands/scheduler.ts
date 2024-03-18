@@ -164,21 +164,12 @@ export async function runScheduler() {
 
     // show metrics
     const health = await queue.checkHealth();
-    const activeJobs = await queue.getJobs("active", { start: 0, end: 1000 });
-    let nbWarmingUp = 0;
-    let nbTotal = 0;
-    for (const job of activeJobs) {
-      nbTotal += 1;
-      const progress: HoneybeeStats = job.progress;
-      if (progress.isWarmingUp) nbWarmingUp += 1;
-    }
     console.log(
       `< Queue Metrics >
-Total=${nbTotal}
-Active=${nbTotal - nbWarmingUp}
-WarmingUp=${nbWarmingUp}
+Active=${health.active}
 Waiting=${health.waiting}
-Delayed=${health.delayed}`
+Delayed=${health.delayed}
+Failed=${health.failed}`
     );
   });
 
@@ -244,10 +235,7 @@ Delayed=${health.delayed}`
   });
 
   queue.on("job progress", async (jobId, progress: HoneybeeStats) => {
-    await VideoModel.updateStatus(
-      jobId,
-      progress.isWarmingUp ? HoneybeeStatus.WarmingUp : HoneybeeStatus.Progress
-    );
+    await VideoModel.updateStatus(jobId, HoneybeeStatus.Progress);
   });
 
   queue.on("job retrying", async (jobId, err) => {

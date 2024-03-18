@@ -40,16 +40,6 @@ export async function health() {
 
   while (true) {
     const queueHealth = await queue.checkHealth();
-    const activeJobs = await queue.getJobs("active", { start: 0, end: 300 });
-
-    let nbWarmingUp = 0;
-    let nbTotal = 0;
-    for (const job of activeJobs) {
-      nbTotal += 1;
-      const progress: HoneybeeStats = job.progress;
-      if (progress.isWarmingUp) nbWarmingUp += 1;
-    }
-    const nbActive = nbTotal - nbWarmingUp;
 
     await col.refresh();
 
@@ -74,18 +64,18 @@ export async function health() {
     outputBuffer.addLine(
       new Line()
         .column("Active", COLUMN_WIDTH, [clc.cyan])
-        .column("WarmingUp", COLUMN_WIDTH, [clc.cyan])
         .column("Delayed", COLUMN_WIDTH, [clc.cyan])
         .column("Waiting", COLUMN_WIDTH, [clc.cyan])
+        .column("Failed", COLUMN_WIDTH, [clc.cyan])
         .fill()
     );
 
     outputBuffer.addLine(
       new Line()
-        .column(nbActive.toString(), COLUMN_WIDTH)
-        .column(nbWarmingUp.toString(), COLUMN_WIDTH)
+        .column(queueHealth.active.toString(), COLUMN_WIDTH)
         .column(queueHealth.delayed.toString(), COLUMN_WIDTH)
         .column(queueHealth.waiting.toString(), COLUMN_WIDTH)
+        .column(queueHealth.failed.toString(), COLUMN_WIDTH)
         .fill()
     );
 

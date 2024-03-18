@@ -88,7 +88,7 @@ async function handleJob(
       }),
     }),
   });
-  let stats: HoneybeeStats = { handled: 0, errors: 0, isWarmingUp: true };
+  let stats: HoneybeeStats = { handled: 0, errors: 0 };
 
   function videoLog(...obj: any) {
     console.log(`${videoId} ${channelId} -`, ...obj);
@@ -453,19 +453,8 @@ async function handleJob(
     refreshStats(actions);
   }
 
-  // wait up to 10 sec (max invalidation timeout) to scatter request timings
   job.reportProgress(stats);
-  const randomTimeoutMs = randomInt(1000 * 10);
-  const interval = setInterval(() => {
-    job.reportProgress(stats);
-  }, 5000);
-  await delay(randomTimeoutMs);
-  clearInterval(interval);
-
-  stats.isWarmingUp = false;
-  job.reportProgress(stats);
-
-  videoLog(`START after=${randomTimeoutMs}ms`);
+  videoLog(`START`);
 
   // iterate over live chat
   try {

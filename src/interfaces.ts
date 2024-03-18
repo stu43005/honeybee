@@ -3,7 +3,6 @@ import type { VideoRaw } from "holodex.js";
 export enum HoneybeeStatus {
   Created = "Created",
   Stalled = "Stalled",
-  WarmingUp = "WarmingUp",
   Progress = "Progress",
   Finished = "Finished",
   Retrying = "Retrying",
@@ -35,5 +34,4 @@ export interface HoneybeeResult {
 export interface HoneybeeStats {
   handled: number;
   errors: number;
-  isWarmingUp: boolean;
 }
