@@ -9,18 +9,12 @@ import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
 import { Video as HolodexVideo } from "holodex.js";
 import {
   HoneybeeStatus,
-  type HoneybeeResult
+  LiveViewersSource,
+  type HoneybeeResult,
 } from "../interfaces";
 import { setIfDefine } from "../util";
 import ChannelModel, { Channel } from "./Channel";
-
-export class LiveViewers {
-  @prop({ required: true })
-  max!: number;
-
-  @prop({ required: true })
-  last!: number;
-}
+import LiveViewers from "./LiveViewers";
 
 export class Stats {
   @prop({ required: true })
@@ -52,9 +46,6 @@ export class Video extends TimeStamps {
 
   @prop({ required: true })
   public duration!: number;
-
-  @prop()
-  public liveViewers?: LiveViewers;
 
   @prop()
   public publishedAt?: Date;
@@ -94,6 +85,12 @@ export class Video extends TimeStamps {
     stream: HolodexVideo
   ) {
     const channel = await ChannelModel.updateFromHolodex(stream.channel);
+    await LiveViewers.create({
+      originVideoId: stream.videoId,
+      originChannelId: stream.channelId,
+      viewers: stream.liveViewers,
+      source: LiveViewersSource.Holodex,
+    });
     return await this.findOneAndUpdate(
       {
         id: stream.videoId,
@@ -103,7 +100,6 @@ export class Video extends TimeStamps {
           id: stream.videoId,
           channelId: stream.channelId,
           channel: channel,
-          "liveViewers.last": stream.liveViewers,
           hbStatus: HoneybeeStatus.Created,
           hbStart: new Date(),
         },
@@ -117,9 +113,6 @@ export class Video extends TimeStamps {
           ...setIfDefine("scheduledStart", stream.scheduledStart),
           ...setIfDefine("actualStart", stream.actualStart),
           ...setIfDefine("actualEnd", stream.actualEnd),
-        },
-        $max: {
-          "liveViewers.max": stream.liveViewers,
         },
       },
       {

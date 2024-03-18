@@ -10,6 +10,10 @@ export enum HoneybeeStatus {
   Failed = "Failed",
 }
 
+export enum LiveViewersSource {
+  Holodex = "holodex",
+}
+
 export enum ErrorCode {
   MembersOnly = "MEMBERS_ONLY",
   Private = "PRIVATE",
