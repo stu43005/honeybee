@@ -1,6 +1,5 @@
 import { getModelForClass, modelOptions, prop } from "@typegoose/typegoose";
 
-// @index({ targetId: 1, originVideoId: 1 }, { unique: true })
 @modelOptions({ schemaOptions: { collection: "memberships" } })
 export class Membership {
   @prop({ required: true, unique: true })

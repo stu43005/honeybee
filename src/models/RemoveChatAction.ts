@@ -1,14 +1,8 @@
-import {
-  getModelForClass,
-  index,
-  modelOptions,
-  prop,
-} from "@typegoose/typegoose";
+import { getModelForClass, modelOptions, prop } from "@typegoose/typegoose";
 
-// @index({ targetId: 1, originVideoId: 1 }, { unique: true })
 @modelOptions({ schemaOptions: { collection: "removechatactions" } })
 export class RemoveChatAction {
-  @prop({ required: true, index: true })
+  @prop({ required: true, unique: true })
   targetId!: string;
 
   @prop({ required: true, index: true })

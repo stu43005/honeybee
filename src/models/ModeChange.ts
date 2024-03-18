@@ -1,12 +1,6 @@
-import {
-  getModelForClass,
-  index,
-  modelOptions,
-  prop,
-} from "@typegoose/typegoose";
+import { getModelForClass, modelOptions, prop } from "@typegoose/typegoose";
 
 @modelOptions({ schemaOptions: { collection: "modechanges" } })
-@index({ originVideoId: 1, mode: 1, enabled: 1 }, { unique: true })
 export class ModeChange {
   @prop({ required: true, index: true })
   timestamp!: Date;

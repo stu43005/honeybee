@@ -1,9 +1,8 @@
 import { getModelForClass, modelOptions, prop } from "@typegoose/typegoose";
 
-// @index({ targetId: 1, originVideoId: 1 }, { unique: true })
 @modelOptions({ schemaOptions: { collection: "deleteactions" } })
 export class Deletion {
-  @prop({ required: true, index: true })
+  @prop({ required: true, unique: true })
   targetId!: string;
 
   @prop({ required: true })
