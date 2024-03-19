@@ -9,6 +9,24 @@ export enum HoneybeeStatus {
   Failed = "Failed",
 }
 
+export enum MessageType {
+	Milestone = "milestone",
+	Membership = "membership",
+	MembershipGift = "membershipGift",
+	MembershipGiftPurchase = "membershipGiftPurchase",
+	SuperChat = "superChat",
+	SuperSticker = "superSticker",
+	Chat = "chat",
+}
+
+export enum MessageAuthorType {
+	Owner = "owner",
+	Moderator = "moderator",
+	Member = "member",
+	Verified = "verified",
+	Other = "other",
+}
+
 export enum LiveViewersSource {
   Holodex = "holodex",
 }

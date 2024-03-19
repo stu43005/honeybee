@@ -19,6 +19,16 @@ rules:
   resources:
   - services
   verbs:
+  - get
+  - apply
+  - update
+  - patch
+- apiGroups:
+  - monitoring.coreos.com
+  resources:
+  - servicemonitors
+  verbs:
+  - get
   - apply
   - update
   - patch

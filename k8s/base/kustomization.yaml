@@ -8,3 +8,5 @@ resources:
   - scheduler.yaml
   - worker.yaml
   - cleanup.yaml
+  - metrics.yaml
+  # - servicemonitor.yaml

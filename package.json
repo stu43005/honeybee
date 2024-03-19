@@ -23,6 +23,7 @@
     "cli-color": "^2.0.2",
     "clui": "^0.3.6",
     "execa": "^5.1.1",
+    "fastify": "^4.26.2",
     "holodex.js": "^2.0.5",
     "kafkajs": "^2.2.4",
     "mongoose": "~8.2.0",

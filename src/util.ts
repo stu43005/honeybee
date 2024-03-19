@@ -92,3 +92,34 @@ export function setIfDefine(key: string, value: unknown) {
   }
   return {};
 }
+
+export function promiseSettledCallback<T>(
+  results: PromiseSettledResult<T>[],
+  onFulfilled: (value: T) => void,
+  onRejected: (reason: any) => void
+) {
+  for (const result of results) {
+    if (result.status === "fulfilled") {
+      onFulfilled(result.value);
+    } else {
+      onRejected(result.reason);
+    }
+  }
+}
+
+export function throttleWithReturnValue<T>(
+  func: (...args: any[]) => T,
+  delay: number
+): (...args: any[]) => T {
+  let lastCalledTime = 0;
+  let lastResult: T;
+
+  return function (this: any, ...args: any[]): T {
+    const now = Date.now();
+    if (now - lastCalledTime >= delay) {
+      lastResult = func.apply(this, args);
+      lastCalledTime = now;
+    }
+    return lastResult;
+  };
+}

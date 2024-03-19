@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metrics
+  labels:
+    app: metrics
+    app.kubernetes.io/component: metrics
+    app.kubernetes.io/name: honeybee
+    app.kubernetes.io/version: dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: metrics
+  template:
+    metadata:
+      labels:
+        app: metrics
+        app.kubernetes.io/component: metrics
+        app.kubernetes.io/name: honeybee
+        app.kubernetes.io/version: dev
+    spec:
+      containers:
+        - name: metrics
+          image: ghcr.io/stu43005/honeybee/honeybee
+          imagePullPolicy: Always
+          args:
+            - "metrics"
+          envFrom:
+            - configMapRef:
+                name: honeybee-config
+          env:
+            - name: REDIS_URI
+              valueFrom:
+                secretKeyRef:
+                  name: honeybee-secrets
+                  key: REDIS_URI
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: honeybee-secrets
+                  key: MONGO_URI
+          resources: {}
+          ports:
+            - name: metrics-port
+              containerPort: 3000
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics-port
+            initialDelaySeconds: 3
+            periodSeconds: 10
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: metrics
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: honeybee-metrics
+  labels:
+    app: metrics
+    app.kubernetes.io/component: metrics
+    app.kubernetes.io/name: honeybee
+    app.kubernetes.io/version: dev
+spec:
+  ports:
+    - name: metrics-port
+      port: 3000
+      targetPort: 3000
+  type: ClusterIP
+  selector:
+    app: metrics

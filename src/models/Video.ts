@@ -48,6 +48,9 @@ export class Video extends TimeStamps {
   public duration!: number;
 
   @prop()
+  public likes?: number;
+
+  @prop()
   public publishedAt?: Date;
 
   @prop({ required: true, index: true })
