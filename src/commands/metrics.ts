@@ -61,19 +61,19 @@ const messageTypes: {
 function authorTypeLabelmap(_default = MessageAuthorType.Other) {
   return {
     $cond: {
-      if: { isOwner: true },
+      if: { $eq: ["$isOwner", true] },
       then: MessageAuthorType.Owner,
       else: {
         $cond: {
-          if: { isModerator: true },
+          if: { $eq: ["$isModerator", true] },
           then: MessageAuthorType.Moderator,
           else: {
             $cond: {
-              if: { membership: { $ne: null } },
+              if: { $ne: ["$membership", null] },
               then: MessageAuthorType.Member,
               else: {
                 $cond: {
-                  if: { isVerified: true },
+                  if: { $eq: ["$isVerified", true] },
                   then: MessageAuthorType.Verified,
                   else: _default,
                 },
