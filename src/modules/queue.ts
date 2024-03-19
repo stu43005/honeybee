@@ -1,6 +1,5 @@
 import assert from "assert";
 import Queue from "bee-queue";
-import redis from "redis";
 import type { HoneybeeJob } from "../interfaces";
 
 // feature flags
@@ -11,7 +10,9 @@ export function getQueueInstance(args: any = {}) {
   assert(REDIS_URI, "REDIS_URI should be defined.");
 
   return new Queue<HoneybeeJob>(QUEUE_NAME, {
-    redis: redis.createClient(REDIS_URI),
+    redis: {
+      url: REDIS_URI,
+    },
     stallInterval: 30 * 1000, // 30sec
     ...args,
   });

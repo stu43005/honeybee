@@ -11,7 +11,7 @@ import axios from "axios";
 import BeeQueue from "bee-queue";
 import { Video } from "holodex.js";
 import https from "https";
-import { MongoError } from "mongodb";
+import { MongoError, MongoServerError, MongoBulkWriteError } from "mongodb";
 import { FetchError } from "node-fetch";
 import { randomInt } from "node:crypto";
 import { JOB_CONCURRENCY, SHUTDOWN_TIMEOUT } from "../constants";
@@ -424,12 +424,16 @@ async function handleJob(
         // code: number
         stats.errors += 1;
 
-        if (err instanceof MongoError) {
-          if (err.code === 11000) {
+        if (
+          err instanceof MongoError ||
+          err instanceof MongoServerError ||
+          err instanceof MongoBulkWriteError
+        ) {
+          if (err instanceof MongoBulkWriteError && err.code === 11000) {
             videoLog(
-              `DUPES ${(err as any).writeErrors?.length || 0} while handling ${
-                (err as any).insertedDocs?.length || 0
-              } ${type}s`
+              `DUPES ${
+                Array.isArray(err.writeErrors) ? err.writeErrors.length : 1
+              } while handling ${err.insertedDocs?.length || 0} ${type}s`
             );
             continue;
           } else {
