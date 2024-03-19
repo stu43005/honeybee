@@ -7,17 +7,21 @@ build:
 	docker build --pull -t honeybee .
 
 start:
-	kubectl scale -n honeybee --replicas=1 deployment/scheduler
+	kubectl scale -n honeybee --replicas=1 --all deployment -l=app.kubernetes.io/name=honeybee
 	kubectl scale -n honeybee --replicas=2 deployment/worker
-	kubectl scale -n honeybee --replicas=1 deployment/cleanup
 
 stop:
-	kubectl scale -n honeybee --replicas=0 deployment/scheduler
-	kubectl scale -n honeybee --replicas=0 deployment/worker
-	kubectl scale -n honeybee --replicas=0 deployment/cleanup
+	kubectl scale -n honeybee --replicas=0 --all deployment -l=app.kubernetes.io/name=honeybee
 
 deploy:
-	kubectl apply -k ./k8s/overlays/production
+ifndef SHA_SHORT
+	@echo "SHA_SHORT should be define."
+	@exit 1
+endif
+	mkdir -p ./k8s/output
+	kubectl kustomize ./k8s/overlays/production -o ./k8s/output/production.yaml
+	envsubst < ./k8s/output/production.yaml > ./k8s/output/production_apply.yaml
+	kubectl apply -k ./k8s/output/production_apply.yaml
 
 logs:
 	kubectl logs -n honeybee deployment/worker --tail=20000 -f | grep -iE 'required|<!>|unrecognized|unhandled'

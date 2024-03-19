@@ -72,3 +72,10 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: ${{ matrix.platforms }}
+
+  call-deploy:
+    name: Call Deploy
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    uses: ./.github/workflows/deploy.yml
+    needs: docker
+    secrets: inherit

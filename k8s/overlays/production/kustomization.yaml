@@ -5,8 +5,7 @@ resources:
   - ../../base
 images:
   - name: ghcr.io/stu43005/honeybee/honeybee
-    newTag: dev
-    # newTag: ${IMAGE_TAG:=sha-${GITHUB_SHA:0:7}}
+    newTag: sha-${SHA_SHORT}
 replicas:
   - name: worker
     count: 2
