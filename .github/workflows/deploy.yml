@@ -21,6 +21,9 @@ jobs:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
+      - name: Setting kubeconfig
+        run: |
+          tailscale configure kubeconfig tailscale-operator
       - name: Setting environment variables..
         id: vars
         run: |
