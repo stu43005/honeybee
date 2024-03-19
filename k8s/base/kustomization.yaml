@@ -1,8 +1,6 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 buildMetadata: [managedByLabel]
-generatorOptions:
-  disableNameSuffixHash: true
 
 resources:
   # - db.yaml
@@ -10,13 +8,3 @@ resources:
   - scheduler.yaml
   - worker.yaml
   - cleanup.yaml
-
-secretGenerator:
-  - name: honeybee-secrets
-    envs:
-      - .env.secrets
-
-configMapGenerator:
-  - name: honeybee-config
-    envs:
-      - .env

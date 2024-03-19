@@ -1,5 +1,5 @@
-include .env
-include .env.secrets
+-include .env
+-include .env.secrets
 
 all: build push deploy ps
 
