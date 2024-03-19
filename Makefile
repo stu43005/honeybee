@@ -21,7 +21,7 @@ endif
 	mkdir -p ./k8s/output
 	kubectl kustomize ./k8s/overlays/production -o ./k8s/output/production.yaml
 	envsubst < ./k8s/output/production.yaml > ./k8s/output/production_apply.yaml
-	kubectl apply -k ./k8s/output/production_apply.yaml
+	kubectl apply -f ./k8s/output/production_apply.yaml
 
 logs:
 	kubectl logs -n honeybee deployment/worker --tail=20000 -f | grep -iE 'required|<!>|unrecognized|unhandled'
