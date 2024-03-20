@@ -25,6 +25,9 @@ export class SuperSticker {
   @prop({ required: true })
   public amount!: number;
 
+  @prop({ required: true })
+  public jpyAmount!: number;
+
   @prop({ required: true, index: true })
   public currency!: string;
 

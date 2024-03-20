@@ -37,6 +37,7 @@ import RemoveChatActionModel, {
 } from "../models/RemoveChatAction";
 import SuperChatModel, { type SuperChat } from "../models/SuperChat";
 import SuperStickerModel, { type SuperSticker } from "../models/SuperSticker";
+import { currencyToJpyAmount } from "../modules/currency-convert";
 import { initMongo } from "../modules/db";
 import { getQueueInstance } from "../modules/queue";
 import { groupBy } from "../util";
@@ -133,48 +134,61 @@ async function handleJob(
             break;
           }
           case "addSuperChatItemAction": {
-            const payload: SuperChat[] = groupedActions[type].map((action) => {
-              const normMessage =
-                action.message && action.message.length > 0
-                  ? stringify(action.message, stringifyOptions)
-                  : null;
+            const payload = await Promise.all(
+              groupedActions[type].map(async (action): Promise<SuperChat> => {
+                const normMessage =
+                  action.message && action.message.length > 0
+                    ? stringify(action.message, stringifyOptions)
+                    : null;
+                const jpy = await currencyToJpyAmount(
+                  action.amount,
+                  action.currency
+                );
 
-              return {
-                timestamp: action.timestamp,
-                id: action.id,
-                message: normMessage,
-                amount: action.amount,
-                currency: action.currency,
-                significance: action.significance,
-                color: action.color,
-                authorName: action.authorName,
-                authorChannelId: action.authorChannelId,
-                originVideoId: mc.videoId,
-                originChannelId: mc.channelId,
-              };
-            });
+                return {
+                  timestamp: action.timestamp,
+                  id: action.id,
+                  message: normMessage,
+                  amount: action.amount,
+                  jpyAmount: jpy.amount,
+                  currency: action.currency,
+                  significance: action.significance,
+                  color: action.color,
+                  authorName: action.authorName,
+                  authorChannelId: action.authorChannelId,
+                  originVideoId: mc.videoId,
+                  originChannelId: mc.channelId,
+                };
+              })
+            );
             await SuperChatModel.insertMany(payload, insertOptions);
             break;
           }
           case "addSuperStickerItemAction": {
-            const payload: SuperSticker[] = groupedActions[type].map(
-              (action) => {
-                return {
-                  timestamp: action.timestamp,
-                  id: action.id,
-                  authorName: action.authorName,
-                  authorChannelId: action.authorChannelId,
-                  amount: action.amount,
-                  currency: action.currency,
-                  text: action.stickerText,
-                  // significance: action.significance,
-                  // color: action.color,
-                  originVideoId: mc.videoId,
-                  originChannelId: mc.channelId,
-                };
-              }
+            const payload = await Promise.all(
+              groupedActions[type].map(
+                async (action): Promise<SuperSticker> => {
+                  const jpy = await currencyToJpyAmount(
+                    action.amount,
+                    action.currency
+                  );
+                  return {
+                    timestamp: action.timestamp,
+                    id: action.id,
+                    authorName: action.authorName,
+                    authorChannelId: action.authorChannelId,
+                    amount: action.amount,
+                    jpyAmount: jpy.amount,
+                    currency: action.currency,
+                    text: action.stickerText,
+                    // significance: action.significance,
+                    // color: action.color,
+                    originVideoId: mc.videoId,
+                    originChannelId: mc.channelId,
+                  };
+                }
+              )
             );
-
             await SuperStickerModel.insertMany(payload, insertOptions);
             break;
           }
@@ -335,26 +349,33 @@ async function handleJob(
                   break;
                 }
                 case "addSuperChatItemAction": {
-                  const payload: SuperChat[] = groupedItems[itemType].map(
-                    (item) => {
-                      const normMessage =
-                        item.message && item.message.length > 0
-                          ? stringify(item.message, stringifyOptions)
-                          : null;
-                      return {
-                        timestamp: item.timestamp,
-                        id: item.id,
-                        message: normMessage,
-                        amount: item.amount,
-                        currency: item.currency,
-                        significance: item.significance,
-                        color: item.color,
-                        authorName: item.authorName,
-                        authorChannelId: item.authorChannelId,
-                        originVideoId: mc.videoId,
-                        originChannelId: mc.channelId,
-                      };
-                    }
+                  const payload = await Promise.all(
+                    groupedItems[itemType].map(
+                      async (item): Promise<SuperChat> => {
+                        const normMessage =
+                          item.message && item.message.length > 0
+                            ? stringify(item.message, stringifyOptions)
+                            : null;
+                        const jpy = await currencyToJpyAmount(
+                          item.amount,
+                          item.currency
+                        );
+                        return {
+                          timestamp: item.timestamp,
+                          id: item.id,
+                          message: normMessage,
+                          amount: item.amount,
+                          jpyAmount: jpy.amount,
+                          currency: item.currency,
+                          significance: item.significance,
+                          color: item.color,
+                          authorName: item.authorName,
+                          authorChannelId: item.authorChannelId,
+                          originVideoId: mc.videoId,
+                          originChannelId: mc.channelId,
+                        };
+                      }
+                    )
                   );
                   videoLog("<!> replaceSuperChat:", payload);
                   // TODO replaceSuperChat

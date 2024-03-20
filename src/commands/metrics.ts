@@ -435,7 +435,18 @@ export async function metrics() {
             fetchAll: true,
           })
         ),
-        // TODO: honeybee_purchase_amount_jpy_total
+        ...purchaseMessageTypes.map((type) =>
+          updateMetrics("honeybee_purchase_amount_jpy_total", type.model, {
+            labels: {
+              videoId: "$originVideoId",
+              authorType: authorTypeLabelmap(type.defaultAuthorType),
+              type: type.messageType,
+              currency: "$currency",
+            },
+            value: { $sum: "$jpyAmount" },
+            fetchAll: force,
+          })
+        ),
         ...purchaseMessageTypes.map((type) =>
           updateMetrics("honeybee_purchase_amount_total", type.model, {
             labels: {
