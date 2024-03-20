@@ -3,12 +3,18 @@ import type { AnyParamConstructor } from "@typegoose/typegoose/lib/types";
 import Fastify from "fastify";
 import type { AccumulatorOperator, FilterQuery, PipelineStage } from "mongoose";
 import { Gauge, Registry, type Metric } from "prom-client";
+import { HOLODEX_FETCH_ORG } from "../constants";
 import { HoneybeeStatus, MessageAuthorType, MessageType } from "../interfaces";
+import BanAction from "../models/BanAction";
+import BannerAction from "../models/BannerAction";
 import Channel from "../models/Channel";
 import Chat from "../models/Chat";
 import LiveViewers from "../models/LiveViewers";
 import Membership from "../models/Membership";
 import Milestone from "../models/Milestone";
+import ModeChange from "../models/ModeChange";
+import Placeholder from "../models/Placeholder";
+import RemoveChatAction from "../models/RemoveChatAction";
 import SuperChat from "../models/SuperChat";
 import SuperSticker from "../models/SuperSticker";
 import Video from "../models/Video";
@@ -36,11 +42,15 @@ function collectLabelValues<L extends string>(
   return set;
 }
 
-const messageTypes: {
+const purchaseMessageTypes: {
   messageType: MessageType;
   model: ReturnModelType<AnyParamConstructor<any>>;
   defaultAuthorType?: MessageAuthorType;
 }[] = [
+  { messageType: MessageType.SuperChat, model: SuperChat },
+  { messageType: MessageType.SuperSticker, model: SuperSticker },
+];
+const messageTypes: typeof purchaseMessageTypes = [
   { messageType: MessageType.Chat, model: Chat },
   {
     messageType: MessageType.Membership,
@@ -54,34 +64,25 @@ const messageTypes: {
     model: Milestone,
     defaultAuthorType: MessageAuthorType.Member,
   },
-  { messageType: MessageType.SuperChat, model: SuperChat },
-  { messageType: MessageType.SuperSticker, model: SuperSticker },
+  ...purchaseMessageTypes,
 ];
 
 function authorTypeLabelmap(_default = MessageAuthorType.Other) {
   return {
-    $cond: {
-      if: { $eq: ["$isOwner", true] },
-      then: MessageAuthorType.Owner,
-      else: {
-        $cond: {
-          if: { $eq: ["$isModerator", true] },
+    $switch: {
+      branches: [
+        { case: { $eq: ["$isOwner", true] }, then: MessageAuthorType.Owner },
+        {
+          case: { $eq: ["$isModerator", true] },
           then: MessageAuthorType.Moderator,
-          else: {
-            $cond: {
-              if: { $ne: ["$membership", null] },
-              then: MessageAuthorType.Member,
-              else: {
-                $cond: {
-                  if: { $eq: ["$isVerified", true] },
-                  then: MessageAuthorType.Verified,
-                  else: _default,
-                },
-              },
-            },
-          },
         },
-      },
+        { case: "$membership", then: MessageAuthorType.Member },
+        {
+          case: { $eq: ["$isVerified", true] },
+          then: MessageAuthorType.Verified,
+        },
+      ],
+      default: _default,
     },
   };
 }
@@ -144,11 +145,11 @@ export async function metrics() {
         await collectData();
       },
     }),
-    honeybee_message_deletions: new Gauge({
+    honeybee_actions_total: new Gauge({
       registers: [register],
-      name: "honeybee_message_deletions",
-      help: "Number of received chat messages",
-      labelNames: ["videoId", "retracted"],
+      name: "honeybee_actions_total",
+      help: "Number of received actions",
+      labelNames: ["videoId", "actionType"],
       async collect() {
         await collectData();
       },
@@ -388,10 +389,13 @@ export async function metrics() {
 
     if (force) {
       metrics.honeybee_messages_total.reset();
+      metrics.honeybee_purchase_amount_total.reset();
+      metrics.honeybee_actions_total.reset();
     }
+    metrics.honeybee_users_total.reset();
     promiseSettledCallback(
-      await Promise.allSettled(
-        messageTypes.map((type) =>
+      await Promise.allSettled([
+        ...messageTypes.map((type) =>
           updateMetrics("honeybee_messages_total", type.model, {
             labels: {
               videoId: "$originVideoId",
@@ -399,17 +403,10 @@ export async function metrics() {
               type: type.messageType,
             },
             value: { $sum: 1 },
+            fetchAll: force,
           })
-        )
-      ),
-      (value) => collectLabelValues(videoIds, value, "videoId"),
-      (reason) => console.error(reason)
-    );
-
-    metrics.honeybee_users_total.reset();
-    promiseSettledCallback(
-      await Promise.allSettled(
-        messageTypes.map((type) =>
+        ),
+        ...messageTypes.map((type) =>
           updateMetrics("honeybee_users_total", type.model, {
             groupBy: {
               _id: {
@@ -428,39 +425,62 @@ export async function metrics() {
             value: { $sum: 1 },
             fetchAll: true,
           })
-        )
-      ),
-      (value) => collectLabelValues(videoIds, value, "videoId"),
-      (reason) => console.error(reason)
-    );
-
-    // TODO: honeybee_purchase_amount_jpy_total
-
-    if (force) {
-      metrics.honeybee_purchase_amount_total.reset();
-    }
-    promiseSettledCallback(
-      await Promise.allSettled([
-        updateMetrics("honeybee_purchase_amount_total", SuperChat, {
+        ),
+        // TODO: honeybee_purchase_amount_jpy_total
+        ...purchaseMessageTypes.map((type) =>
+          updateMetrics("honeybee_purchase_amount_total", type.model, {
+            labels: {
+              videoId: "$originVideoId",
+              authorType: authorTypeLabelmap(type.defaultAuthorType),
+              type: type.messageType,
+              currency: "$currency",
+            },
+            value: { $sum: "$amount" },
+            fetchAll: force,
+          })
+        ),
+        updateMetrics("honeybee_actions_total", BanAction, {
           labels: {
             videoId: "$originVideoId",
-            authorType: authorTypeLabelmap(),
-            type: MessageType.SuperChat,
-            currency: "$currency",
+            actionType: "banAction",
           },
-          value: { $sum: "$purchaseAmount" },
+          value: { $sum: 1 },
+          fetchAll: force,
         }),
-        updateMetrics("honeybee_purchase_amount_total", SuperSticker, {
+        updateMetrics("honeybee_actions_total", RemoveChatAction, {
           labels: {
             videoId: "$originVideoId",
-            authorType: authorTypeLabelmap(),
-            type: MessageType.SuperSticker,
-            currency: "$currency",
+            actionType: "removeChatAction",
           },
-          value: { $sum: "$amount" },
+          value: { $sum: 1 },
+          fetchAll: force,
+        }),
+        updateMetrics("honeybee_actions_total", BannerAction, {
+          labels: {
+            videoId: "$originVideoId",
+            actionType: "bannerAction",
+          },
+          value: { $sum: 1 },
+          fetchAll: force,
+        }),
+        updateMetrics("honeybee_actions_total", ModeChange, {
+          labels: {
+            videoId: "$originVideoId",
+            actionType: "modeChange",
+          },
+          value: { $sum: 1 },
+          fetchAll: force,
+        }),
+        updateMetrics("honeybee_actions_total", Placeholder, {
+          labels: {
+            videoId: "$originVideoId",
+            actionType: "placeholder",
+          },
+          value: { $sum: 1 },
+          fetchAll: force,
         }),
       ]),
-      (value) => collectLabelValues(videoIds, value, "videoId"),
+      (value: MetricPayload<"videoId">[]) => collectLabelValues(videoIds, value, "videoId"),
       (reason) => console.error(reason)
     );
 
@@ -500,6 +520,7 @@ export async function metrics() {
             originVideoId: {
               $in: [...videoIds],
             },
+            viewers: { $gt: 0 },
           },
           labels: {
             videoId: "$originVideoId",
@@ -513,6 +534,7 @@ export async function metrics() {
             originVideoId: {
               $in: [...videoIds],
             },
+            viewers: { $gt: 0 },
           },
           labels: {
             videoId: "$originVideoId",
@@ -596,7 +618,7 @@ export async function metrics() {
             id: {
               $in: [...videoIds],
             },
-            duration: { $ne: null },
+            duration: { $gt: 0 },
           },
           labels: {
             videoId: "$id",
@@ -605,24 +627,48 @@ export async function metrics() {
           fetchAll: true,
           reset: true,
         }),
-        updateMetrics("honeybee_channel_info", Channel, {
-          match: {
-            id: {
-              $in: [...channelIds],
+      ]),
+      () => void 0,
+      (reason) => console.error(reason)
+    );
+
+    const channelInfoRecords = await updateMetrics(
+      "honeybee_channel_info",
+      Channel,
+      {
+        match: {
+          $or: [
+            {
+              organization: HOLODEX_FETCH_ORG,
             },
-          },
-          labels: {
-            channelId: "$id",
-            name: "$name",
-            englishName: "$englishName",
-            organization: "$organization",
-            group: "$group",
-            avatarUrl: "$avatarUrl",
-          },
-          value: { $last: 1 },
-          fetchAll: true,
-          reset: true,
-        }),
+            {
+              extraCrawl: true,
+            },
+            {
+              id: {
+                $in: [...channelIds],
+              },
+            },
+          ],
+        },
+        labels: {
+          channelId: "$id",
+          name: "$name",
+          englishName: "$englishName",
+          organization: "$organization",
+          group: "$group",
+          avatarUrl: "$avatarUrl",
+        },
+        value: { $last: 1 },
+        fetchAll: true,
+        reset: true,
+      }
+    );
+
+    collectLabelValues(channelIds, channelInfoRecords, "channelId");
+
+    promiseSettledCallback(
+      await Promise.allSettled([
         updateMetrics("honeybee_channel_subscribers", Channel, {
           match: {
             id: {
@@ -642,19 +688,13 @@ export async function metrics() {
     );
   }
 
-  // async function printMetrics() {
-  //   await logCounts("deletion", DeleteAction, {
-  //     criteria: { retracted: false },
-  //   });
-  //   await logCounts("ban", BanAction);
-  //   await logCounts("placeholder", Placeholder);
-  // }
-
   const fastify = Fastify({
     logger: true,
   });
   fastify.get("/healthz", async function (request, reply) {
-    if (mongoose.connection.readyState !== mongoose.ConnectionStates.connected) {
+    if (
+      mongoose.connection.readyState !== mongoose.ConnectionStates.connected
+    ) {
       throw new Error("mongoose not ready.");
     }
     try {
