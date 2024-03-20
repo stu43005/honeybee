@@ -19,18 +19,24 @@ import {
   HoneybeeStats,
   type HoneybeeJob,
 } from "../interfaces";
-import BanActionModel, { BanAction } from "../models/BanAction";
-import BannerActionModel, { BannerAction } from "../models/BannerAction";
-import ChatModel, { Chat } from "../models/Chat";
-import MembershipModel, { Membership } from "../models/Membership";
-import MilestoneModel, { Milestone } from "../models/Milestone";
-import ModeChangeModel, { ModeChange } from "../models/ModeChange";
-import PlaceholderModel, { Placeholder } from "../models/Placeholder";
+import BanActionModel, { type BanAction } from "../models/BanAction";
+import BannerActionModel, { type BannerAction } from "../models/BannerAction";
+import ChatModel, { type Chat } from "../models/Chat";
+import MembershipModel, { type Membership } from "../models/Membership";
+import MembershipGiftModel, {
+  type MembershipGift,
+} from "../models/MembershipGift";
+import MembershipGiftPurchaseModel, {
+  type MembershipGiftPurchase,
+} from "../models/MembershipGiftPurchase";
+import MilestoneModel, { type Milestone } from "../models/Milestone";
+import ModeChangeModel, { type ModeChange } from "../models/ModeChange";
+import PlaceholderModel, { type Placeholder } from "../models/Placeholder";
 import RemoveChatActionModel, {
-  RemoveChatAction,
+  type RemoveChatAction,
 } from "../models/RemoveChatAction";
-import SuperChatModel, { SuperChat } from "../models/SuperChat";
-import SuperStickerModel, { SuperSticker } from "../models/SuperSticker";
+import SuperChatModel, { type SuperChat } from "../models/SuperChat";
+import SuperStickerModel, { type SuperSticker } from "../models/SuperSticker";
 import { initMongo } from "../modules/db";
 import { getQueueInstance } from "../modules/queue";
 import { groupBy } from "../util";
@@ -386,6 +392,46 @@ async function handleJob(
             });
             // videoLog("<!> pollResult", JSON.stringify(payload));#
             // TODO: await Poll.insertMany(payload, insertOptions);
+            break;
+          }
+          case "membershipGiftPurchaseAction": {
+            const payload: MembershipGiftPurchase[] = groupedActions[type].map(
+              (action) => {
+                const normMembership = normalizeMembership(action.membership);
+                return {
+                  id: action.id,
+                  timestamp: action.timestamp,
+                  authorName: action.authorName,
+                  authorChannelId: action.authorChannelId,
+                  membership: normMembership,
+                  amount: action.amount,
+                  originVideoId: mc.videoId,
+                  originChannelId: mc.channelId,
+                };
+              }
+            );
+            await MembershipGiftPurchaseModel.insertMany(
+              payload,
+              insertOptions
+            );
+            break;
+          }
+          case "membershipGiftRedemptionAction": {
+            const payload: MembershipGift[] = groupedActions[type].map(
+              (action) => {
+                return {
+                  id: action.id,
+                  timestamp: action.timestamp,
+                  authorName: action.authorName,
+                  authorChannelId: action.authorChannelId,
+                  senderName: action.senderName,
+                  originVideoId: mc.videoId,
+                  originChannelId: mc.channelId,
+                };
+              }
+            );
+            await MembershipGiftModel.insertMany(payload, insertOptions);
+            break;
           }
           // case "showTooltipAction":
           // case "addViewerEngagementMessageAction":
@@ -397,8 +443,6 @@ async function handleJob(
           // case "addMembershipTickerAction":
           // case "addSuperChatTickerAction":
           // case "addSuperStickerTickerAction":
-          // case "membershipGiftPurchaseAction":
-          // case "membershipGiftRedemptionAction":
           // case "addIncomingRaidBannerAction":
           // case "addOutgoingRaidBannerAction":
           // case "moderationMessageAction":

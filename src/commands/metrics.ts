@@ -11,6 +11,8 @@ import Channel from "../models/Channel";
 import Chat from "../models/Chat";
 import LiveViewers from "../models/LiveViewers";
 import Membership from "../models/Membership";
+import MembershipGift from "../models/MembershipGift";
+import MembershipGiftPurchase from "../models/MembershipGiftPurchase";
 import Milestone from "../models/Milestone";
 import ModeChange from "../models/ModeChange";
 import Placeholder from "../models/Placeholder";
@@ -57,8 +59,15 @@ const messageTypes: typeof purchaseMessageTypes = [
     model: Membership,
     defaultAuthorType: MessageAuthorType.Member,
   },
-  // TODO: { messageType: MessageType.MembershipGift, model: MembershipGift },
-  // TODO: { messageType: MessageType.MembershipGiftPurchase, model: MembershipGiftPurchase },
+  {
+    messageType: MessageType.MembershipGift,
+    model: MembershipGift,
+    defaultAuthorType: MessageAuthorType.Member,
+  },
+  {
+    messageType: MessageType.MembershipGiftPurchase,
+    model: MembershipGiftPurchase,
+  },
   {
     messageType: MessageType.Milestone,
     model: Milestone,
@@ -439,6 +448,19 @@ export async function metrics() {
             fetchAll: force,
           })
         ),
+        updateMetrics(
+          "honeybee_purchase_amount_total",
+          MembershipGiftPurchase,
+          {
+            labels: {
+              videoId: "$originVideoId",
+              authorType: authorTypeLabelmap(),
+              type: MessageType.MembershipGiftPurchase,
+            },
+            value: { $sum: "$amount" },
+            fetchAll: force,
+          }
+        ),
         updateMetrics("honeybee_actions_total", BanAction, {
           labels: {
             videoId: "$originVideoId",
@@ -480,7 +502,8 @@ export async function metrics() {
           fetchAll: force,
         }),
       ]),
-      (value: MetricPayload<"videoId">[]) => collectLabelValues(videoIds, value, "videoId"),
+      (value: MetricPayload<"videoId">[]) =>
+        collectLabelValues(videoIds, value, "videoId"),
       (reason) => console.error(reason)
     );
 

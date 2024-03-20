@@ -26,17 +26,14 @@ import { initMongo } from "../modules/db";
 import { getQueueInstance } from "../modules/queue";
 import { getAgenda } from "../modules/schedule";
 import { guessFreeChat } from "../util";
+import { getHolodex } from "../modules/holodex";
 
 function schedulerLog(...obj: any) {
   console.log(...obj);
 }
 
 export async function runScheduler() {
-  assert(HOLODEX_API_KEY, "HOLODEX_API_KEY should be defined.");
-  const holoapi = new HolodexApiClient({
-    apiKey: HOLODEX_API_KEY,
-  });
-
+  const holoapi = getHolodex();
   const disconnectFromMongo = await initMongo();
   const queue = getQueueInstance({ isWorker: false });
   const agenda = getAgenda();

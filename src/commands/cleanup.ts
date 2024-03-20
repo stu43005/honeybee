@@ -5,6 +5,8 @@ import BannerAction from "../models/BannerAction";
 import Chat from "../models/Chat";
 import LiveViewers from "../models/LiveViewers";
 import Membership from "../models/Membership";
+import MembershipGift from "../models/MembershipGift";
+import MembershipGiftPurchase from "../models/MembershipGiftPurchase";
 import Milestone from "../models/Milestone";
 import ModeChange from "../models/ModeChange";
 import Placeholder from "../models/Placeholder";
@@ -56,6 +58,8 @@ async function cleanVideos(videoIds: string[]) {
   await Milestone.deleteMany({ originVideoId: { $in: videoIds } });
   await SuperChat.deleteMany({ originVideoId: { $in: videoIds } });
   await SuperSticker.deleteMany({ originVideoId: { $in: videoIds } });
+  await MembershipGift.deleteMany({ originVideoId: { $in: videoIds } });
+  await MembershipGiftPurchase.deleteMany({ originVideoId: { $in: videoIds } });
   await Chat.deleteMany({ originVideoId: { $in: videoIds } });
   await LiveViewers.deleteMany({ originVideoId: { $in: videoIds } });
   await Video.updateMany(
