@@ -23,7 +23,7 @@ export class SuperChat {
   public authorChannelId!: string;
 
   @prop({ required: true })
-  public purchaseAmount!: number;
+  public amount!: number;
 
   @prop({ required: true, index: true })
   public currency!: string;

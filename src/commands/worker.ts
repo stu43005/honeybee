@@ -22,7 +22,6 @@ import {
 import BanActionModel, { BanAction } from "../models/BanAction";
 import BannerActionModel, { BannerAction } from "../models/BannerAction";
 import ChatModel, { Chat } from "../models/Chat";
-import DeletionModel, { Deletion } from "../models/Deletion";
 import MembershipModel, { Membership } from "../models/Membership";
 import MilestoneModel, { Milestone } from "../models/Milestone";
 import ModeChangeModel, { ModeChange } from "../models/ModeChange";
@@ -138,7 +137,7 @@ async function handleJob(
                 timestamp: action.timestamp,
                 id: action.id,
                 message: normMessage,
-                purchaseAmount: action.amount,
+                amount: action.amount,
                 currency: action.currency,
                 significance: action.significance,
                 color: action.color,
@@ -173,10 +172,12 @@ async function handleJob(
             await SuperStickerModel.insertMany(payload, insertOptions);
             break;
           }
-          case "removeChatItemAction": {
+          case "removeChatItemAction":
+          case "markChatItemAsDeletedAction": {
             const payload: RemoveChatAction[] = groupedActions[type].map(
               (action) => ({
                 targetId: action.targetId,
+                retracted: "retracted" in action ? action.retracted : undefined,
                 originVideoId: mc.videoId,
                 originChannelId: mc.channelId,
                 timestamp: action.timestamp,
@@ -185,17 +186,7 @@ async function handleJob(
             await RemoveChatActionModel.insertMany(payload, insertOptions);
             break;
           }
-          case "markChatItemAsDeletedAction": {
-            const payload: Deletion[] = groupedActions[type].map((action) => ({
-              targetId: action.targetId,
-              retracted: action.retracted,
-              originVideoId: mc.videoId,
-              originChannelId: mc.channelId,
-              timestamp: action.timestamp,
-            }));
-            await DeletionModel.insertMany(payload, insertOptions);
-            break;
-          }
+          case "removeChatItemByAuthorAction":
           case "markChatItemsByAuthorAsDeletedAction": {
             const payload: BanAction[] = groupedActions[type].map((action) => ({
               channelId: action.channelId,
@@ -348,7 +339,7 @@ async function handleJob(
                         timestamp: item.timestamp,
                         id: item.id,
                         message: normMessage,
-                        purchaseAmount: item.amount,
+                        amount: item.amount,
                         currency: item.currency,
                         significance: item.significance,
                         color: item.color,

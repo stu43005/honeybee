@@ -88,12 +88,14 @@ export class Video extends TimeStamps {
     stream: HolodexVideo
   ) {
     const channel = await ChannelModel.updateFromHolodex(stream.channel);
-    await LiveViewers.create({
-      originVideoId: stream.videoId,
-      originChannelId: stream.channelId,
-      viewers: stream.liveViewers,
-      source: LiveViewersSource.Holodex,
-    });
+    if (stream.liveViewers > 0) {
+      await LiveViewers.create({
+        originVideoId: stream.videoId,
+        originChannelId: stream.channelId,
+        viewers: stream.liveViewers,
+        source: LiveViewersSource.Holodex,
+      });
+    }
     return await this.findOneAndUpdate(
       {
         id: stream.videoId,

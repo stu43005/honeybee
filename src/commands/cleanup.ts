@@ -3,7 +3,6 @@ import { HoneybeeStatus } from "../interfaces";
 import BanAction from "../models/BanAction";
 import BannerAction from "../models/BannerAction";
 import Chat from "../models/Chat";
-import Deletion from "../models/Deletion";
 import LiveViewers from "../models/LiveViewers";
 import Membership from "../models/Membership";
 import Milestone from "../models/Milestone";
@@ -50,7 +49,6 @@ export async function removeDuplicatedActions(argv: any) {
 async function cleanVideos(videoIds: string[]) {
   await BanAction.deleteMany({ originVideoId: { $in: videoIds } });
   await BannerAction.deleteMany({ originVideoId: { $in: videoIds } });
-  await Deletion.deleteMany({ originVideoId: { $in: videoIds } });
   await ModeChange.deleteMany({ originVideoId: { $in: videoIds } });
   await Placeholder.deleteMany({ originVideoId: { $in: videoIds } });
   await RemoveChatAction.deleteMany({ originVideoId: { $in: videoIds } });
@@ -64,6 +62,7 @@ async function cleanVideos(videoIds: string[]) {
     { id: { $in: videoIds } },
     { $set: { hbCleanedAt: new Date() } }
   );
+  console.log(`cleanup ${videoIds.length} streams.`);
 }
 
 interface CleanupOptions {

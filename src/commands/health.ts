@@ -1,13 +1,12 @@
 import clc from "cli-color";
 import clui from "clui";
 import { setTimeout } from "node:timers/promises";
-import { HoneybeeStats } from "../interfaces";
 import BanAction from "../models/BanAction";
 import Chat from "../models/Chat";
-import DeleteAction from "../models/Deletion";
 import Membership from "../models/Membership";
 import Milestone from "../models/Milestone";
 import Placeholder from "../models/Placeholder";
+import RemoveChatAction from "../models/RemoveChatAction";
 import SuperChat from "../models/SuperChat";
 import SuperSticker from "../models/SuperSticker";
 import { initMongo } from "../modules/db";
@@ -36,7 +35,7 @@ export async function health() {
   col.addRecord("milestone", () => Milestone.estimatedDocumentCount());
   col.addRecord("placeholder", () => Placeholder.estimatedDocumentCount());
   col.addRecord("ban", () => BanAction.estimatedDocumentCount());
-  col.addRecord("deletion", () => DeleteAction.estimatedDocumentCount());
+  col.addRecord("removechat", () => RemoveChatAction.estimatedDocumentCount());
 
   while (true) {
     const queueHealth = await queue.checkHealth();
@@ -90,7 +89,7 @@ export async function health() {
         .column("Milestone", COLUMN_WIDTH, [clc.cyan])
         .column("Placeholder", COLUMN_WIDTH, [clc.cyan])
         .column("Ban", COLUMN_WIDTH, [clc.cyan])
-        .column("Deletion", COLUMN_WIDTH, [clc.cyan])
+        .column("RemoveChat", COLUMN_WIDTH, [clc.cyan])
         .fill()
     );
 
@@ -102,7 +101,7 @@ export async function health() {
       "milestone",
       "placeholder",
       "ban",
-      "deletion",
+      "removechat",
     ];
 
     outputBuffer.addLine(
