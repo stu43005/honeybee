@@ -22,6 +22,7 @@ import {
 import BanActionModel, { type BanAction } from "../models/BanAction";
 import BannerActionModel, { type BannerAction } from "../models/BannerAction";
 import ChatModel, { type Chat } from "../models/Chat";
+import ErrorLogModel, { type ErrorLog } from "../models/ErrorLog";
 import MembershipModel, { type Membership } from "../models/Membership";
 import MembershipGiftModel, {
   type MembershipGift,
@@ -573,6 +574,34 @@ async function handleJob(
           // case "addSuperStickerTickerAction":
           // case "moderationMessageAction":
           //   break;
+          case "unknown": {
+            const payload: ErrorLog[] = groupedActions[type].map((action) => {
+              return {
+                timestamp: new Date(),
+                originVideoId: mc.videoId,
+                originChannelId: mc.channelId,
+                error: type,
+                payload: action.payload,
+              };
+            });
+            await ErrorLogModel.insertMany(payload);
+            break;
+          }
+          case "parserError": {
+            const payload: ErrorLog[] = groupedActions[type].map((action) => {
+              return {
+                timestamp: new Date(),
+                originVideoId: mc.videoId,
+                originChannelId: mc.channelId,
+                error: type,
+                message: `${action.error}`,
+                stack: action.error instanceof Error ? action.error.stack : undefined,
+                payload: action.payload,
+              };
+            });
+            await ErrorLogModel.insertMany(payload);
+            break;
+          }
           // default: {
           //   const _exhaust: never = type;
           //   break;

@@ -10,6 +10,7 @@ import BanAction from "../models/BanAction";
 import BannerAction from "../models/BannerAction";
 import Channel from "../models/Channel";
 import Chat from "../models/Chat";
+import ErrorLog from "../models/ErrorLog";
 import LiveViewers from "../models/LiveViewers";
 import Membership from "../models/Membership";
 import MembershipGift from "../models/MembershipGift";
@@ -86,6 +87,7 @@ const actions: Record<string, ReturnModelType<AnyParamConstructor<any>>> = {
   placeholder: Placeholder,
   poll: Poll,
   raid: Raid,
+  errorLog: ErrorLog,
 };
 
 function authorTypeLabelmap(_default = MessageAuthorType.Other) {

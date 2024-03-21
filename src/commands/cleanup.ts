@@ -49,9 +49,6 @@ export async function removeDuplicatedActions(argv: any) {
 }
 
 async function cleanVideos(videoIds: string[]) {
-  await BanAction.deleteMany({ originVideoId: { $in: videoIds } });
-  await BannerAction.deleteMany({ originVideoId: { $in: videoIds } });
-  await ModeChange.deleteMany({ originVideoId: { $in: videoIds } });
   await Placeholder.deleteMany({ originVideoId: { $in: videoIds } });
   await RemoveChatAction.deleteMany({ originVideoId: { $in: videoIds } });
   await Membership.deleteMany({ originVideoId: { $in: videoIds } });
