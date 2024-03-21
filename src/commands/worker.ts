@@ -32,6 +32,7 @@ import MembershipGiftPurchaseModel, {
 import MilestoneModel, { type Milestone } from "../models/Milestone";
 import ModeChangeModel, { type ModeChange } from "../models/ModeChange";
 import PlaceholderModel, { type Placeholder } from "../models/Placeholder";
+import PollModel, { type Poll } from "../models/Poll";
 import RemoveChatActionModel, {
   type RemoveChatAction,
 } from "../models/RemoveChatAction";
@@ -400,19 +401,78 @@ async function handleJob(
             }
             break;
           }
-          case "addPollResultAction": {
-            const payload = groupedActions[type].map((action) => {
+          case "showPollPanelAction": {
+            const payload: Poll[] = groupedActions[type].map((action) => {
               return {
                 id: action.id,
                 question: action.question,
-                total: action.total,
-                choices: action.choices,
+                choices: action.choices.map((choice) => ({
+                  text: stringify(choice.text),
+                })),
+                pollType: action.pollType,
                 originVideoId: mc.videoId,
                 originChannelId: mc.channelId,
               };
             });
-            // videoLog("<!> pollResult", JSON.stringify(payload));#
-            // TODO: await Poll.insertMany(payload, insertOptions);
+            await PollModel.insertMany(payload, insertOptions);
+            break;
+          }
+          case "updatePollAction": {
+            const payload: Poll[] = groupedActions[type].map((action) => {
+              return {
+                id: action.id,
+                question: action.question,
+                choices: action.choices.map((choice) => ({
+                  text: stringify(choice.text),
+                  voteRatio: choice.voteRatio,
+                })),
+                pollType: action.pollType,
+                voteCount: action.voteCount,
+                originVideoId: mc.videoId,
+                originChannelId: mc.channelId,
+              };
+            });
+            await PollModel.bulkWrite(
+              payload.map((poll) => ({
+                updateOne: {
+                  filter: {
+                    id: poll.id,
+                  },
+                  update: poll,
+                  upsert: true,
+                },
+              }))
+            );
+            break;
+          }
+          case "addPollResultAction": {
+            const payload: Poll[] = groupedActions[type].map((action) => {
+              return {
+                id: action.id,
+                question: action.question
+                  ? stringify(action.question)
+                  : undefined,
+                voteCount: action.total,
+                choices: action.choices.map((choice) => ({
+                  text: stringify(choice.text),
+                  voteRatio: parseFloat(choice.votePercentage) / 100,
+                })),
+                originVideoId: mc.videoId,
+                originChannelId: mc.channelId,
+              };
+            });
+            videoLog("<!> pollResult", JSON.stringify(payload));
+            await PollModel.bulkWrite(
+              payload.map((poll) => ({
+                updateOne: {
+                  filter: {
+                    id: poll.id,
+                  },
+                  update: poll,
+                  upsert: true,
+                },
+              }))
+            );
             break;
           }
           case "membershipGiftPurchaseAction": {
@@ -458,8 +518,6 @@ async function handleJob(
           // case "addViewerEngagementMessageAction":
           // case "showPanelAction":
           // case "closePanelAction":
-          // case "showPollPanelAction":
-          // case "updatePollAction":
           // case "removeBannerAction":
           // case "addMembershipTickerAction":
           // case "addSuperChatTickerAction":
