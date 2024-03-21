@@ -18,6 +18,7 @@ import Milestone from "../models/Milestone";
 import ModeChange from "../models/ModeChange";
 import Placeholder from "../models/Placeholder";
 import Poll from "../models/Poll";
+import Raid from "../models/Raid";
 import RemoveChatAction from "../models/RemoveChatAction";
 import SuperChat from "../models/SuperChat";
 import SuperSticker from "../models/SuperSticker";
@@ -84,6 +85,7 @@ const actions: Record<string, ReturnModelType<AnyParamConstructor<any>>> = {
   modeChange: ModeChange,
   placeholder: Placeholder,
   poll: Poll,
+  raid: Raid,
 };
 
 function authorTypeLabelmap(_default = MessageAuthorType.Other) {

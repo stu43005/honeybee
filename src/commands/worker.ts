@@ -33,6 +33,7 @@ import MilestoneModel, { type Milestone } from "../models/Milestone";
 import ModeChangeModel, { type ModeChange } from "../models/ModeChange";
 import PlaceholderModel, { type Placeholder } from "../models/Placeholder";
 import PollModel, { type Poll } from "../models/Poll";
+import { type Raid } from "../models/Raid";
 import RemoveChatActionModel, {
   type RemoveChatAction,
 } from "../models/RemoveChatAction";
@@ -59,13 +60,6 @@ function emojiHandler(run: YTEmojiRun) {
     emoji.isCustomEmoji || emoji.emojiId === ""
       ? `\uFFF9${emoji.shortcuts[emoji.shortcuts.length - 1]}\uFFFB`
       : emoji.emojiId;
-  // const term =
-  //   emoji.isCustomEmoji || emoji.emojiId === ""
-  //     ? `\uFFF9${emoji.shortcuts[emoji.shortcuts.length - 1]}\uFFFA${
-  //         emoji.image.thumbnails[0].url
-  //       }\uFFFB`
-  //     : emoji.emojiId;
-
   return term;
 }
 
@@ -76,6 +70,22 @@ function normalizeMembership(membership?: MCMembership) {
 const stringifyOptions = {
   spaces: false,
   emojiHandler,
+  // textHandler: (run: YTTextRun): string => {
+  //   let text = escapeMarkdown(run.text);
+  //   if (run.navigationEndpoint) {
+  //     const url = endpointToUrl(run.navigationEndpoint);
+  //     if (url) {
+  //       text = hyperlink(text, url);
+  //     }
+  //   }
+  //   if (run.bold) {
+  //     text = bold(text);
+  //   }
+  //   if (run.italics) {
+  //     text = italic(text);
+  //   }
+  //   return text;
+  // },
 };
 const insertOptions = { ordered: false };
 
@@ -407,7 +417,7 @@ async function handleJob(
                 id: action.id,
                 question: action.question,
                 choices: action.choices.map((choice) => ({
-                  text: stringify(choice.text),
+                  text: stringify(choice.text, stringifyOptions),
                 })),
                 pollType: action.pollType,
                 originVideoId: mc.videoId,
@@ -423,7 +433,7 @@ async function handleJob(
                 id: action.id,
                 question: action.question,
                 choices: action.choices.map((choice) => ({
-                  text: stringify(choice.text),
+                  text: stringify(choice.text, stringifyOptions),
                   voteRatio: choice.voteRatio,
                 })),
                 pollType: action.pollType,
@@ -435,10 +445,8 @@ async function handleJob(
             await PollModel.bulkWrite(
               payload.map((poll) => ({
                 updateOne: {
-                  filter: {
-                    id: poll.id,
-                  },
-                  update: poll,
+                  filter: { id: poll.id },
+                  update: { $set: poll },
                   upsert: true,
                 },
               }))
@@ -450,25 +458,22 @@ async function handleJob(
               return {
                 id: action.id,
                 question: action.question
-                  ? stringify(action.question)
+                  ? stringify(action.question, stringifyOptions)
                   : undefined,
                 voteCount: action.total,
                 choices: action.choices.map((choice) => ({
-                  text: stringify(choice.text),
+                  text: stringify(choice.text, stringifyOptions),
                   voteRatio: parseFloat(choice.votePercentage) / 100,
                 })),
                 originVideoId: mc.videoId,
                 originChannelId: mc.channelId,
               };
             });
-            videoLog("<!> pollResult", JSON.stringify(payload));
             await PollModel.bulkWrite(
               payload.map((poll) => ({
                 updateOne: {
-                  filter: {
-                    id: poll.id,
-                  },
-                  update: poll,
+                  filter: { id: poll.id },
+                  update: { $set: poll },
                   upsert: true,
                 },
               }))
@@ -514,6 +519,50 @@ async function handleJob(
             await MembershipGiftModel.insertMany(payload, insertOptions);
             break;
           }
+          case "addIncomingRaidBannerAction": {
+            const payload: Raid[] = groupedActions[type].map((action) => {
+              return {
+                id: action.actionId,
+                sourceName: action.sourceName,
+                originVideoId: mc.videoId,
+                originChannelId: mc.channelId,
+                timestamp: new Date(),
+              };
+            });
+            await PollModel.bulkWrite(
+              payload.map((poll) => ({
+                updateOne: {
+                  filter: { id: poll.id },
+                  update: { $set: poll },
+                  upsert: true,
+                },
+              }))
+            );
+            break;
+          }
+          case "addOutgoingRaidBannerAction": {
+            const payload: Raid[] = groupedActions[type].map((action) => {
+              return {
+                id: action.actionId,
+                sourceVideoId: mc.videoId,
+                sourceChannelId: mc.channelId,
+                sourceName: mc.channelName,
+                originVideoId: action.targetVideoId,
+                originChannelId: action.targetId,
+                timestamp: new Date(),
+              };
+            });
+            await PollModel.bulkWrite(
+              payload.map((poll) => ({
+                updateOne: {
+                  filter: { id: poll.id },
+                  update: { $set: poll },
+                  upsert: true,
+                },
+              }))
+            );
+            break;
+          }
           // case "showTooltipAction":
           // case "addViewerEngagementMessageAction":
           // case "showPanelAction":
@@ -522,8 +571,6 @@ async function handleJob(
           // case "addMembershipTickerAction":
           // case "addSuperChatTickerAction":
           // case "addSuperStickerTickerAction":
-          // case "addIncomingRaidBannerAction":
-          // case "addOutgoingRaidBannerAction":
           // case "moderationMessageAction":
           //   break;
           // default: {
