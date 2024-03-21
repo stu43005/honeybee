@@ -1,4 +1,9 @@
-import { getModelForClass, modelOptions, prop } from "@typegoose/typegoose";
+import {
+  Severity,
+  getModelForClass,
+  modelOptions,
+  prop,
+} from "@typegoose/typegoose";
 import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
 
 export class PollChoice {
@@ -9,7 +14,10 @@ export class PollChoice {
   public voteRatio?: number;
 }
 
-@modelOptions({ schemaOptions: { collection: "polls" } })
+@modelOptions({
+  options: { allowMixed: Severity.ALLOW },
+  schemaOptions: { collection: "polls" },
+})
 export class Poll extends TimeStamps {
   @prop({ required: true, unique: true })
   public id!: string;

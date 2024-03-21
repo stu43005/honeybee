@@ -1,6 +1,14 @@
-import { getModelForClass, modelOptions, prop } from "@typegoose/typegoose";
+import {
+  Severity,
+  getModelForClass,
+  modelOptions,
+  prop,
+} from "@typegoose/typegoose";
 
-@modelOptions({ schemaOptions: { collection: "errorlogs" } })
+@modelOptions({
+  options: { allowMixed: Severity.ALLOW },
+  schemaOptions: { collection: "errorlogs" },
+})
 export class ErrorLog {
   @prop({ required: true, index: true })
   public timestamp!: Date;
