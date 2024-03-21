@@ -32,7 +32,7 @@ export class Poll extends TimeStamps {
   public pollType?: string;
 
   @prop()
-  public voteCount?: number | string;
+  public voteCount?: number;
 
   @prop({ required: true, index: true })
   public originVideoId!: string;

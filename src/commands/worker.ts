@@ -40,10 +40,13 @@ import RemoveChatActionModel, {
 } from "../models/RemoveChatAction";
 import SuperChatModel, { type SuperChat } from "../models/SuperChat";
 import SuperStickerModel, { type SuperSticker } from "../models/SuperSticker";
-import { currencyToJpyAmount } from "../modules/currency-convert";
+import {
+  currencyToJpyAmount,
+  getCurrencymapItem,
+} from "../modules/currency-convert";
 import { initMongo } from "../modules/db";
 import { getQueueInstance } from "../modules/queue";
-import { groupBy } from "../util";
+import { groupBy, setIfDefine } from "../util";
 
 const { MongoError, MongoBulkWriteError } = mongoose.mongo;
 
@@ -152,6 +155,7 @@ async function handleJob(
                   action.message && action.message.length > 0
                     ? stringify(action.message, stringifyOptions)
                     : null;
+                const currency = getCurrencymapItem(action.currency);
                 const jpy = await currencyToJpyAmount(
                   action.amount,
                   action.currency
@@ -163,7 +167,7 @@ async function handleJob(
                   message: normMessage,
                   amount: action.amount,
                   jpyAmount: jpy.amount,
-                  currency: action.currency,
+                  currency: currency.code,
                   significance: action.significance,
                   color: action.color,
                   authorName: action.authorName,
@@ -180,6 +184,7 @@ async function handleJob(
             const payload = await Promise.all(
               groupedActions[type].map(
                 async (action): Promise<SuperSticker> => {
+                  const currency = getCurrencymapItem(action.currency);
                   const jpy = await currencyToJpyAmount(
                     action.amount,
                     action.currency
@@ -191,7 +196,7 @@ async function handleJob(
                     authorChannelId: action.authorChannelId,
                     amount: action.amount,
                     jpyAmount: jpy.amount,
-                    currency: action.currency,
+                    currency: currency.code,
                     text: action.stickerText,
                     // significance: action.significance,
                     // color: action.color,
@@ -368,6 +373,7 @@ async function handleJob(
                           item.message && item.message.length > 0
                             ? stringify(item.message, stringifyOptions)
                             : null;
+                        const currency = getCurrencymapItem(item.currency);
                         const jpy = await currencyToJpyAmount(
                           item.amount,
                           item.currency
@@ -378,7 +384,7 @@ async function handleJob(
                           message: normMessage,
                           amount: item.amount,
                           jpyAmount: jpy.amount,
-                          currency: item.currency,
+                          currency: currency.code,
                           significance: item.significance,
                           color: item.color,
                           authorName: item.authorName,
@@ -432,7 +438,7 @@ async function handleJob(
             const payload: Poll[] = groupedActions[type].map((action) => {
               return {
                 id: action.id,
-                question: action.question,
+                ...setIfDefine("question", action.question),
                 choices: action.choices.map((choice) => ({
                   text: stringify(choice.text, stringifyOptions),
                   voteRatio: choice.voteRatio,
@@ -454,33 +460,33 @@ async function handleJob(
             );
             break;
           }
-          case "addPollResultAction": {
-            const payload: Poll[] = groupedActions[type].map((action) => {
-              return {
-                id: action.id,
-                question: action.question
-                  ? stringify(action.question, stringifyOptions)
-                  : undefined,
-                voteCount: action.total,
-                choices: action.choices.map((choice) => ({
-                  text: stringify(choice.text, stringifyOptions),
-                  voteRatio: parseFloat(choice.votePercentage) / 100,
-                })),
-                originVideoId: mc.videoId,
-                originChannelId: mc.channelId,
-              };
-            });
-            await PollModel.bulkWrite(
-              payload.map((poll) => ({
-                updateOne: {
-                  filter: { id: poll.id },
-                  update: { $set: poll },
-                  upsert: true,
-                },
-              }))
-            );
-            break;
-          }
+          // case "addPollResultAction": {
+          //   const payload: Poll[] = groupedActions[type].map((action) => {
+          //     return {
+          //       id: action.id,
+          //       question: action.question
+          //         ? stringify(action.question, stringifyOptions)
+          //         : undefined,
+          //       voteCount: action.total,
+          //       choices: action.choices.map((choice) => ({
+          //         text: stringify(choice.text, stringifyOptions),
+          //         voteRatio: parseFloat(choice.votePercentage) / 100,
+          //       })),
+          //       originVideoId: mc.videoId,
+          //       originChannelId: mc.channelId,
+          //     };
+          //   });
+          //   await PollModel.bulkWrite(
+          //     payload.map((poll) => ({
+          //       updateOne: {
+          //         filter: { id: poll.id },
+          //         update: { $set: poll },
+          //         upsert: true,
+          //       },
+          //     }))
+          //   );
+          //   break;
+          // }
           case "membershipGiftPurchaseAction": {
             const payload: MembershipGiftPurchase[] = groupedActions[type].map(
               (action) => {
@@ -595,7 +601,10 @@ async function handleJob(
                 originChannelId: mc.channelId,
                 error: type,
                 message: `${action.error}`,
-                stack: action.error instanceof Error ? action.error.stack : undefined,
+                stack:
+                  action.error instanceof Error
+                    ? action.error.stack
+                    : undefined,
                 payload: action.payload,
               };
             });

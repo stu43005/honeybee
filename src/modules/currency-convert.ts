@@ -85,7 +85,7 @@ async function getJpyExchange(fromCurrency: string) {
   throw new Error("There was a problem fetching data");
 }
 
-function getCurrencymapItem(currency: string) {
+export function getCurrencymapItem(currency: string) {
   let currencymapEntry: undefined | typeof currencyMap.JPY;
   for (const key of ["code", "symbol", "symbol_native"] as const) {
     currencymapEntry = Object.values(currencyMap).find(

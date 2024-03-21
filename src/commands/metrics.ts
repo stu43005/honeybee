@@ -413,6 +413,7 @@ export async function metrics() {
 
     if (force) {
       metrics.honeybee_messages_total.reset();
+      metrics.honeybee_purchase_amount_jpy_total.reset();
       metrics.honeybee_purchase_amount_total.reset();
       metrics.honeybee_actions_total.reset();
     }
