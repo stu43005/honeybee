@@ -2,6 +2,7 @@ import { mongoose, type ReturnModelType } from "@typegoose/typegoose";
 import type { AnyParamConstructor } from "@typegoose/typegoose/lib/types";
 import Fastify from "fastify";
 import type { AccumulatorOperator, FilterQuery, PipelineStage } from "mongoose";
+import NodeCache from "node-cache";
 import { Gauge, Registry, type Metric } from "prom-client";
 import { HOLODEX_FETCH_ORG } from "../constants";
 import { HoneybeeStatus, MessageAuthorType, MessageType } from "../interfaces";
@@ -16,6 +17,7 @@ import MembershipGiftPurchase from "../models/MembershipGiftPurchase";
 import Milestone from "../models/Milestone";
 import ModeChange from "../models/ModeChange";
 import Placeholder from "../models/Placeholder";
+import Poll from "../models/Poll";
 import RemoveChatAction from "../models/RemoveChatAction";
 import SuperChat from "../models/SuperChat";
 import SuperSticker from "../models/SuperSticker";
@@ -75,6 +77,14 @@ const messageTypes: typeof purchaseMessageTypes = [
   },
   ...purchaseMessageTypes,
 ];
+const actions: Record<string, ReturnModelType<AnyParamConstructor<any>>> = {
+  banAction: BanAction,
+  removeChatAction: RemoveChatAction,
+  bannerAction: BannerAction,
+  modeChange: ModeChange,
+  placeholder: Placeholder,
+  poll: Poll,
+};
 
 function authorTypeLabelmap(_default = MessageAuthorType.Other) {
   return {
@@ -392,8 +402,9 @@ export async function metrics() {
     return records;
   }
 
+  const cache = new NodeCache({ stdTTL: 600 });
   async function _collect() {
-    const force = false;
+    const force = !cache.has("collect");
     const videoIds = new Set<string>();
 
     if (force) {
@@ -472,46 +483,6 @@ export async function metrics() {
             fetchAll: force,
           }
         ),
-        updateMetrics("honeybee_actions_total", BanAction, {
-          labels: {
-            videoId: "$originVideoId",
-            actionType: "banAction",
-          },
-          value: { $sum: 1 },
-          fetchAll: force,
-        }),
-        updateMetrics("honeybee_actions_total", RemoveChatAction, {
-          labels: {
-            videoId: "$originVideoId",
-            actionType: "removeChatAction",
-          },
-          value: { $sum: 1 },
-          fetchAll: force,
-        }),
-        updateMetrics("honeybee_actions_total", BannerAction, {
-          labels: {
-            videoId: "$originVideoId",
-            actionType: "bannerAction",
-          },
-          value: { $sum: 1 },
-          fetchAll: force,
-        }),
-        updateMetrics("honeybee_actions_total", ModeChange, {
-          labels: {
-            videoId: "$originVideoId",
-            actionType: "modeChange",
-          },
-          value: { $sum: 1 },
-          fetchAll: force,
-        }),
-        updateMetrics("honeybee_actions_total", Placeholder, {
-          labels: {
-            videoId: "$originVideoId",
-            actionType: "placeholder",
-          },
-          value: { $sum: 1 },
-          fetchAll: force,
-        }),
       ]),
       (value: MetricPayload<"videoId">[]) =>
         collectLabelValues(videoIds, value, "videoId"),
@@ -549,6 +520,21 @@ export async function metrics() {
 
     promiseSettledCallback(
       await Promise.allSettled([
+        ...Object.entries(actions).map(([actionType, model]) =>
+          updateMetrics("honeybee_actions_total", model, {
+            match: {
+              originVideoId: {
+                $in: [...videoIds],
+              },
+            },
+            labels: {
+              videoId: "$originVideoId",
+              actionType: actionType,
+            },
+            value: { $sum: 1 },
+            fetchAll: force,
+          })
+        ),
         updateMetrics("honeybee_video_viewers", LiveViewers, {
           match: {
             originVideoId: {
@@ -720,6 +706,8 @@ export async function metrics() {
       () => void 0,
       (reason) => console.error(reason)
     );
+
+    cache.set("collect", true);
   }
 
   const fastify = Fastify({
