@@ -28,6 +28,8 @@ import { initMongo } from "../modules/db";
 import { getQueueInstance } from "../modules/queue";
 import { promiseSettledCallback, throttleWithReturnValue } from "../util";
 
+const { Long } = mongoose.mongo;
+
 type LabelValues<L extends string, V = string> = Record<L, V>;
 type MetricLabels<M extends Metric> = M extends Metric<infer L> ? L : never;
 type MetricPayload<L extends string> = {
@@ -397,6 +399,16 @@ export async function metrics() {
         const { _id: labels, value } = record;
         if (typeof value === "number") {
           gauge.inc(labels, value);
+        } else if (typeof value === "bigint") {
+          if (value > Number.MAX_SAFE_INTEGER) {
+            throw new TypeError("can't convert BigInt to number");
+          }
+          gauge.inc(labels, Number(value));
+        } else if (value instanceof Long) {
+          if (value.greaterThan(Number.MAX_SAFE_INTEGER)) {
+            throw new TypeError("can't convert Long to number");
+          }
+          gauge.inc(labels, value.toInt());
         } else if (value instanceof Date) {
           gauge.set(labels, value.getTime() / 1000);
         }
@@ -643,12 +655,31 @@ export async function metrics() {
             id: {
               $in: [...videoIds],
             },
-            duration: { $gt: 0 },
           },
           labels: {
             videoId: "$id",
           },
-          value: { $last: "$duration" },
+          value: {
+            $last: {
+              $cond: {
+                if: "$duration",
+                then: "$duration",
+                else: {
+                  $cond: {
+                    if: "$actualStart",
+                    then: {
+                      $dateDiff: {
+                        startDate: "$actualStart",
+                        endDate: new Date(),
+                        unit: "second",
+                      },
+                    },
+                    else: null,
+                  },
+                },
+              },
+            },
+          },
           fetchAll: true,
           reset: true,
         }),
