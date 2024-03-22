@@ -1,4 +1,5 @@
 import {
+  AbortError,
   Action,
   Masterchat,
   MasterchatError,
@@ -50,6 +51,8 @@ import { getQueueInstance } from "../modules/queue";
 import { groupBy, setIfDefine } from "../util";
 
 const { MongoError, MongoBulkWriteError } = mongoose.mongo;
+
+const exitController = new AbortController();
 
 function emojiHandler(run: YTEmojiRun) {
   const { emoji } = run;
@@ -664,6 +667,7 @@ async function handleJob(
   try {
     await VideoModel.updateFromMasterchat(mc);
 
+    // TODO: input abort signal
     for await (const { actions } of mc.iterate()) {
       if (actions.length === 0) continue;
       await handleActions(actions);
@@ -677,6 +681,10 @@ async function handleJob(
         } catch (err) {
           videoLog("<!> [STATS UPDATE ERROR]", err);
         }
+      }
+
+      if (exitController.signal.aborted) {
+        throw new AbortError();
       }
     }
   } catch (err) {
@@ -708,6 +716,12 @@ async function handleJob(
       }
     }
 
+    if (err instanceof AbortError) {
+      job.backoff("immediate");
+      videoLog("<!> [ABORTED]");
+      throw err;
+    }
+
     // change delay backoff time to 30 sec
     job.backoff("fixed", 30 * 1000);
 
@@ -725,10 +739,11 @@ export async function runWorker() {
   const disconnectFromMongo = await initMongo();
   const queue = getQueueInstance({ activateDelayedJobs: true });
 
-  process.on("SIGTERM", async () => {
+  process.on("SIGTERM", async (s) => {
     console.log("quitting worker (SIGTERM) ...");
 
     try {
+      exitController.abort(new Error(`Received ${s}`));
       await queue.close(SHUTDOWN_TIMEOUT);
       await disconnectFromMongo();
     } catch (err) {
