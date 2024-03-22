@@ -1,3 +1,4 @@
+import type { Masterchat } from "@stu43005/masterchat";
 import {
   getModelForClass,
   modelOptions,
@@ -124,6 +125,41 @@ export class Video extends TimeStamps {
         upsert: true,
       }
     );
+  }
+
+  public static async updateFromMasterchat(
+    this: ReturnModelType<typeof Video>,
+    mc: Masterchat
+  ) {
+    const metadata = await mc.fetchMetadataFromWatch(mc.videoId);
+    if ("subscribers" in metadata && metadata.subscribers > 0) {
+      await ChannelModel.updateOne(
+        { id: mc.channelId },
+        {
+          $max: {
+            subscriberCount: metadata.subscribers,
+          },
+        }
+      );
+    }
+    if ("viewCount" in metadata && metadata.viewCount > 0) {
+      await LiveViewers.create({
+        originVideoId: mc.videoId,
+        originChannelId: mc.channelId,
+        viewers: metadata.viewCount,
+        source: LiveViewersSource.Masterchat,
+      });
+    }
+    if ("likes" in metadata && metadata.likes > 0) {
+      await this.updateOne(
+        { id: mc.videoId },
+        {
+          $max: {
+            likes: metadata.likes,
+          },
+        }
+      );
+    }
   }
 
   public static async updateStatus(

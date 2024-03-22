@@ -573,7 +573,7 @@ export async function metrics() {
             id: {
               $in: [...videoIds],
             },
-            likes: { $ne: null },
+            likes: { $gt: 0 },
           },
           labels: {
             videoId: "$id",
@@ -699,6 +699,7 @@ export async function metrics() {
             id: {
               $in: [...channelIds],
             },
+            subscriberCount: { $gt: 0 },
           },
           labels: {
             channelId: "$id",

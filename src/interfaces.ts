@@ -29,6 +29,7 @@ export enum MessageAuthorType {
 
 export enum LiveViewersSource {
   Holodex = "holodex",
+  Masterchat = "masterchat",
 }
 
 export enum ErrorCode {

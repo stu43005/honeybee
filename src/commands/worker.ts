@@ -24,6 +24,7 @@ import BannerActionModel, { type BannerAction } from "../models/BannerAction";
 import ChatModel, { type Chat } from "../models/Chat";
 import ErrorLogModel, { type ErrorLog } from "../models/ErrorLog";
 import MembershipModel, { type Membership } from "../models/Membership";
+import VideoModel from "../models/Video";
 import MembershipGiftModel, {
   type MembershipGift,
 } from "../models/MembershipGift";
@@ -659,10 +660,24 @@ async function handleJob(
   videoLog(`START`);
 
   // iterate over live chat
+  let actionCount = 0;
   try {
+    await VideoModel.updateFromMasterchat(mc);
+
     for await (const { actions } of mc.iterate()) {
       if (actions.length === 0) continue;
       await handleActions(actions);
+
+      actionCount += actions.length;
+      // 8k messages / per 10m: every 30s
+      if (actionCount >= 400) {
+        actionCount = 0;
+        try {
+          await VideoModel.updateFromMasterchat(mc);
+        } catch (err) {
+          videoLog("<!> [STATS UPDATE ERROR]", err);
+        }
+      }
     }
   } catch (err) {
     if (err instanceof MasterchatError) {
