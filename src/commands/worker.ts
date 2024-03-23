@@ -667,8 +667,9 @@ async function handleJob(
   try {
     await VideoModel.updateFromMasterchat(mc);
 
-    // TODO: input abort signal
-    for await (const { actions } of mc.iterate()) {
+    for await (const { actions } of mc.iterate({
+      signal: exitController.signal,
+    })) {
       if (actions.length === 0) continue;
       await handleActions(actions);
 
@@ -681,10 +682,6 @@ async function handleJob(
         } catch (err) {
           videoLog("<!> [STATS UPDATE ERROR]", err);
         }
-      }
-
-      if (exitController.signal.aborted) {
-        throw new AbortError();
       }
     }
   } catch (err) {
