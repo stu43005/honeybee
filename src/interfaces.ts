@@ -43,6 +43,7 @@ export enum ErrorCode {
 export interface HoneybeeJob {
   videoId: string;
   stream: VideoRaw;
+  defaultBackoffDelay: number;
 }
 
 export interface HoneybeeResult {

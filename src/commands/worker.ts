@@ -686,6 +686,9 @@ async function handleJob(
     }
   } catch (err) {
     if (err instanceof MasterchatError) {
+      if (job.data.defaultBackoffDelay) {
+        job.backoff("fixed", job.data.defaultBackoffDelay);
+      }
       switch (err.code) {
         case "membersOnly": {
           // let the scheduler ignore this stream from index
