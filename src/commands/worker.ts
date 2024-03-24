@@ -202,6 +202,7 @@ async function handleJob(
                     jpyAmount: jpy.amount,
                     currency: currency.code,
                     text: action.stickerText,
+                    image: action.stickerUrl,
                     // significance: action.significance,
                     // color: action.color,
                     originVideoId: mc.videoId,

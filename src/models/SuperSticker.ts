@@ -34,6 +34,9 @@ export class SuperSticker {
   @prop()
   public text?: string;
 
+  @prop({ required: true })
+  public image!: string;
+
   // @prop({ required: true })
   // public significance!: number;
 
