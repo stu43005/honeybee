@@ -3,12 +3,13 @@
 import yargs from "yargs";
 import { cleanup, cleanupBuilder, removeDuplicatedActions } from "./commands/cleanup";
 import { health } from "./commands/health";
+import { inspect } from "./commands/inspect";
+import { runManager } from "./commands/manager";
 import { metrics } from "./commands/metrics";
 import { migrate } from "./commands/migrate";
 import { runScheduler } from "./commands/scheduler";
+import { runWebhook } from "./commands/webhook";
 import { runWorker } from "./commands/worker";
-import { runManager } from "./commands/manager";
-import { inspect } from "./commands/inspect";
 
 process.on("unhandledRejection", (err) => {
   console.log("CLI got unhandledRejection", err);
@@ -30,6 +31,7 @@ yargs(process.argv.slice(2))
   .command("scheduler", "start scheduler", runScheduler)
   .command("worker", "start worker", runWorker)
   .command("manager", "start manager", runManager)
+  .command("webhook", "start webhook service", runWebhook)
   .command("health", "show real-time cluster status", health)
   .command("metrics", "Prometheus metrics endpoint", metrics)
   .command("cleanup", "cleanup ended streams", cleanupBuilder, cleanup)
