@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import yargs from "yargs";
+import { addChannel, addChannelBuilder } from "./commands/channel";
 import { cleanup, cleanupBuilder, removeDuplicatedActions } from "./commands/cleanup";
 import { health } from "./commands/health";
 import { inspect } from "./commands/inspect";
@@ -36,6 +37,7 @@ yargs(process.argv.slice(2))
   .command("metrics", "Prometheus metrics endpoint", metrics)
   .command("cleanup", "cleanup ended streams", cleanupBuilder, cleanup)
   .command("cleanupDupes", "remove duplicated actions", removeDuplicatedActions)
+  .command("channel add", "add channel", addChannelBuilder, addChannel)
   .command("migrate", "migrate datetime format", migrate)
   .command("inspect", "migrate datetime format", inspect)
   .demandCommand(1).argv;

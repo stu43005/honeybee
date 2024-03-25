@@ -123,6 +123,7 @@ export class Video extends TimeStamps {
       },
       {
         upsert: true,
+        new: true,
       }
     );
   }

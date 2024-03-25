@@ -16,7 +16,7 @@ export class Channel extends TimeStamps {
   @prop({ required: true, index: true })
   public name!: string;
 
-  @prop({ required: true, index: true })
+  @prop({ index: true })
   public englishName!: string;
 
   @prop({ index: true })
@@ -71,6 +71,7 @@ export class Channel extends TimeStamps {
       },
       {
         upsert: true,
+        new: true,
       }
     );
   }
