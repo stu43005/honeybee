@@ -48,7 +48,7 @@ import {
 } from "../modules/currency-convert";
 import { initMongo } from "../modules/db";
 import { getQueueInstance } from "../modules/queue";
-import { groupBy, setIfDefine } from "../util";
+import { getPurchaseTier, groupBy, setIfDefine } from "../util";
 
 const { MongoError, MongoBulkWriteError } = mongoose.mongo;
 
@@ -164,7 +164,6 @@ async function handleJob(
                   action.amount,
                   action.currency
                 );
-
                 return {
                   timestamp: action.timestamp,
                   id: action.id,
@@ -193,6 +192,7 @@ async function handleJob(
                     action.amount,
                     action.currency
                   );
+                  const tier = getPurchaseTier(action);
                   return {
                     timestamp: action.timestamp,
                     id: action.id,
@@ -203,8 +203,8 @@ async function handleJob(
                     currency: currency.code,
                     text: action.stickerText,
                     image: action.stickerUrl,
-                    // significance: action.significance,
-                    // color: action.color,
+                    significance: tier?.significance,
+                    color: tier?.color,
                     originVideoId: mc.videoId,
                     originChannelId: mc.channelId,
                   };

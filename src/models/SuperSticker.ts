@@ -37,11 +37,11 @@ export class SuperSticker {
   @prop({ required: true })
   public image!: string;
 
-  // @prop({ required: true })
-  // public significance!: number;
+  @prop()
+  public significance?: number;
 
-  // @prop({ required: true })
-  // public color!: string;
+  @prop()
+  public color?: string;
 
   @prop({ required: true, index: true })
   public originVideoId!: string;
