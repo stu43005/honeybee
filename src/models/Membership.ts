@@ -5,8 +5,11 @@ export class Membership {
   @prop({ required: true, unique: true })
   public id!: string;
 
-  @prop({ required: true })
-  public authorName!: string;
+  @prop()
+  public authorName?: string;
+
+  @prop()
+  public authorPhoto?: string;
 
   @prop({ required: true, index: true })
   public authorChannelId!: string;

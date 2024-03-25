@@ -8,6 +8,9 @@ export class MembershipGift {
   @prop()
   public authorName?: string;
 
+  @prop()
+  public authorPhoto?: string;
+
   @prop({ required: true, index: true })
   public authorChannelId!: string;
 

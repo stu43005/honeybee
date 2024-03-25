@@ -15,12 +15,18 @@ export class Raid {
   @prop({ index: true })
   public sourceName?: string;
 
+  @prop()
+  public sourcePhoto?: string;
+
   // target
   @prop({ required: true, index: true })
   public originVideoId!: string;
 
   @prop({ required: true, index: true })
   public originChannelId!: string;
+
+  @prop()
+  public originPhoto?: string;
 
   @prop({ required: true, index: true })
   timestamp!: Date;
