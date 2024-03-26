@@ -310,14 +310,14 @@ export async function runWebhook() {
     {
       fullDocument: "updateLookup",
     }
-  ).on("change", (data: mongo.ChangeStreamDocument<DocumentType<Webhook>>) => {
+  ).on("change", (data: mongo.ChangeStreamDocument<Webhook>) => {
     webhookLog(data, data.operationType.toUpperCase());
     switch (data.operationType) {
       case "insert":
       case "update":
       case "replace": {
         if (data.fullDocument) {
-          setupWebhook(data.fullDocument);
+          setupWebhook(new WebhookModel(data.fullDocument));
         } else {
           webhookLog(data, "<!> [FATAL] missing webhook's fullDocument");
           process.exit(1);
