@@ -36,7 +36,7 @@ import MilestoneModel, { type Milestone } from "../models/Milestone";
 import ModeChangeModel, { type ModeChange } from "../models/ModeChange";
 import PlaceholderModel, { type Placeholder } from "../models/Placeholder";
 import PollModel, { type Poll } from "../models/Poll";
-import { type Raid } from "../models/Raid";
+import RaidModel, { type Raid } from "../models/Raid";
 import RemoveChatActionModel, {
   type RemoveChatAction,
 } from "../models/RemoveChatAction";
@@ -553,7 +553,7 @@ async function handleJob(
                 timestamp: new Date(),
               };
             });
-            await PollModel.bulkWrite(
+            await RaidModel.bulkWrite(
               payload.map((poll) => ({
                 updateOne: {
                   filter: { id: poll.id },
@@ -578,7 +578,7 @@ async function handleJob(
                 timestamp: new Date(),
               };
             });
-            await PollModel.bulkWrite(
+            await RaidModel.bulkWrite(
               payload.map((poll) => ({
                 updateOne: {
                   filter: { id: poll.id },
