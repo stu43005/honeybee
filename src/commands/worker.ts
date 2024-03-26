@@ -549,6 +549,7 @@ async function handleJob(
                 sourcePhoto: action.sourcePhoto,
                 originVideoId: mc.videoId,
                 originChannelId: mc.channelId,
+                originPhoto: stream.channel.avatarUrl,
                 timestamp: new Date(),
               };
             });
@@ -570,6 +571,7 @@ async function handleJob(
                 sourceVideoId: mc.videoId,
                 sourceChannelId: mc.channelId,
                 sourceName: mc.channelName,
+                sourcePhoto: stream.channel.avatarUrl,
                 originVideoId: action.targetVideoId,
                 originChannelId: action.targetId,
                 originPhoto: action.targetPhoto,
