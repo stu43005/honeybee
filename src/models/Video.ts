@@ -133,7 +133,7 @@ export class Video extends TimeStamps {
     mc: Masterchat
   ) {
     const metadata = await mc.fetchMetadataFromWatch(mc.videoId);
-    if ("subscribers" in metadata && metadata.subscribers > 0) {
+    if ("subscribers" in metadata && metadata.subscribers) {
       await ChannelModel.updateOne(
         { id: mc.channelId },
         {
@@ -143,7 +143,7 @@ export class Video extends TimeStamps {
         }
       );
     }
-    if ("viewCount" in metadata && metadata.viewCount > 0) {
+    if ("viewCount" in metadata && metadata.viewCount) {
       await LiveViewers.create({
         originVideoId: mc.videoId,
         originChannelId: mc.channelId,
@@ -151,7 +151,7 @@ export class Video extends TimeStamps {
         source: LiveViewersSource.Masterchat,
       });
     }
-    if ("likes" in metadata && metadata.likes > 0) {
+    if ("likes" in metadata && metadata.likes) {
       await this.updateOne(
         { id: mc.videoId },
         {
