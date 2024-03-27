@@ -160,6 +160,7 @@ async function handleJob(
                   action.message && action.message.length > 0
                     ? stringify(action.message, stringifyOptions)
                     : null;
+                const normMembership = normalizeMembership(action.membership);
                 const currency = getCurrencymapItem(action.currency);
                 const jpy = await currencyToJpyAmount(
                   action.amount,
@@ -177,6 +178,10 @@ async function handleJob(
                   authorName: action.authorName,
                   authorPhoto: action.authorPhoto,
                   authorChannelId: action.authorChannelId,
+                  membership: normMembership,
+                  isVerified: action.isVerified,
+                  isOwner: action.isOwner,
+                  isModerator: action.isModerator,
                   originVideoId: mc.videoId,
                   originChannelId: mc.channelId,
                 };
@@ -189,6 +194,7 @@ async function handleJob(
             const payload = await Promise.all(
               groupedActions[type].map(
                 async (action): Promise<SuperSticker> => {
+                  const normMembership = normalizeMembership(action.membership);
                   const currency = getCurrencymapItem(action.currency);
                   const jpy = await currencyToJpyAmount(
                     action.amount,
@@ -201,6 +207,10 @@ async function handleJob(
                     authorName: action.authorName,
                     authorPhoto: action.authorPhoto,
                     authorChannelId: action.authorChannelId,
+                    membership: normMembership,
+                    isVerified: action.isVerified,
+                    isOwner: action.isOwner,
+                    isModerator: action.isModerator,
                     amount: action.amount,
                     jpyAmount: jpy.amount,
                     currency: currency.code,
@@ -243,19 +253,24 @@ async function handleJob(
             break;
           }
           case "addMembershipItemAction": {
-            const payload: Membership[] = groupedActions[type].map(
-              (action) => ({
+            const payload: Membership[] = groupedActions[type].map((action) => {
+              const normMembership = normalizeMembership(action.membership);
+              return {
                 id: action.id,
                 level: action.level,
                 since: action.membership?.since,
                 authorName: action.authorName,
                 authorPhoto: action.authorPhoto,
                 authorChannelId: action.authorChannelId,
+                membership: normMembership,
+                isVerified: action.isVerified,
+                isOwner: action.isOwner,
+                isModerator: action.isModerator,
                 originVideoId: mc.videoId,
                 originChannelId: mc.channelId,
                 timestamp: action.timestamp,
-              })
-            );
+              };
+            });
             await MembershipModel.insertMany(payload, insertOptions);
             break;
           }
@@ -265,6 +280,7 @@ async function handleJob(
                 action.message && action.message.length > 0
                   ? stringify(action.message, stringifyOptions)
                   : null;
+              const normMembership = normalizeMembership(action.membership);
 
               return {
                 id: action.id,
@@ -275,6 +291,10 @@ async function handleJob(
                 authorName: action.authorName,
                 authorPhoto: action.authorPhoto,
                 authorChannelId: action.authorChannelId,
+                membership: normMembership,
+                isVerified: action.isVerified,
+                isOwner: action.isOwner,
+                isModerator: action.isModerator,
                 originVideoId: mc.videoId,
                 originChannelId: mc.channelId,
                 timestamp: action.timestamp,
@@ -385,6 +405,9 @@ async function handleJob(
                           item.message && item.message.length > 0
                             ? stringify(item.message, stringifyOptions)
                             : null;
+                        const normMembership = normalizeMembership(
+                          item.membership
+                        );
                         const currency = getCurrencymapItem(item.currency);
                         const jpy = await currencyToJpyAmount(
                           item.amount,
@@ -402,6 +425,10 @@ async function handleJob(
                           authorName: item.authorName,
                           authorPhoto: item.authorPhoto,
                           authorChannelId: item.authorChannelId,
+                          membership: normMembership,
+                          isVerified: item.isVerified,
+                          isOwner: item.isOwner,
+                          isModerator: item.isModerator,
                           originVideoId: mc.videoId,
                           originChannelId: mc.channelId,
                         };
@@ -511,6 +538,9 @@ async function handleJob(
                   authorPhoto: action.authorPhoto,
                   authorChannelId: action.authorChannelId,
                   membership: normMembership,
+                  isVerified: action.isVerified,
+                  isOwner: action.isOwner,
+                  isModerator: action.isModerator,
                   amount: action.amount,
                   originVideoId: mc.videoId,
                   originChannelId: mc.channelId,
@@ -526,12 +556,17 @@ async function handleJob(
           case "membershipGiftRedemptionAction": {
             const payload: MembershipGift[] = groupedActions[type].map(
               (action) => {
+                const normMembership = normalizeMembership(action.membership);
                 return {
                   id: action.id,
                   timestamp: action.timestamp,
                   authorName: action.authorName,
                   authorPhoto: action.authorPhoto,
                   authorChannelId: action.authorChannelId,
+                  membership: normMembership,
+                  isVerified: action.isVerified,
+                  isOwner: action.isOwner,
+                  isModerator: action.isModerator,
                   senderName: action.senderName,
                   originVideoId: mc.videoId,
                   originChannelId: mc.channelId,
@@ -558,7 +593,10 @@ async function handleJob(
             await RaidModel.bulkWrite(
               payload.map((poll) => ({
                 updateOne: {
-                  filter: { originVideoId: poll.originVideoId, sourceName: poll.sourceName },
+                  filter: {
+                    originVideoId: poll.originVideoId,
+                    sourceName: poll.sourceName,
+                  },
                   update: { $set: poll },
                   upsert: true,
                 },
@@ -583,7 +621,10 @@ async function handleJob(
             await RaidModel.bulkWrite(
               payload.map((poll) => ({
                 updateOne: {
-                  filter: { originVideoId: poll.originVideoId, sourceName: poll.sourceName },
+                  filter: {
+                    originVideoId: poll.originVideoId,
+                    sourceName: poll.sourceName,
+                  },
                   update: { $set: poll },
                   upsert: true,
                 },

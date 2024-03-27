@@ -25,6 +25,18 @@ export class SuperChat {
   @prop({ required: true, index: true })
   public authorChannelId!: string;
 
+  @prop()
+  public membership?: string;
+
+  @prop({ required: true, index: true })
+  public isVerified!: Boolean;
+
+  @prop({ required: true, index: true })
+  public isOwner!: Boolean;
+
+  @prop({ required: true, index: true })
+  public isModerator!: Boolean;
+
   @prop({ required: true })
   public amount!: number;
 
@@ -34,11 +46,11 @@ export class SuperChat {
   @prop({ required: true, index: true })
   public currency!: string;
 
-  @prop({ required: true, index: true })
-  public significance!: number;
+  @prop({ index: true })
+  public significance?: number;
 
-  @prop({ required: true })
-  public color!: string;
+  @prop()
+  public color?: string;
 
   @prop({ required: true, index: true })
   public originVideoId!: string;

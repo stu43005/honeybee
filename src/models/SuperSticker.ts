@@ -10,9 +10,6 @@ import {
   schemaOptions: { collection: "superstickers" },
 })
 export class SuperSticker {
-  @prop({ required: true, index: true })
-  public timestamp!: Date;
-
   @prop({ required: true, unique: true })
   public id!: string;
 
@@ -24,6 +21,18 @@ export class SuperSticker {
 
   @prop({ required: true, index: true })
   public authorChannelId!: string;
+
+  @prop()
+  public membership?: string;
+
+  @prop({ required: true, index: true })
+  public isVerified!: Boolean;
+
+  @prop({ required: true, index: true })
+  public isOwner!: Boolean;
+
+  @prop({ required: true, index: true })
+  public isModerator!: Boolean;
 
   @prop({ required: true })
   public amount!: number;
@@ -40,7 +49,7 @@ export class SuperSticker {
   @prop({ required: true })
   public image!: string;
 
-  @prop()
+  @prop({ index: true })
   public significance?: number;
 
   @prop()
@@ -51,6 +60,9 @@ export class SuperSticker {
 
   @prop({ required: true, index: true })
   public originChannelId!: string;
+
+  @prop({ required: true, index: true })
+  public timestamp!: Date;
 }
 
 export default getModelForClass(SuperSticker);

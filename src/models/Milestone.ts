@@ -26,6 +26,18 @@ export class Milestone {
   public authorChannelId!: string;
 
   @prop()
+  public membership?: string;
+
+  @prop({ required: true, index: true })
+  public isVerified!: Boolean;
+
+  @prop({ required: true, index: true })
+  public isOwner!: Boolean;
+
+  @prop({ required: true, index: true })
+  public isModerator!: Boolean;
+
+  @prop()
   public level?: string;
 
   @prop()
