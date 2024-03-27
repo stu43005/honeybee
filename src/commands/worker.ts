@@ -776,7 +776,7 @@ async function handleJob(
     if (err instanceof AbortError) {
       job.backoff("immediate");
       videoLog("<!> [ABORTED]");
-      throw err;
+      throw new Error("worker exiting");
     }
 
     // change delay backoff time to 30 sec

@@ -242,15 +242,15 @@ Failed=${health.failed}`
   queue.on("job retrying", async (jobId, err) => {
     const job = await queue.getJob(jobId);
     const retries = job.options.retries;
-    const retryDelay = job.options.backoff.delay;
+    const retryDelay = job.options.backoff.delay
+      ? `${Math.ceil(job.options.backoff.delay / 1000)}s`
+      : "immediate";
 
     await VideoModel.updateStatus(jobId, HoneybeeStatus.Retrying, err);
 
     schedulerLog(
       "[job retrying]:",
-      `will retry ${jobId} in ${Math.ceil(
-        retryDelay / 1000 / 60
-      )}m (${retries}). reason: ${err.message}`
+      `will retry ${jobId} in ${retryDelay} (${retries}). reason: ${err.message}`
     );
   });
 
