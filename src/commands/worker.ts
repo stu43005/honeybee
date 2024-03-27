@@ -545,6 +545,8 @@ async function handleJob(
             const payload: Raid[] = groupedActions[type].map((action) => {
               return {
                 id: action.actionId,
+                // sourceVideoId: ,
+                // sourceChannelId: ,
                 sourceName: action.sourceName,
                 sourcePhoto: action.sourcePhoto,
                 originVideoId: mc.videoId,
@@ -556,7 +558,7 @@ async function handleJob(
             await RaidModel.bulkWrite(
               payload.map((poll) => ({
                 updateOne: {
-                  filter: { id: poll.id },
+                  filter: { originVideoId: poll.originVideoId, sourceName: poll.sourceName },
                   update: { $set: poll },
                   upsert: true,
                 },
@@ -567,13 +569,13 @@ async function handleJob(
           case "addOutgoingRaidBannerAction": {
             const payload: Raid[] = groupedActions[type].map((action) => {
               return {
-                id: action.actionId,
+                outgoingId: action.actionId,
                 sourceVideoId: mc.videoId,
                 sourceChannelId: mc.channelId,
-                sourceName: mc.channelName,
+                sourceName: stream.channel.name,
                 sourcePhoto: stream.channel.avatarUrl,
                 originVideoId: action.targetVideoId,
-                originChannelId: action.targetId,
+                // originChannelId: ,
                 originPhoto: action.targetPhoto,
                 timestamp: new Date(),
               };
@@ -581,7 +583,7 @@ async function handleJob(
             await RaidModel.bulkWrite(
               payload.map((poll) => ({
                 updateOne: {
-                  filter: { id: poll.id },
+                  filter: { originVideoId: poll.originVideoId, sourceName: poll.sourceName },
                   update: { $set: poll },
                   upsert: true,
                 },
@@ -591,7 +593,6 @@ async function handleJob(
           }
           // case "showTooltipAction":
           // case "addViewerEngagementMessageAction":
-          // case "showPanelAction":
           // case "closePanelAction":
           // case "removeBannerAction":
           // case "addMembershipTickerAction":
