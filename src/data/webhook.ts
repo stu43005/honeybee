@@ -34,6 +34,20 @@ export const templatePreset: Readonly<
             url: `https://i.ytimg.com/vi/${parameters.originVideoId}/mqdefault.jpg`,
           },
           description: getMessage(parameters),
+          ...(["superchats", "superstickers"].includes(parameters.collection)
+            ? {
+                fields: [
+                  {
+                    name:
+                      parameters.collection === "superchats"
+                        ? "SuperChat"
+                        : "SuperSticker",
+                    value: `${parameters.currency} ${parameters.amount}, ${parameters.color}, tier ${parameters.significance}`,
+                    inline: true,
+                  },
+                ],
+              }
+            : {}),
           footer: {
             text: parameters.video.title,
             icon_url: parameters.channel.avatarUrl,
@@ -174,7 +188,6 @@ export const templatePreset: Readonly<
 function getMessage(parameters: Record<string, any>) {
   if (parameters.message)
     return parameters.message.replace(/[\uFFF9\uFFFB]/g, "");
-  if (parameters.text) return parameters.text;
   if (parameters.collection === "memberships") {
     return parameters.level ? `歡迎加入 ${parameters.level}` : "新會員";
   }
@@ -183,6 +196,9 @@ function getMessage(parameters: Record<string, any>) {
   }
   if (parameters.collection === "membershipgiftpurchases") {
     return `送出了 ${parameters.amount} 個「${parameters.channelName}」的會籍`;
+  }
+  if (parameters.collection === "superstickers") {
+    return `[Sticker]:${parameters.text}:`;
   }
   if (parameters.collection === "superchats") {
     return "(wordless superchat)";
