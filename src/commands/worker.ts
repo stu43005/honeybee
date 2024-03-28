@@ -25,7 +25,6 @@ import BannerActionModel, { type BannerAction } from "../models/BannerAction";
 import ChatModel, { type Chat } from "../models/Chat";
 import ErrorLogModel, { type ErrorLog } from "../models/ErrorLog";
 import MembershipModel, { type Membership } from "../models/Membership";
-import VideoModel from "../models/Video";
 import MembershipGiftModel, {
   type MembershipGift,
 } from "../models/MembershipGift";
@@ -42,13 +41,14 @@ import RemoveChatActionModel, {
 } from "../models/RemoveChatAction";
 import SuperChatModel, { type SuperChat } from "../models/SuperChat";
 import SuperStickerModel, { type SuperSticker } from "../models/SuperSticker";
+import VideoModel from "../models/Video";
 import {
   currencyToJpyAmount,
   getCurrencymapItem,
 } from "../modules/currency-convert";
 import { initMongo } from "../modules/db";
 import { getQueueInstance } from "../modules/queue";
-import { getPurchaseTier, groupBy, setIfDefine } from "../util";
+import { groupBy, setIfDefine } from "../util";
 
 const { MongoError, MongoBulkWriteError } = mongoose.mongo;
 
@@ -200,7 +200,6 @@ async function handleJob(
                     action.amount,
                     action.currency
                   );
-                  const tier = getPurchaseTier(action);
                   return {
                     timestamp: action.timestamp,
                     id: action.id,
@@ -216,8 +215,8 @@ async function handleJob(
                     currency: currency.code,
                     text: action.stickerText,
                     image: action.stickerUrl,
-                    significance: tier?.significance,
-                    color: tier?.color,
+                    significance: action.significance,
+                    color: action.color,
                     originVideoId: mc.videoId,
                     originChannelId: mc.channelId,
                   };

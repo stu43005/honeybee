@@ -1,9 +1,3 @@
-import {
-  SUPERCHAT_COLOR_MAP,
-  SUPERCHAT_SIGNIFICANCE_MAP,
-  type Action,
-} from "@stu43005/masterchat";
-
 export function guessFreeChat(title: string) {
   return /(?:[fF]ree\s?[cC]hat|(?:ふりー|フリー)(?:ちゃっと|チャット))/.test(
     title
@@ -141,31 +135,6 @@ export function secondsToHms(d: number) {
     .toString()
     .padStart(2, "0");
   return `${h}:${m}:${s}`;
-}
-
-export function getPurchaseTier(action: Action) {
-  for (const key of [
-    "color",
-    "moneyChipBackgroundColor",
-    "moneyChipTextColor",
-    "backgroundColor",
-    "authorNameTextColor",
-  ] as const) {
-    if (key in action) {
-      const color = (action as any)[
-        key
-      ].toString() as keyof typeof SUPERCHAT_COLOR_MAP;
-      const colorName = SUPERCHAT_COLOR_MAP[color];
-      if (colorName) {
-        const significance = SUPERCHAT_SIGNIFICANCE_MAP[colorName];
-        return {
-          color,
-          colorName,
-          significance,
-        };
-      }
-    }
-  }
 }
 
 export function flatObjectKey(obj: object): object {
