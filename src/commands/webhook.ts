@@ -125,9 +125,9 @@ async function handleChange(
     timestamp: timestamp.toISOString(),
     timeSecond: timeSecond,
     timeCode: timeCode,
-    video: video,
-    channel: channel,
-    authorChannel: authorChannel,
+    video: video?.then((doc) => doc?.toJSON()),
+    channel: channel?.then((doc) => doc?.toJSON()),
+    authorChannel: authorChannel?.then((doc) => doc?.toJSON()),
     previousResponse: previousResponse,
   });
   const hasPreviousResponse = !!parameters.previousResponse;
@@ -181,8 +181,10 @@ async function handleChange(
 
   try {
     const timeout = AbortSignal.timeout(10_000);
-    const res = await axiosInstance.post(url, body, {
+    const res = await axiosInstance.request({
       method,
+      url,
+      data: body,
       signal: timeout,
     });
 
