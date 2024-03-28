@@ -8,6 +8,8 @@ metadata:
     app.kubernetes.io/name: honeybee
     app.kubernetes.io/version: dev
 spec:
+  strategy:
+    type: Recreate
   replicas: 1
   selector:
     matchLabels:
