@@ -130,7 +130,9 @@ export async function cleanup(argv: Arguments<CleanupOptions>) {
         chatVideoIds.filter((id) => !videos.find((video) => video.id === id))
       );
 
-    await cleanVideos(toRemoveVideoIds);
+    if (toRemoveVideoIds.length) {
+      await cleanVideos(toRemoveVideoIds);
+    }
   }
 
   if (argv.daemon) {
