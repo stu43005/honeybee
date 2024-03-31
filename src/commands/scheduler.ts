@@ -261,7 +261,7 @@ Failed=${health.failed}`
     handledVideoIdCache.delete(jobId);
     await queue.removeJob(jobId);
 
-    await VideoModel.updateStatus(jobId, HoneybeeStatus.Failed, err);
+    await VideoModel.updateStatusFailed(jobId, err);
 
     schedulerLog(
       `[job failed]: removed ${jobId} from cache and job queue for later retry`

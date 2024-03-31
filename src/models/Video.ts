@@ -183,6 +183,27 @@ export class Video extends TimeStamps {
         $set: {
           hbStatus: status,
           ...setIfDefine("hbErrorCode", error?.message),
+          hbCleanedAt: null,
+        },
+      }
+    );
+  }
+
+  public static async updateStatusFailed(
+    this: ReturnModelType<typeof Video>,
+    videoId: string,
+    error: Error
+  ) {
+    await this.updateOne(
+      {
+        id: videoId,
+      },
+      {
+        $set: {
+          hbStatus: HoneybeeStatus.Failed,
+          hbErrorCode: error.message,
+          hbEnd: new Date(),
+          hbCleanedAt: null,
         },
       }
     );
@@ -202,6 +223,7 @@ export class Video extends TimeStamps {
           hbStatus: HoneybeeStatus.Finished,
           hbErrorCode: result.error,
           hbEnd: new Date(),
+          hbCleanedAt: null,
         },
         $inc: {
           "hbStats.handled": result.result?.handled ?? 0,
