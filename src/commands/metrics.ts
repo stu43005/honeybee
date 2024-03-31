@@ -599,12 +599,11 @@ export async function metrics() {
             id: {
               $in: [...videoIds],
             },
-            hbStart: { $ne: null },
           },
           labels: {
             videoId: "$id",
           },
-          value: { $last: "$hbStart" },
+          value: { $last: "$availableAt" },
           fetchAll: true,
           reset: true,
         }),
