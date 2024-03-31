@@ -1,14 +1,12 @@
 import type { Job } from "agenda";
-import assert from "assert";
 import {
   ExtraData,
-  HolodexApiClient,
   VideoStatus,
   VideoType,
+  type Channel,
   type Video as HolodexVideo,
 } from "holodex.js";
 import {
-  HOLODEX_API_KEY,
   HOLODEX_FETCH_ORG,
   HOLODEX_MAX_UPCOMING_HOURS,
   IGNORE_FREE_CHAT,
@@ -23,10 +21,10 @@ import {
 import ChannelModel from "../models/Channel";
 import VideoModel from "../models/Video";
 import { initMongo } from "../modules/db";
+import { getHolodex } from "../modules/holodex";
 import { getQueueInstance } from "../modules/queue";
 import { getAgenda } from "../modules/schedule";
 import { guessFreeChat } from "../util";
-import { getHolodex } from "../modules/holodex";
 
 function schedulerLog(...obj: any) {
   console.log(...obj);
@@ -124,19 +122,29 @@ export async function runScheduler() {
       await queue.getJobs("active", { start: 0, end: 1000 })
     ).map((job) => job.data.videoId);
 
-    const extraChannels: string[] = (
-      await ChannelModel.find({ extraCrawl: true }, { id: 1 })
+    const crawlChannels: string[] = (
+      await ChannelModel.find(
+        { $or: [{ extraCrawl: true }, { organization: HOLODEX_FETCH_ORG }] },
+        { id: 1 }
+      )
     ).map((channel) => channel.id);
+
+    function checkChannel(channel: Channel) {
+      return (
+        channel.organization === HOLODEX_FETCH_ORG ||
+        crawlChannels.includes(channel.channelId)
+      );
+    }
 
     const liveAndUpcomingStreams = (
       await holoapi.getLiveVideos({
         org: "All Vtubers",
         max_upcoming_hours: HOLODEX_MAX_UPCOMING_HOURS,
+        include: [ExtraData.Mentions],
       })
     ).filter(
       (stream) =>
-        stream.channel.organization === HOLODEX_FETCH_ORG ||
-        extraChannels.includes(stream.channelId)
+        checkChannel(stream.channel) || !!stream.mentions?.find(checkChannel)
     );
 
     // update database
