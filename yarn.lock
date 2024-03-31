@@ -1521,10 +1521,10 @@
     "@smithy/util-buffer-from" "^2.2.0"
     tslib "^2.6.2"
 
-"@stu43005/masterchat@^1.4.1":
-  version "1.4.1"
-  resolved "https://registry.yarnpkg.com/@stu43005/masterchat/-/masterchat-1.4.1.tgz#52cc0fc6e5f0c8fadc6c9723489120fe6313b9bc"
-  integrity sha512-ob810tlVPIE8n3O3/Bd5IJmbMVJeDpCuKV/oMA0VZWir7sxIKp1kJQfnIGZwXsKxHB898DpGbYl9/QnNDemAHw==
+"@stu43005/masterchat@^1.4.3":
+  version "1.4.3"
+  resolved "https://registry.yarnpkg.com/@stu43005/masterchat/-/masterchat-1.4.3.tgz#fc81f8963f79c5ca604e4326423aa10b09379283"
+  integrity sha512-xw9+WuzyZqpB+9gTkf9ZWBW0bvT60fyCGXFSCg7eyIJ4rc22Trby1F03VSgbMUiOCaDbAJsRS1fYLz/74OUnbQ==
   dependencies:
     axios "^1.6.8"
     buffer "^6.0.3"
