@@ -143,13 +143,19 @@ export class Video extends TimeStamps {
         }
       );
     }
-    if ("viewCount" in metadata && metadata.viewCount) {
-      await LiveViewers.create({
+    if ("viewCount" in metadata) {
+      const lastViewCount = await LiveViewers.findOne({
         originVideoId: mc.videoId,
-        originChannelId: mc.channelId,
-        viewers: metadata.viewCount,
         source: LiveViewersSource.Masterchat,
-      });
+      }).sort({ createdAt: -1 });
+      if (!lastViewCount || lastViewCount.viewers !== metadata.viewCount) {
+        await LiveViewers.create({
+          originVideoId: mc.videoId,
+          originChannelId: mc.channelId,
+          viewers: metadata.viewCount,
+          source: LiveViewersSource.Masterchat,
+        });
+      }
     }
     if ("likes" in metadata && metadata.likes) {
       await this.updateOne(
