@@ -68,7 +68,7 @@ export async function runScheduler() {
 
     if (handledVideoIdCache.has(videoId)) {
       schedulerLog(
-        `ignored ${videoId} (${title}) [${startsInMin}] as it is either being delayed / members-only`
+        `ignored ${videoId} (${title}) [${startsInMin}] as it is either being delayed`
       );
       return;
     }
@@ -215,8 +215,7 @@ Failed=${health.failed}`
     switch (result.error) {
       case ErrorCode.MembersOnly: {
         schedulerLog(`[job cancelled (members-only mode)]: ${jobId}`);
-        // do not remove id from cache so that the scheduler can ignore the stream.
-        return;
+        break;
       }
       case ErrorCode.Ban: {
         // handle ban
