@@ -160,29 +160,45 @@ export const templatePreset: Readonly<
       },
     ],
   }),
-  "discord-embed-raids": jsonTemplates({
-    embeds: [
-      {
-        author: {
-          name: "{{sourceName}}",
-          url: "https://www.youtube.com/channel/{{sourceChannelId}}",
-          icon_url: "{{sourcePhoto}}",
+  "discord-embed-raids": (parameters) => {
+    return {
+      embeds: [
+        {
+          author: {
+            name: parameters.sourceName,
+            ...(parameters.sourceChannelId
+              ? {
+                  url: `https://www.youtube.com/channel/${parameters.sourceChannelId}`,
+                }
+              : {}),
+            icon_url: parameters.sourcePhoto,
+          },
+          title: `Raid Event • At ${parameters.timeCode}`,
+          url: `https://youtu.be/${parameters.originVideoId}?t=${parameters.timeSecond}`,
+          thumbnail: {
+            url: `https://i.ytimg.com/vi/${parameters.originVideoId}/mqdefault.jpg`,
+          },
+          description: `${parameters.sourceName} and their viewers just joined. Say hello!`,
+          ...(parameters.sourceVideoId
+            ? {
+                fields: [
+                  {
+                    name: "Link",
+                    value: `[Source Video](https://youtu.be/${parameters.sourceVideoId})`,
+                    inline: true,
+                  },
+                ],
+              }
+            : {}),
+          footer: {
+            text: parameters.video.title,
+            icon_url: parameters.channel.avatarUrl,
+          },
+          timestamp: parameters.timestamp,
         },
-        title: "Raid Event • At {{timeCode}}",
-        url: "https://youtu.be/{{originVideoId}}?t={{timeSecond}}",
-        thumbnail: {
-          url: "https://i.ytimg.com/vi/{{originVideoId}}/mqdefault.jpg",
-        },
-        description:
-          "{{sourceName:unknow}} and their viewers just joined. Say hello!",
-        footer: {
-          text: "{{video.title}}",
-          icon_url: "{{channel.avatarUrl}}",
-        },
-        timestamp: "{{timestamp}}",
-      },
-    ],
-  }),
+      ],
+    };
+  },
 });
 
 function getMessage(parameters: Record<string, any>) {
