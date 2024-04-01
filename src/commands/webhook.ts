@@ -72,6 +72,19 @@ function getCache<T>(key: string, factory: (key: string) => T): T {
   }
   return data;
 }
+function getVideo(videoId?: string) {
+  return videoId
+    ? getCache(videoId, (id) => VideoModel.findOne({ id }).exec())
+    : null;
+}
+function getChannel(channelId?: string) {
+  return channelId
+    ? getCache(channelId, (id) => ChannelModel.findOne({ id }).exec())
+    : null;
+}
+function doc2Json(doc: Promise<DocumentType<any> | null> | null) {
+  return doc?.then((doc) => doc?.toJSON());
+}
 
 async function handleChange(
   webhook: Webhook,
@@ -85,21 +98,15 @@ async function handleChange(
 
   // webhookLog(webhook, "receive change", data.documentKey);
 
-  const video = data.fullDocument.originVideoId
-    ? getCache(data.fullDocument.originVideoId, (id) =>
-        VideoModel.findOne({ id }).exec()
-      )
-    : null;
-  const channel = data.fullDocument.originChannelId
-    ? getCache(data.fullDocument.originChannelId, (id) =>
-        ChannelModel.findOne({ id }).exec()
-      )
-    : null;
-  const authorChannel = data.fullDocument.authorChannelId
-    ? getCache(data.fullDocument.authorChannelId, (id) =>
-        ChannelModel.findOne({ id }).exec()
-      )
-    : null;
+  const video = getVideo(data.fullDocument.originVideoId);
+  const channel =
+    getChannel(data.fullDocument.channelId) ??
+    getChannel(data.fullDocument.originChannelId) ??
+    video?.then((video) => getChannel(video?.channelId)) ??
+    null;
+  const authorChannel = getChannel(data.fullDocument.authorChannelId);
+  const sourceVideo = getVideo(data.fullDocument.sourceVideoId);
+  const sourceChannel = getChannel(data.fullDocument.sourceChannelId);
 
   const timestamp: Date = data.fullDocument.timestamp ?? new Date();
   const timeSecond = video?.then((video) =>
@@ -125,9 +132,11 @@ async function handleChange(
     timestamp: timestamp.toISOString(),
     timeSecond: timeSecond,
     timeCode: timeCode,
-    video: video?.then((doc) => doc?.toJSON()),
-    channel: channel?.then((doc) => doc?.toJSON()),
-    authorChannel: authorChannel?.then((doc) => doc?.toJSON()),
+    video: doc2Json(video),
+    channel: doc2Json(channel),
+    authorChannel: doc2Json(authorChannel),
+    sourceVideo: doc2Json(sourceVideo),
+    sourceChannel: doc2Json(sourceChannel),
     previousResponse: previousResponse,
   });
   const hasPreviousResponse = !!parameters.previousResponse;
