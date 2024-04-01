@@ -143,7 +143,7 @@ export class Video extends TimeStamps {
         }
       );
     }
-    if ("viewCount" in metadata) {
+    if ("viewCount" in metadata && typeof metadata.viewCount === "number") {
       const lastViewCount = await LiveViewers.findOne({
         originVideoId: mc.videoId,
         source: LiveViewersSource.Masterchat,
