@@ -720,6 +720,7 @@ async function handleJob(
 
   // iterate over live chat
   let actionCount = 0;
+  let lastUpdateAt = Date.now();
   try {
     await VideoModel.updateFromMasterchat(mc);
 
@@ -731,8 +732,9 @@ async function handleJob(
 
       actionCount += actions.length;
       // 8k messages / per 10m: every 30s
-      if (actionCount >= 400) {
+      if (actionCount >= 400 || Date.now() - lastUpdateAt > 3600_000) {
         actionCount = 0;
+        lastUpdateAt = Date.now();
         try {
           await VideoModel.updateFromMasterchat(mc);
         } catch (err) {
