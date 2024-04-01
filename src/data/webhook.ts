@@ -199,6 +199,28 @@ export const templatePreset: Readonly<
       ],
     };
   },
+  "discord-embed-video": (parameters) => {
+    return {
+      embeds: [
+        {
+          author: {
+            name: parameters.channel.name,
+            url: `https://www.youtube.com/channel/${parameters.channel.id}`,
+            icon_url: parameters.channel.avatarUrl,
+          },
+          title:
+            parameters.title.length > 70
+              ? `${parameters.title.substring(0, 67)}...`
+              : parameters.title,
+          url: `https://youtu.be/${parameters.id}`,
+          image: {
+            url: `https://i.ytimg.com/vi/${parameters.id}/maxresdefault.jpg`,
+          },
+          timestamp: parameters.availableAt?.toISOString(),
+        },
+      ],
+    };
+  },
 });
 
 function getMessage(parameters: Record<string, any>) {
