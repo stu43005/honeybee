@@ -123,7 +123,7 @@ export async function cleanup(argv: Arguments<CleanupOptions>) {
             video.hbStatus
           ) &&
           video.hbEnd &&
-          video.hbEnd.getTime() < Date.now() - 10 * 60 * 1000
+          video.hbEnd.getTime() < Date.now() - 60 * 60 * 1000
       )
       .map((video) => video.id)
       .concat(
