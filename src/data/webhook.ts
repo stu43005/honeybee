@@ -1,9 +1,14 @@
 import jsonTemplates from "json-templates";
+import path from "node:path";
 import { setIfDefine } from "../util";
 
-export const defaultUpdateUrl = jsonTemplates(
-  "{{insertUrl}}/messages/{{previousResponse.id}}"
-);
+export const defaultUpdateUrl = (parameters: Record<string, any>): string => {
+  const url = new URL(parameters.insertUrl);
+  url.pathname = path.posix.join(url.pathname, `./messages/${parameters.previousResponse.id}`);
+  url.searchParams.delete("wait");
+  return url.toString();
+};
+
 export const defaultInsertMethod = "POST";
 export const defaultUpdateMethod = "PATCH";
 
