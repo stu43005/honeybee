@@ -727,10 +727,11 @@ async function handleJob(
     for await (const { actions } of mc.iterate({
       signal: exitController.signal,
     })) {
-      if (actions.length === 0) continue;
-      await handleActions(actions);
+      if (actions.length > 0) {
+        await handleActions(actions);
+        actionCount += actions.length;
+      }
 
-      actionCount += actions.length;
       // 8k messages / per 10m: every 30s
       if (actionCount >= 400 || Date.now() - lastUpdateAt > 3600_000) {
         actionCount = 0;
