@@ -9,5 +9,5 @@ resources:
   - worker.yaml
   - cleanup.yaml
   - metrics.yaml
-  # - servicemonitor.yaml
+  - servicemonitor.yaml
   - webhook.yaml
