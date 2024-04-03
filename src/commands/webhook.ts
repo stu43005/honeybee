@@ -4,6 +4,7 @@ import https from "https";
 import jsonTemplates, { type JsonTemplate } from "json-templates";
 import mongoose, { mongo } from "mongoose";
 import NodeCache from "node-cache";
+import { setInterval } from "node:timers/promises";
 import pProps from "p-props";
 import { isMatching } from "ts-pattern";
 import {
@@ -82,6 +83,31 @@ function getChannel(channelId?: string) {
     ? getCache(channelId, (id) => ChannelModel.findOne({ id }).exec())
     : null;
 }
+async function getWebhookResult(
+  resultKey: Record<string, any>,
+  data: mongo.ChangeStreamDocument
+) {
+  {
+    const result = await WebhookResultModel.findOne(resultKey).exec();
+    if (result?.response || data.operationType === "insert") {
+      return result;
+    }
+  }
+  const timeout = AbortSignal.timeout(3000);
+  for await (const _ of setInterval(300)) {
+    const result = await WebhookResultModel.findOne(resultKey).exec();
+    if (result?.response) {
+      return result;
+    }
+    if (timeout.aborted && result) {
+      return result;
+    }
+    if (timeout.aborted) {
+      break;
+    }
+  }
+  return null;
+}
 function doc2Json(doc: Promise<DocumentType<any> | null> | null) {
   return doc?.then((doc) => doc?.toJSON());
 }
@@ -116,11 +142,14 @@ async function handleChange(
   );
   const timeCode = timeSecond?.then((timeSecond) => secondsToHms(timeSecond));
 
+  const resultKey = {
+    webhookId: webhook._id.toHexString(),
+    coll: data.ns.coll,
+    docId: data.documentKey._id.toHexString(),
+  };
+
   const previousResult = webhook.followUpdate
-    ? WebhookResultModel.findOne({
-        webhookId: webhook._id,
-        docId: data.documentKey._id,
-      }).exec()
+    ? getWebhookResult(resultKey, data)
     : null;
   const previousResponse = previousResult?.then((result) => result?.response);
 
@@ -168,12 +197,6 @@ async function handleChange(
       : webhook.template
       ? getJsonTemplate("template", webhook.template)(parameters)
       : data.fullDocument;
-
-  const resultKey = {
-    webhookId: webhook._id.toHexString(),
-    coll: data.ns.coll,
-    docId: data.documentKey._id.toHexString(),
-  };
 
   await WebhookResultModel.updateOne(
     resultKey,
