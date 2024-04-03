@@ -47,6 +47,18 @@ export const templatePreset: Readonly<
                   },
                 ],
               }
+            : parameters.collection === "milestones"
+            ? {
+                fields: [
+                  {
+                    name: "Milestone",
+                    value: `${
+                      parameters.level ? `${parameters.level}, ` : ""
+                    }since ${parameters.since}`,
+                    inline: true,
+                  },
+                ],
+              }
             : {}),
           footer: {
             text: parameters.video.title,
