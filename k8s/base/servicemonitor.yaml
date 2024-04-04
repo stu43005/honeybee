@@ -12,6 +12,12 @@ spec:
       port: metrics-port
       scheme: http
       scrapeTimeout: 30s
+      relabelings:
+        - action: labeldrop
+          regex: (service|pod|namespace|endpoint|container)
+      metricRelabelings:
+        - action: labeldrop
+          regex: instance
   selector:
     matchLabels:
       app.kubernetes.io/component: metrics
