@@ -119,10 +119,10 @@ export async function metrics() {
 
   const register = new Registry();
 
-  const collectData = throttleWithReturnValue(_collect, 10_000);
+  const collectData = throttleWithReturnValue(_collect, 30_000);
   const checkHealth = throttleWithReturnValue(
     () => queue.checkHealth(),
-    10_000
+    30_000
   );
   const metrics = {
     honeybee_channel_info: new Gauge({
@@ -418,332 +418,343 @@ export async function metrics() {
     return records;
   }
 
-  const cache = new NodeCache({ stdTTL: 600 });
+  let lastFullCollect = 0;
   async function _collect() {
-    const force = !cache.has("collect");
-    const videoIds = new Set<string>();
+    try {
+      const force = lastFullCollect + 3_600_000 < Date.now();
+      const videoIds = new Set<string>();
 
-    if (force) {
-      metrics.honeybee_messages_total.reset();
-      metrics.honeybee_purchase_amount_jpy_total.reset();
-      metrics.honeybee_purchase_amount_total.reset();
-      metrics.honeybee_actions_total.reset();
-    }
-    metrics.honeybee_users_total.reset();
-    promiseSettledCallback(
-      await Promise.allSettled([
-        ...messageTypes.map((type) =>
-          updateMetrics("honeybee_messages_total", type.model, {
-            labels: {
-              videoId: "$originVideoId",
-              authorType: authorTypeLabelmap(type.defaultAuthorType),
-              type: type.messageType,
-            },
-            value: { $sum: 1 },
-            fetchAll: force,
-          })
-        ),
-        ...messageTypes.map((type) =>
-          updateMetrics("honeybee_users_total", type.model, {
-            groupBy: {
-              _id: {
-                authorChannelId: "$authorChannelId",
+      if (force) {
+        metrics.honeybee_messages_total.reset();
+        metrics.honeybee_purchase_amount_jpy_total.reset();
+        metrics.honeybee_purchase_amount_total.reset();
+        metrics.honeybee_actions_total.reset();
+      }
+      metrics.honeybee_users_total.reset();
+      promiseSettledCallback(
+        await Promise.allSettled([
+          ...messageTypes.map((type) =>
+            updateMetrics("honeybee_messages_total", type.model, {
+              labels: {
                 videoId: "$originVideoId",
+                authorType: authorTypeLabelmap(type.defaultAuthorType),
+                type: type.messageType,
               },
-              authorType: {
-                $last: authorTypeLabelmap(type.defaultAuthorType),
+              value: { $sum: 1 },
+              fetchAll: force,
+            })
+          ),
+          ...messageTypes.map((type) =>
+            updateMetrics("honeybee_users_total", type.model, {
+              groupBy: {
+                _id: {
+                  authorChannelId: "$authorChannelId",
+                  videoId: "$originVideoId",
+                },
+                authorType: {
+                  $last: authorTypeLabelmap(type.defaultAuthorType),
+                },
               },
-            },
-            labels: {
-              videoId: "$_id.videoId",
-              authorType: "$authorType",
-              type: type.messageType,
-            },
-            value: { $sum: 1 },
-            fetchAll: true,
-          })
-        ),
-        ...purchaseMessageTypes.map((type) =>
-          updateMetrics("honeybee_purchase_amount_jpy_total", type.model, {
-            labels: {
-              videoId: "$originVideoId",
-              authorType: authorTypeLabelmap(type.defaultAuthorType),
-              type: type.messageType,
-              currency: "$currency",
-            },
-            value: { $sum: "$jpyAmount" },
-            fetchAll: force,
-          })
-        ),
-        ...purchaseMessageTypes.map((type) =>
-          updateMetrics("honeybee_purchase_amount_total", type.model, {
-            labels: {
-              videoId: "$originVideoId",
-              authorType: authorTypeLabelmap(type.defaultAuthorType),
-              type: type.messageType,
-              currency: "$currency",
-            },
-            value: { $sum: "$amount" },
-            fetchAll: force,
-          })
-        ),
-        updateMetrics(
-          "honeybee_purchase_amount_total",
-          MembershipGiftPurchase,
-          {
-            labels: {
-              videoId: "$originVideoId",
-              authorType: authorTypeLabelmap(),
-              type: MessageType.MembershipGiftPurchase,
-            },
-            value: { $sum: "$amount" },
-            fetchAll: force,
-          }
-        ),
-      ]),
-      (value: MetricPayload<"videoId">[]) =>
-        collectLabelValues(videoIds, value, "videoId"),
-      (reason) => console.error(reason)
-    );
+              labels: {
+                videoId: "$_id.videoId",
+                authorType: "$authorType",
+                type: type.messageType,
+              },
+              value: { $sum: 1 },
+              fetchAll: true,
+            })
+          ),
+          ...purchaseMessageTypes.map((type) =>
+            updateMetrics("honeybee_purchase_amount_jpy_total", type.model, {
+              labels: {
+                videoId: "$originVideoId",
+                authorType: authorTypeLabelmap(type.defaultAuthorType),
+                type: type.messageType,
+                currency: "$currency",
+              },
+              value: { $sum: "$jpyAmount" },
+              fetchAll: force,
+            })
+          ),
+          ...purchaseMessageTypes.map((type) =>
+            updateMetrics("honeybee_purchase_amount_total", type.model, {
+              labels: {
+                videoId: "$originVideoId",
+                authorType: authorTypeLabelmap(type.defaultAuthorType),
+                type: type.messageType,
+                currency: "$currency",
+              },
+              value: { $sum: "$amount" },
+              fetchAll: force,
+            })
+          ),
+          updateMetrics(
+            "honeybee_purchase_amount_total",
+            MembershipGiftPurchase,
+            {
+              labels: {
+                videoId: "$originVideoId",
+                authorType: authorTypeLabelmap(),
+                type: MessageType.MembershipGiftPurchase,
+              },
+              value: { $sum: "$amount" },
+              fetchAll: force,
+            }
+          ),
+        ]),
+        (value: MetricPayload<"videoId">[]) =>
+          collectLabelValues(videoIds, value, "videoId"),
+        (reason) => console.error(reason)
+      );
 
-    const videoInfoRecords = await updateMetrics("honeybee_video_info", Video, {
-      match: {
-        $or: [
-          {
-            hbCleanedAt: null,
-            hbStatus: { $ne: HoneybeeStatus.Created },
+      const videoInfoRecords = await updateMetrics(
+        "honeybee_video_info",
+        Video,
+        {
+          match: {
+            $or: [
+              {
+                hbCleanedAt: null,
+                hbStatus: { $ne: HoneybeeStatus.Created },
+              },
+              {
+                id: {
+                  $in: [...videoIds],
+                },
+              },
+            ],
           },
-          {
-            id: {
-              $in: [...videoIds],
-            },
+          labels: {
+            videoId: "$id",
+            channelId: "$channelId",
+            title: "$title",
+            topic: "$topic",
           },
-        ],
-      },
-      labels: {
-        videoId: "$id",
-        channelId: "$channelId",
-        title: "$title",
-        topic: "$topic",
-      },
-      value: { $last: 1 },
-      fetchAll: true,
-      reset: true,
-    });
+          value: { $last: 1 },
+          fetchAll: true,
+          reset: true,
+        }
+      );
 
-    const channelIds = new Set<string>();
-    collectLabelValues(videoIds, videoInfoRecords, "videoId");
-    collectLabelValues(channelIds, videoInfoRecords, "channelId");
+      const channelIds = new Set<string>();
+      collectLabelValues(videoIds, videoInfoRecords, "videoId");
+      collectLabelValues(channelIds, videoInfoRecords, "channelId");
 
-    promiseSettledCallback(
-      await Promise.allSettled([
-        ...Object.entries(actions).map(([actionType, model]) =>
-          updateMetrics("honeybee_actions_total", model, {
+      promiseSettledCallback(
+        await Promise.allSettled([
+          ...Object.entries(actions).map(([actionType, model]) =>
+            updateMetrics("honeybee_actions_total", model, {
+              match: {
+                originVideoId: {
+                  $in: [...videoIds],
+                },
+              },
+              labels: {
+                videoId: "$originVideoId",
+                actionType: actionType,
+              },
+              value: { $sum: 1 },
+              fetchAll: force,
+            })
+          ),
+          updateMetrics("honeybee_video_viewers", LiveViewers, {
             match: {
               originVideoId: {
                 $in: [...videoIds],
               },
+              viewers: { $gt: 0 },
             },
             labels: {
               videoId: "$originVideoId",
-              actionType: actionType,
             },
-            value: { $sum: 1 },
-            fetchAll: force,
-          })
-        ),
-        updateMetrics("honeybee_video_viewers", LiveViewers, {
-          match: {
-            originVideoId: {
-              $in: [...videoIds],
+            value: { $last: "$viewers" },
+            fetchAll: true,
+            reset: true,
+          }),
+          updateMetrics("honeybee_video_max_viewers", LiveViewers, {
+            match: {
+              originVideoId: {
+                $in: [...videoIds],
+              },
+              viewers: { $gt: 0 },
             },
-            viewers: { $gt: 0 },
-          },
-          labels: {
-            videoId: "$originVideoId",
-          },
-          value: { $last: "$viewers" },
-          fetchAll: true,
-          reset: true,
-        }),
-        updateMetrics("honeybee_video_max_viewers", LiveViewers, {
-          match: {
-            originVideoId: {
-              $in: [...videoIds],
+            labels: {
+              videoId: "$originVideoId",
             },
-            viewers: { $gt: 0 },
-          },
-          labels: {
-            videoId: "$originVideoId",
-          },
-          value: { $max: "$viewers" },
-          fetchAll: true,
-          reset: true,
-        }),
-        updateMetrics("honeybee_video_likes", Video, {
-          match: {
-            id: {
-              $in: [...videoIds],
+            value: { $max: "$viewers" },
+            fetchAll: true,
+            reset: true,
+          }),
+          updateMetrics("honeybee_video_likes", Video, {
+            match: {
+              id: {
+                $in: [...videoIds],
+              },
+              likes: { $gt: 0 },
             },
-            likes: { $gt: 0 },
-          },
-          labels: {
-            videoId: "$id",
-          },
-          value: { $max: "$likes" },
-          fetchAll: true,
-          reset: true,
-        }),
-        updateMetrics("honeybee_video_start_time_seconds", Video, {
-          match: {
-            id: {
-              $in: [...videoIds],
+            labels: {
+              videoId: "$id",
             },
-          },
-          labels: {
-            videoId: "$id",
-          },
-          value: { $last: "$availableAt" },
-          fetchAll: true,
-          reset: true,
-        }),
-        updateMetrics("honeybee_video_actual_start_time_seconds", Video, {
-          match: {
-            id: {
-              $in: [...videoIds],
+            value: { $max: "$likes" },
+            fetchAll: true,
+            reset: true,
+          }),
+          updateMetrics("honeybee_video_start_time_seconds", Video, {
+            match: {
+              id: {
+                $in: [...videoIds],
+              },
             },
-            actualStart: { $ne: null },
-          },
-          labels: {
-            videoId: "$id",
-          },
-          value: { $last: "$actualStart" },
-          fetchAll: true,
-          reset: true,
-        }),
-        updateMetrics("honeybee_video_end_time_seconds", Video, {
-          match: {
-            id: {
-              $in: [...videoIds],
+            labels: {
+              videoId: "$id",
             },
-            hbEnd: { $ne: null },
-          },
-          labels: {
-            videoId: "$id",
-          },
-          value: { $last: "$hbEnd" },
-          fetchAll: true,
-          reset: true,
-        }),
-        updateMetrics("honeybee_video_actual_end_time_seconds", Video, {
-          match: {
-            id: {
-              $in: [...videoIds],
+            value: { $last: "$availableAt" },
+            fetchAll: true,
+            reset: true,
+          }),
+          updateMetrics("honeybee_video_actual_start_time_seconds", Video, {
+            match: {
+              id: {
+                $in: [...videoIds],
+              },
+              actualStart: { $ne: null },
             },
-            actualEnd: { $ne: null },
-          },
-          labels: {
-            videoId: "$id",
-          },
-          value: { $last: "$actualEnd" },
-          fetchAll: true,
-          reset: true,
-        }),
-        updateMetrics("honeybee_video_duration_seconds", Video, {
-          match: {
-            id: {
-              $in: [...videoIds],
+            labels: {
+              videoId: "$id",
             },
-          },
-          labels: {
-            videoId: "$id",
-          },
-          value: {
-            $last: {
-              $cond: {
-                if: "$duration",
-                then: "$duration",
-                else: {
-                  $cond: {
-                    if: "$actualStart",
-                    then: {
-                      $dateDiff: {
-                        startDate: "$actualStart",
-                        endDate: new Date(),
-                        unit: "second",
+            value: { $last: "$actualStart" },
+            fetchAll: true,
+            reset: true,
+          }),
+          updateMetrics("honeybee_video_end_time_seconds", Video, {
+            match: {
+              id: {
+                $in: [...videoIds],
+              },
+              hbEnd: { $ne: null },
+            },
+            labels: {
+              videoId: "$id",
+            },
+            value: { $last: "$hbEnd" },
+            fetchAll: true,
+            reset: true,
+          }),
+          updateMetrics("honeybee_video_actual_end_time_seconds", Video, {
+            match: {
+              id: {
+                $in: [...videoIds],
+              },
+              actualEnd: { $ne: null },
+            },
+            labels: {
+              videoId: "$id",
+            },
+            value: { $last: "$actualEnd" },
+            fetchAll: true,
+            reset: true,
+          }),
+          updateMetrics("honeybee_video_duration_seconds", Video, {
+            match: {
+              id: {
+                $in: [...videoIds],
+              },
+            },
+            labels: {
+              videoId: "$id",
+            },
+            value: {
+              $last: {
+                $cond: {
+                  if: "$duration",
+                  then: "$duration",
+                  else: {
+                    $cond: {
+                      if: "$actualStart",
+                      then: {
+                        $dateDiff: {
+                          startDate: "$actualStart",
+                          endDate: new Date(),
+                          unit: "second",
+                        },
                       },
+                      else: null,
                     },
-                    else: null,
                   },
                 },
               },
             },
-          },
-          fetchAll: true,
-          reset: true,
-        }),
-      ]),
-      () => void 0,
-      (reason) => console.error(reason)
-    );
+            fetchAll: true,
+            reset: true,
+          }),
+        ]),
+        () => void 0,
+        (reason) => console.error(reason)
+      );
 
-    const channelInfoRecords = await updateMetrics(
-      "honeybee_channel_info",
-      Channel,
-      {
-        match: {
-          $or: [
-            {
-              organization: HOLODEX_FETCH_ORG,
-            },
-            {
-              extraCrawl: true,
-            },
-            {
-              id: {
-                $in: [...channelIds],
-              },
-            },
-          ],
-        },
-        labels: {
-          channelId: "$id",
-          name: "$name",
-          englishName: "$englishName",
-          organization: "$organization",
-          group: "$group",
-          avatarUrl: "$avatarUrl",
-        },
-        value: { $last: 1 },
-        fetchAll: true,
-        reset: true,
-      }
-    );
-
-    collectLabelValues(channelIds, channelInfoRecords, "channelId");
-
-    promiseSettledCallback(
-      await Promise.allSettled([
-        updateMetrics("honeybee_channel_subscribers", Channel, {
+      const channelInfoRecords = await updateMetrics(
+        "honeybee_channel_info",
+        Channel,
+        {
           match: {
-            id: {
-              $in: [...channelIds],
-            },
-            subscriberCount: { $gt: 0 },
+            $or: [
+              {
+                organization: HOLODEX_FETCH_ORG,
+              },
+              {
+                extraCrawl: true,
+              },
+              {
+                id: {
+                  $in: [...channelIds],
+                },
+              },
+            ],
           },
           labels: {
             channelId: "$id",
+            name: "$name",
+            englishName: "$englishName",
+            organization: "$organization",
+            group: "$group",
+            avatarUrl: "$avatarUrl",
           },
-          value: { $max: "$subscriberCount" },
+          value: { $last: 1 },
           fetchAll: true,
           reset: true,
-        }),
-      ]),
-      () => void 0,
-      (reason) => console.error(reason)
-    );
+        }
+      );
 
-    cache.set("collect", true);
+      collectLabelValues(channelIds, channelInfoRecords, "channelId");
+
+      promiseSettledCallback(
+        await Promise.allSettled([
+          updateMetrics("honeybee_channel_subscribers", Channel, {
+            match: {
+              id: {
+                $in: [...channelIds],
+              },
+              subscriberCount: { $gt: 0 },
+            },
+            labels: {
+              channelId: "$id",
+            },
+            value: { $max: "$subscriberCount" },
+            fetchAll: true,
+            reset: true,
+          }),
+        ]),
+        () => void 0,
+        (reason) => console.error(reason)
+      );
+
+      if (force) {
+        lastFullCollect = Date.now();
+      }
+    } catch (error) {
+      console.error("[FATAL] Collect failed:", error);
+      process.exit(1);
+    }
   }
 
   const fastify = Fastify({
