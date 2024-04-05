@@ -7,6 +7,7 @@ import {
   type Video as HolodexVideo,
 } from "holodex.js";
 import {
+  HOLODEX_ALL_VTUBERS,
   HOLODEX_FETCH_ORG,
   HOLODEX_MAX_UPCOMING_HOURS,
   IGNORE_FREE_CHAT,
@@ -116,12 +117,7 @@ export async function runScheduler() {
     }
   });
 
-  const rearrange = "scheduler rearrange";
-  agenda.define(rearrange, async (job: Job): Promise<void> => {
-    const alreadyActiveJobs = (
-      await queue.getJobs("active", { start: 0, end: 1000 })
-    ).map((job) => job.data.videoId);
-
+  async function getCheckChannel() {
     const crawlChannels: string[] = (
       await ChannelModel.find(
         { $or: [{ extraCrawl: true }, { organization: HOLODEX_FETCH_ORG }] },
@@ -129,16 +125,25 @@ export async function runScheduler() {
       )
     ).map((channel) => channel.id);
 
-    function checkChannel(channel: Channel) {
+    return (channel: Channel) => {
       return (
         channel.organization === HOLODEX_FETCH_ORG ||
         crawlChannels.includes(channel.channelId)
       );
-    }
+    };
+  }
+
+  const rearrange = "scheduler rearrange";
+  agenda.define(rearrange, async (job: Job): Promise<void> => {
+    const alreadyActiveJobs = (
+      await queue.getJobs("active", { start: 0, end: 1000 })
+    ).map((job) => job.data.videoId);
+
+    const checkChannel = await getCheckChannel();
 
     const liveAndUpcomingStreams = (
       await holoapi.getLiveVideos({
-        org: "All Vtubers",
+        org: HOLODEX_ALL_VTUBERS,
         max_upcoming_hours: HOLODEX_MAX_UPCOMING_HOURS,
         include: [ExtraData.Mentions],
       })
@@ -184,12 +189,19 @@ Failed=${health.failed}`
 
   const updatepast = "scheduler update past";
   agenda.define(updatepast, async (job: Job): Promise<void> => {
-    const pastStreams = await holoapi.getVideos({
-      org: HOLODEX_FETCH_ORG,
-      status: VideoStatus.Past,
-      type: VideoType.Stream,
-      include: [ExtraData.LiveInfo],
-    });
+    const checkChannel = await getCheckChannel();
+
+    const pastStreams = (
+      await holoapi.getVideos({
+        org: HOLODEX_ALL_VTUBERS,
+        status: VideoStatus.Past,
+        type: VideoType.Stream,
+        include: [ExtraData.LiveInfo, ExtraData.Mentions],
+      })
+    ).filter(
+      (stream) =>
+        checkChannel(stream.channel) || !!stream.mentions?.find(checkChannel)
+    );
     for (const stream of pastStreams) {
       await VideoModel.updateFromHolodex(stream);
     }
