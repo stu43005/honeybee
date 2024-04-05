@@ -1,14 +1,13 @@
+import { VideoStatus } from "holodex.js";
 import type { Arguments, Argv } from "yargs";
 import { HoneybeeStatus } from "../interfaces";
 import BanAction from "../models/BanAction";
-import BannerAction from "../models/BannerAction";
 import Chat from "../models/Chat";
 import LiveViewers from "../models/LiveViewers";
 import Membership from "../models/Membership";
 import MembershipGift from "../models/MembershipGift";
 import MembershipGiftPurchase from "../models/MembershipGiftPurchase";
 import Milestone from "../models/Milestone";
-import ModeChange from "../models/ModeChange";
 import Placeholder from "../models/Placeholder";
 import RemoveChatAction from "../models/RemoveChatAction";
 import SuperChat from "../models/SuperChat";
@@ -83,28 +82,28 @@ export async function cleanup(argv: Arguments<CleanupOptions>) {
   const disconnectFromMongo = await initMongo();
 
   async function cleanEndedStreams() {
-    const chatVideoIds = (
-      await Chat.aggregate<{
-        _id: { videoId: string };
-      }>([
-        {
-          $group: {
-            _id: { videoId: "$originVideoId" },
-          },
+    const chats = await Chat.aggregate<{
+      _id: { videoId: string };
+      lastTime: Date;
+    }>([
+      {
+        $group: {
+          _id: { videoId: "$originVideoId" },
+          lastTime: { $last: "$timestamp" },
         },
-      ])
-    ).map((r) => r._id.videoId);
+      },
+    ]);
+    const chatVideoIds = chats.map((r) => r._id.videoId);
 
     const videos = await Video.find(
       {
         $or: [
           {
-            id: { $in: chatVideoIds },
             hbCleanedAt: null,
+            hbStatus: { $ne: HoneybeeStatus.Created },
           },
           {
-            hbStatus: { $in: [HoneybeeStatus.Finished, HoneybeeStatus.Failed] },
-            hbCleanedAt: null,
+            id: { $in: chatVideoIds },
           },
         ],
       },
@@ -116,22 +115,39 @@ export async function cleanup(argv: Arguments<CleanupOptions>) {
       }
     );
 
-    const toRemoveVideoIds = videos
-      .filter(
-        (video) =>
-          [HoneybeeStatus.Finished, HoneybeeStatus.Failed].includes(
-            video.hbStatus
-          ) &&
-          video.hbEnd &&
-          video.hbEnd.getTime() < Date.now() - 60 * 60 * 1000
-      )
-      .map((video) => video.id)
-      .concat(
-        chatVideoIds.filter((id) => !videos.find((video) => video.id === id))
-      );
+    const toRemoveVideoIds = new Set<string>([
+      // Honeybee has stopped processing the video for over 1 hour
+      ...videos
+        .filter(
+          (video) =>
+            [HoneybeeStatus.Finished, HoneybeeStatus.Failed].includes(
+              video.hbStatus
+            ) &&
+            video.hbEnd &&
+            video.hbEnd.getTime() < Date.now() - 60 * 60 * 1000
+        )
+        .map((video) => video.id),
+      // The status of the video is already past, and both the end time and the last chat have exceeded 1 hour
+      ...videos
+        .filter((video) => {
+          const videoChat = chats.find((chat) => chat._id.videoId === video.id);
+          return (
+            video.status === VideoStatus.Past &&
+            video.actualEnd &&
+            video.actualEnd.getTime() < Date.now() - 60 * 60 * 1000 &&
+            videoChat &&
+            videoChat.lastTime.getTime() < Date.now() - 60 * 60 * 1000
+          );
+        })
+        .map((video) => video.id),
+      // video have been cleaned
+      ...videos.filter((video) => !!video.hbCleanedAt).map((video) => video.id),
+      // video does not exist (may have been cleaned)
+      ...chatVideoIds.filter((id) => !videos.find((video) => video.id === id)),
+    ]);
 
-    if (toRemoveVideoIds.length) {
-      await cleanVideos(toRemoveVideoIds);
+    if (toRemoveVideoIds.size) {
+      await cleanVideos(Array.from(toRemoveVideoIds));
     }
   }
 
