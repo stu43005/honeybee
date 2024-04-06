@@ -196,7 +196,11 @@ Failed=${health.failed}`
         org: HOLODEX_ALL_VTUBERS,
         status: VideoStatus.Past,
         type: VideoType.Stream,
-        include: [ExtraData.LiveInfo, ExtraData.Mentions, ExtraData.ChannelStats],
+        include: [
+          ExtraData.LiveInfo,
+          ExtraData.Mentions,
+          ExtraData.ChannelStats,
+        ],
         sort: "end_actual",
         limit: 100,
       })
@@ -206,6 +210,27 @@ Failed=${health.failed}`
     );
     for (const stream of pastStreams) {
       await VideoModel.updateFromHolodex(stream);
+    }
+
+    const needUpdate = await VideoModel.findOne({
+      status: { $nin: [VideoStatus.Past, VideoStatus.Missing] },
+      hbCleanedAt: null,
+      updatedAt: {
+        $lt: new Date(Date.now() - 20 * 60 * 1000),
+      },
+    }).sort({ updatedAt: 1 });
+    if (needUpdate) {
+      try {
+        const stream = await holoapi.getVideo(needUpdate.id);
+        if (stream) {
+          await VideoModel.updateFromHolodex(stream);
+        }
+      } catch (error) {
+        console.error(
+          `[ERROR] An error occurred while updating the past video (${needUpdate.id}):`,
+          error
+        );
+      }
     }
   });
 
