@@ -145,7 +145,7 @@ export async function runScheduler() {
       await holoapi.getLiveVideos({
         org: HOLODEX_ALL_VTUBERS,
         max_upcoming_hours: HOLODEX_MAX_UPCOMING_HOURS,
-        include: [ExtraData.Mentions],
+        include: [ExtraData.Mentions, ExtraData.ChannelStats],
       })
     ).filter(
       (stream) =>
@@ -196,7 +196,9 @@ Failed=${health.failed}`
         org: HOLODEX_ALL_VTUBERS,
         status: VideoStatus.Past,
         type: VideoType.Stream,
-        include: [ExtraData.LiveInfo, ExtraData.Mentions],
+        include: [ExtraData.LiveInfo, ExtraData.Mentions, ExtraData.ChannelStats],
+        sort: "end_actual",
+        limit: 100,
       })
     ).filter(
       (stream) =>
