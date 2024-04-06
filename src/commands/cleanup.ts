@@ -109,6 +109,8 @@ export async function cleanup(argv: Arguments<CleanupOptions>) {
       },
       {
         id: 1,
+        status: 1,
+        actualEnd: 1,
         hbStatus: 1,
         hbEnd: 1,
         hbCleanedAt: 1,
