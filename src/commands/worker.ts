@@ -715,6 +715,14 @@ async function handleJob(
     refreshStats(actions);
   }
 
+  async function updateVideoStats() {
+    try {
+      await VideoModel.updateFromMasterchat(mc);
+    } catch (err) {
+      videoLog("<!> [STATS UPDATE ERROR]", err);
+    }
+  }
+
   job.reportProgress(stats);
   videoLog(`START`);
 
@@ -722,7 +730,7 @@ async function handleJob(
   let actionCount = 0;
   let lastUpdateAt = Date.now();
   try {
-    await VideoModel.updateFromMasterchat(mc);
+    await updateVideoStats();
 
     for await (const { actions } of mc.iterate({
       signal: exitController.signal,
@@ -736,11 +744,7 @@ async function handleJob(
       if (actionCount >= 200 || Date.now() - lastUpdateAt > 3600_000) {
         actionCount = 0;
         lastUpdateAt = Date.now();
-        try {
-          await VideoModel.updateFromMasterchat(mc);
-        } catch (err) {
-          videoLog("<!> [STATS UPDATE ERROR]", err);
-        }
+        await updateVideoStats();
       }
     }
   } catch (err) {
@@ -787,6 +791,8 @@ async function handleJob(
     // unrecognized errors
     videoLog("<!> [FATAL]", err);
     throw err;
+  } finally {
+    await updateVideoStats();
   }
 
   videoLog(`END`);

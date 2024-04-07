@@ -18,8 +18,10 @@ import {
   HoneybeeResult,
   HoneybeeStats,
   HoneybeeStatus,
+  LiveViewersSource,
 } from "../interfaces";
 import ChannelModel from "../models/Channel";
+import LiveViewersModel from "../models/LiveViewers";
 import VideoModel from "../models/Video";
 import { initMongo } from "../modules/db";
 import { getHolodex } from "../modules/holodex";
@@ -249,6 +251,13 @@ Failed=${health.failed}`
     const job = await queue.getJob(jobId);
     await job.remove();
 
+    // set live viewers to 0
+    await LiveViewersModel.create({
+      originVideoId: jobId,
+      originChannelId: job.data.stream.channel_id,
+      viewers: 0,
+      source: LiveViewersSource.Honeybee,
+    });
     await VideoModel.updateResult(jobId, result);
 
     switch (result.error) {
