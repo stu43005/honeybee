@@ -732,8 +732,8 @@ async function handleJob(
         actionCount += actions.length;
       }
 
-      // 8k messages / per 10m: every 30s
-      if (actionCount >= 400 || Date.now() - lastUpdateAt > 3600_000) {
+      // 2k messages / per 10m: every 1m
+      if (actionCount >= 200 || Date.now() - lastUpdateAt > 3600_000) {
         actionCount = 0;
         lastUpdateAt = Date.now();
         try {
