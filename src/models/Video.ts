@@ -214,7 +214,7 @@ export class Video extends TimeStamps {
     videoId: string,
     result: HoneybeeResult
   ) {
-    await this.updateOne(
+    const video = await this.findOneAndUpdate(
       {
         id: videoId,
       },
@@ -231,6 +231,15 @@ export class Video extends TimeStamps {
         },
       }
     );
+    if (video) {
+      // set live viewers to 0
+      await LiveViewers.create({
+        originVideoId: video.id,
+        originChannelId: video.channelId,
+        viewers: 0,
+        source: LiveViewersSource.Honeybee,
+      });
+    }
   }
 }
 
