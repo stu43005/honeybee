@@ -562,7 +562,6 @@ export async function metrics() {
               originVideoId: {
                 $in: [...videoIds],
               },
-              viewers: { $gt: 0 },
             },
             labels: {
               videoId: "$originVideoId",
@@ -576,7 +575,6 @@ export async function metrics() {
               originVideoId: {
                 $in: [...videoIds],
               },
-              viewers: { $gt: 0 },
             },
             labels: {
               videoId: "$originVideoId",
