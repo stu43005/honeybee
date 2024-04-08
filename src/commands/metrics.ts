@@ -2,10 +2,14 @@ import { mongoose, type ReturnModelType } from "@typegoose/typegoose";
 import type { AnyParamConstructor } from "@typegoose/typegoose/lib/types";
 import Fastify from "fastify";
 import type { AccumulatorOperator, FilterQuery, PipelineStage } from "mongoose";
-import NodeCache from "node-cache";
 import { Gauge, Registry, type Metric } from "prom-client";
 import { HOLODEX_FETCH_ORG } from "../constants";
-import { HoneybeeStatus, MessageAuthorType, MessageType } from "../interfaces";
+import {
+  HoneybeeStatus,
+  LiveViewersSource,
+  MessageAuthorType,
+  MessageType,
+} from "../interfaces";
 import BanAction from "../models/BanAction";
 import BannerAction from "../models/BannerAction";
 import Channel from "../models/Channel";
@@ -561,6 +565,9 @@ export async function metrics() {
             match: {
               originVideoId: {
                 $in: [...videoIds],
+              },
+              source: {
+                $ne: LiveViewersSource.Holodex,
               },
             },
             labels: {
