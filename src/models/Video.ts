@@ -8,6 +8,7 @@ import {
 } from "@typegoose/typegoose";
 import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
 import { Video as HolodexVideo } from "holodex.js";
+import type { NotifiedData } from "youtube-notification";
 import {
   HoneybeeStatus,
   LiveViewersSource,
@@ -104,12 +105,12 @@ export class Video extends TimeStamps {
       {
         $setOnInsert: {
           id: stream.videoId,
-          channelId: stream.channelId,
-          channel: channel,
           hbStatus: HoneybeeStatus.Created,
           hbStart: new Date(),
         },
         $set: {
+          channel: channel,
+          channelId: stream.channelId,
           ...setIfDefine("title", stream.title),
           ...setIfDefine("topic", stream.topic),
           ...setIfDefine("status", stream.status),
@@ -240,6 +241,31 @@ export class Video extends TimeStamps {
         source: LiveViewersSource.Honeybee,
       });
     }
+  }
+
+  public static async createFromNotification(
+    this: ReturnModelType<typeof Video>,
+    data: NotifiedData
+  ) {
+    return await this.updateOne(
+      {
+        id: data.video.id,
+      },
+      {
+        $setOnInsert: {
+          id: data.video.id,
+          hbStatus: HoneybeeStatus.Created,
+          hbStart: new Date(),
+        },
+        $set: {
+          channelId: data.channel.id,
+          title: data.video.title,
+        },
+      },
+      {
+        upsert: true,
+      }
+    );
   }
 }
 

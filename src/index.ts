@@ -2,7 +2,12 @@
 
 import yargs from "yargs";
 import { addChannel, addChannelBuilder } from "./commands/channel";
-import { cleanup, cleanupBuilder, removeDuplicatedActions } from "./commands/cleanup";
+import {
+  cleanup,
+  cleanupBuilder,
+  removeDuplicatedActions,
+} from "./commands/cleanup";
+import { runCrawler } from "./commands/crawler";
 import { health } from "./commands/health";
 import { inspect } from "./commands/inspect";
 import { runManager } from "./commands/manager";
@@ -33,6 +38,7 @@ yargs(process.argv.slice(2))
   .command("worker", "start worker", runWorker)
   .command("manager", "start manager", runManager)
   .command("webhook", "start webhook service", runWebhook)
+  .command("crawler", "start crawler", runCrawler)
   .command("health", "show real-time cluster status", health)
   .command("metrics", "Prometheus metrics endpoint", metrics)
   .command("cleanup", "cleanup ended streams", cleanupBuilder, cleanup)

@@ -11,3 +11,5 @@ resources:
   - metrics.yaml
   - servicemonitor.yaml
   - webhook.yaml
+  - crawler.yaml
+  - ingress.yaml

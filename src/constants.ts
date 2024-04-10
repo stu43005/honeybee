@@ -9,3 +9,5 @@ export const HOLODEX_FETCH_ORG = process.env.HOLODEX_FETCH_ORG ?? HOLODEX_ALL_VT
 export const HOLODEX_MAX_UPCOMING_HOURS = Number(
   process.env.HOLODEX_MAX_UPCOMING_HOURS ?? 12
 );
+export const CRAWLER_ROOT_URL = process.env.CRAWLER_ROOT_URL;
+export const YOUTUBE_PUBSUB_SECRET = process.env.YOUTUBE_PUBSUB_SECRET;

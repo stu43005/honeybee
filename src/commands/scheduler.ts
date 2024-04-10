@@ -118,12 +118,9 @@ export async function runScheduler() {
   });
 
   async function getCheckChannel() {
-    const crawlChannels: string[] = (
-      await ChannelModel.find(
-        { $or: [{ extraCrawl: true }, { organization: HOLODEX_FETCH_ORG }] },
-        { id: 1 }
-      )
-    ).map((channel) => channel.id);
+    const crawlChannels: string[] = (await ChannelModel.findSubscribed()).map(
+      (channel) => channel.id
+    );
 
     return (channel: Channel) => {
       return (

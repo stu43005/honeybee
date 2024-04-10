@@ -6,6 +6,7 @@ import {
 } from "@typegoose/typegoose";
 import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
 import { Channel as HolodexChannel } from "holodex.js";
+import { HOLODEX_FETCH_ORG } from "../constants";
 import { setIfDefine } from "../util";
 
 @modelOptions({ schemaOptions: { collection: "channels" } })
@@ -42,6 +43,19 @@ export class Channel extends TimeStamps {
 
   @prop({ index: true })
   public extraCrawl?: Boolean;
+
+  public static findSubscribed(this: ReturnModelType<typeof Channel>) {
+    return this.find({
+      $or: [
+        {
+          organization: HOLODEX_FETCH_ORG,
+        },
+        {
+          extraCrawl: true,
+        },
+      ],
+    });
+  }
 
   public static async updateFromHolodex(
     this: ReturnModelType<typeof Channel>,

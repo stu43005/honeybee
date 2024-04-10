@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: honeybee-ingress
+  labels:
+    app.kubernetes.io/name: honeybee
+    app.kubernetes.io/version: dev
+  annotations:
+    tailscale.com/funnel: "true"
+spec:
+  ingressClassName: tailscale
+  tls:
+  - hosts:
+    - honeybee
+  rules:
+  - http:
+      paths:
+      - path: /notifications/
+        pathType: Prefix
+        backend:
+          service:
+            name: honeybee-crawler
+            port:
+              name: http-port

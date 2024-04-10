@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crawler
+  labels:
+    app: crawler
+    app.kubernetes.io/component: crawler
+    app.kubernetes.io/name: honeybee
+    app.kubernetes.io/version: dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: crawler
+  template:
+    metadata:
+      labels:
+        app: crawler
+        app.kubernetes.io/component: crawler
+        app.kubernetes.io/name: honeybee
+        app.kubernetes.io/version: dev
+    spec:
+      containers:
+        - name: crawler
+          image: ghcr.io/stu43005/honeybee/honeybee
+          imagePullPolicy: Always
+          args:
+            - "crawler"
+          envFrom:
+            - configMapRef:
+                name: honeybee-config
+          env:
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: honeybee-secrets
+                  key: MONGO_URI
+            - name: CRAWLER_ROOT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: honeybee-secrets
+                  key: CRAWLER_ROOT_URL
+            - name: YOUTUBE_PUBSUB_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: honeybee-secrets
+                  key: YOUTUBE_PUBSUB_SECRET
+          resources: {}
+          ports:
+            - name: http-port
+              containerPort: 17835
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http-port
+            initialDelaySeconds: 3
+            periodSeconds: 10
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: crawler
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: honeybee-crawler
+  labels:
+    app: crawler
+    app.kubernetes.io/component: crawler
+    app.kubernetes.io/name: honeybee
+    app.kubernetes.io/version: dev
+spec:
+  ports:
+    - name: http-port
+      port: 17835
+      targetPort: 17835
+  type: ClusterIP
+  selector:
+    app: crawler

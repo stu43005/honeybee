@@ -119,9 +119,24 @@ function authorTypeLabelmap(_default = MessageAuthorType.Other) {
 export async function metrics() {
   const disconnect = await initMongo();
   const queue = getQueueInstance({ isWorker: false });
+  const fastify = Fastify({
+    logger: true,
+  });
   const lastIdMap = new Map<string, string>();
-
   const register = new Registry();
+
+  process.on("SIGINT", async () => {
+    console.log("quitting metrics (SIGTERM) ...");
+
+    try {
+      await fastify.close();
+      await queue.close();
+      await disconnect();
+    } catch (err) {
+      console.error("metrics failed to shut down gracefully", err);
+    }
+    process.exit(0);
+  });
 
   const collectData = throttleWithReturnValue(_collect, 30_000);
   const checkHealth = throttleWithReturnValue(
@@ -762,9 +777,6 @@ export async function metrics() {
     }
   }
 
-  const fastify = Fastify({
-    logger: true,
-  });
   fastify.get("/healthz", async function (request, reply) {
     if (
       mongoose.connection.readyState !== mongoose.ConnectionStates.connected
@@ -782,21 +794,11 @@ export async function metrics() {
     reply.header("Content-Type", register.contentType);
     return register.metrics();
   });
-  fastify.listen(
-    { port: Number(process.env.PORT || 3000), host: "0.0.0.0" },
-    function (err, address) {
-      if (err) {
-        fastify.log.error(err);
-        process.exit(1);
-      }
-      // fastify.log.info(`Server listening at ${address}`);
-    }
-  );
 
-  process.on("SIGINT", async () => {
-    await fastify.close();
-    await queue.close();
-    await disconnect();
-    process.exit(0);
+  await fastify.listen({
+    port: Number(process.env.PORT || 3000),
+    host: "0.0.0.0",
   });
+
+  console.log(`metrics is ready`);
 }
