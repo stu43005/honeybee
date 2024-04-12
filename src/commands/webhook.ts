@@ -75,12 +75,12 @@ function getCache<T>(key: string, factory: (key: string) => T): T {
 }
 function getVideo(videoId?: string) {
   return videoId
-    ? getCache(videoId, (id) => VideoModel.findOne({ id }).exec())
+    ? getCache(videoId, (id) => VideoModel.findByVideoId(id).exec())
     : null;
 }
 function getChannel(channelId?: string) {
   return channelId
-    ? getCache(channelId, (id) => ChannelModel.findOne({ id }).exec())
+    ? getCache(channelId, (id) => ChannelModel.findByChannelId(id).exec())
     : null;
 }
 async function getWebhookResult(

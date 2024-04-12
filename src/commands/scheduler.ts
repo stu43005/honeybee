@@ -1,28 +1,15 @@
+import type { DocumentType } from "@typegoose/typegoose";
 import type { Job } from "agenda";
-import {
-  ExtraData,
-  VideoStatus,
-  VideoType,
-  type Channel,
-  type Video as HolodexVideo,
-} from "holodex.js";
-import {
-  HOLODEX_ALL_VTUBERS,
-  HOLODEX_FETCH_ORG,
-  HOLODEX_MAX_UPCOMING_HOURS,
-  IGNORE_FREE_CHAT,
-  SHUTDOWN_TIMEOUT,
-} from "../constants";
+import type { mongo } from "mongoose";
+import { IGNORE_FREE_CHAT, SHUTDOWN_TIMEOUT } from "../constants";
 import {
   ErrorCode,
   HoneybeeResult,
   HoneybeeStats,
   HoneybeeStatus,
 } from "../interfaces";
-import ChannelModel from "../models/Channel";
-import VideoModel from "../models/Video";
+import VideoModel, { type Video } from "../models/Video";
 import { initMongo } from "../modules/db";
-import { getHolodex } from "../modules/holodex";
 import { getQueueInstance } from "../modules/queue";
 import { getAgenda } from "../modules/schedule";
 import { guessFreeChat } from "../util";
@@ -32,7 +19,6 @@ function schedulerLog(...obj: any) {
 }
 
 export async function runScheduler() {
-  const holoapi = getHolodex();
   const disconnectFromMongo = await initMongo();
   const queue = getQueueInstance({ isWorker: false });
   const agenda = getAgenda();
@@ -51,10 +37,10 @@ export async function runScheduler() {
     process.exit(0);
   });
 
-  async function handleStream(stream: HolodexVideo) {
-    const videoId = stream.videoId;
-    const title = stream.title;
-    const scheduledStartTime = stream.scheduledStart;
+  async function handleStream(video: DocumentType<Video>) {
+    const videoId = video.id;
+    const title = video.title;
+    const scheduledStartTime = video.scheduledStart;
 
     const startUntil = scheduledStartTime
       ? new Date(scheduledStartTime).getTime() - Date.now()
@@ -94,7 +80,6 @@ export async function runScheduler() {
     await queue
       .createJob({
         videoId,
-        stream: stream.toRaw(),
         defaultBackoffDelay: estimatedDelay,
       })
       .setId(videoId)
@@ -117,45 +102,16 @@ export async function runScheduler() {
     }
   });
 
-  async function getCheckChannel() {
-    const crawlChannels: string[] = (await ChannelModel.findSubscribed()).map(
-      (channel) => channel.id
-    );
-
-    return (channel: Channel) => {
-      return (
-        channel.organization === HOLODEX_FETCH_ORG ||
-        crawlChannels.includes(channel.channelId)
-      );
-    };
-  }
-
   const rearrange = "scheduler rearrange";
   agenda.define(rearrange, async (job: Job): Promise<void> => {
     const alreadyActiveJobs = (
       await queue.getJobs("active", { start: 0, end: 1000 })
     ).map((job) => job.data.videoId);
 
-    const checkChannel = await getCheckChannel();
-
-    const liveAndUpcomingStreams = (
-      await holoapi.getLiveVideos({
-        org: HOLODEX_ALL_VTUBERS,
-        max_upcoming_hours: HOLODEX_MAX_UPCOMING_HOURS,
-        include: [ExtraData.Mentions, ExtraData.ChannelStats],
-      })
-    ).filter(
-      (stream) =>
-        checkChannel(stream.channel) || !!stream.mentions?.find(checkChannel)
-    );
-
-    // update database
-    for (const stream of liveAndUpcomingStreams) {
-      await VideoModel.updateFromHolodex(stream);
-    }
+    const liveAndUpcomingStreams = await VideoModel.findLiveVideos();
 
     const unscheduledStreams = liveAndUpcomingStreams.filter(
-      (stream) => !alreadyActiveJobs.includes(stream.videoId)
+      (video) => !alreadyActiveJobs.includes(video.id)
     );
 
     schedulerLog(`currently ${alreadyActiveJobs.length} job(s) are running`);
@@ -169,8 +125,8 @@ export async function runScheduler() {
       `will schedule ${unscheduledStreams.length} stream(s) out of ${liveAndUpcomingStreams.length} streams`
     );
 
-    for (const stream of unscheduledStreams) {
-      await handleStream(stream);
+    for (const video of unscheduledStreams) {
+      await handleStream(video);
     }
 
     // show metrics
@@ -182,53 +138,6 @@ Waiting=${health.waiting}
 Delayed=${health.delayed}
 Failed=${health.failed}`
     );
-  });
-
-  const updatepast = "scheduler update past";
-  agenda.define(updatepast, async (job: Job): Promise<void> => {
-    const checkChannel = await getCheckChannel();
-
-    const pastStreams = (
-      await holoapi.getVideos({
-        org: HOLODEX_ALL_VTUBERS,
-        status: VideoStatus.Past,
-        type: VideoType.Stream,
-        include: [
-          ExtraData.LiveInfo,
-          ExtraData.Mentions,
-          ExtraData.ChannelStats,
-        ],
-        sort: "end_actual",
-        limit: 100,
-      })
-    ).filter(
-      (stream) =>
-        checkChannel(stream.channel) || !!stream.mentions?.find(checkChannel)
-    );
-    for (const stream of pastStreams) {
-      await VideoModel.updateFromHolodex(stream);
-    }
-
-    const needUpdate = await VideoModel.findOne({
-      status: { $nin: [VideoStatus.Past, VideoStatus.Missing] },
-      hbCleanedAt: null,
-      updatedAt: {
-        $lt: new Date(Date.now() - 20 * 60 * 1000),
-      },
-    }).sort({ updatedAt: 1 });
-    if (needUpdate) {
-      try {
-        const stream = await holoapi.getVideo(needUpdate.id);
-        if (stream) {
-          await VideoModel.updateFromHolodex(stream);
-        }
-      } catch (error) {
-        console.error(
-          `[ERROR] An error occurred while updating the past video (${needUpdate.id}):`,
-          error
-        );
-      }
-    }
   });
 
   queue.on("stalled", async (jobId) => {
@@ -311,14 +220,32 @@ Failed=${health.failed}`
     );
   });
 
-  queue.on("ready", async () => {
-    await agenda.start();
-    agenda.every("5 minutes", rearrange);
-    agenda.every("10 minutes", updatepast);
-    agenda.every("1 minute", checkStalledJobs);
+  await queue.ready();
+  await agenda.start();
+  agenda.every("1 minutes", rearrange);
+  agenda.every("1 minute", checkStalledJobs);
 
-    schedulerLog(
-      `scheduler is ready (org=${HOLODEX_FETCH_ORG}, max_upcoming_hours=${HOLODEX_MAX_UPCOMING_HOURS}, ignoreFreeChat=${IGNORE_FREE_CHAT})`
-    );
+  VideoModel.watch([
+    {
+      $match: {
+        operationType: "insert",
+      },
+    },
+  ]).on("change", async (data: mongo.ChangeStreamDocument<Video>) => {
+    if (data.operationType === "insert") {
+      try {
+        const video = new VideoModel(data.fullDocument);
+        if (video.isLive()) {
+          await handleStream(video);
+        }
+      } catch (error) {
+        schedulerLog(
+          `Unable to schedule the stream: ${data.fullDocument.id},`,
+          error
+        );
+      }
+    }
   });
+
+  schedulerLog(`scheduler is ready (ignoreFreeChat=${IGNORE_FREE_CHAT})`);
 }

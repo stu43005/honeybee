@@ -26,6 +26,12 @@ rules:
   - update
   - patch
 - apiGroups:
+  - networking.k8s.io
+  resources:
+  - ingresses
+  verbs:
+  - get
+- apiGroups:
   - monitoring.coreos.com
   resources:
   - servicemonitors

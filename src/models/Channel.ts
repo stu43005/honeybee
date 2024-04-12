@@ -1,15 +1,19 @@
 import {
   getModelForClass,
+  index,
   modelOptions,
   prop,
   type ReturnModelType,
 } from "@typegoose/typegoose";
 import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
 import { Channel as HolodexChannel } from "holodex.js";
-import { HOLODEX_FETCH_ORG } from "../constants";
+import type { FilterQuery } from "mongoose";
+import { HOLODEX_ALL_VTUBERS, HOLODEX_FETCH_ORG } from "../constants";
 import { setIfDefine } from "../util";
 
 @modelOptions({ schemaOptions: { collection: "channels" } })
+@index({ organization: 1, isInactive: 1 })
+@index({ extraCrawl: 1, isInactive: 1 })
 export class Channel extends TimeStamps {
   @prop({ required: true, unique: true })
   public id!: string;
@@ -44,16 +48,33 @@ export class Channel extends TimeStamps {
   @prop({ index: true })
   public extraCrawl?: Boolean;
 
+  public static findByChannelId(
+    this: ReturnModelType<typeof Channel>,
+    channelId: string
+  ) {
+    return this.findOne({ id: channelId });
+  }
+
+  public static SubscribedQuerys: readonly FilterQuery<Channel>[] =
+    HOLODEX_FETCH_ORG === HOLODEX_ALL_VTUBERS
+      ? Object.freeze([
+          {
+            isInactive: { $ne: true },
+          },
+        ])
+      : Object.freeze([
+          {
+            organization: HOLODEX_FETCH_ORG,
+            isInactive: { $ne: true },
+          },
+          {
+            extraCrawl: true,
+            isInactive: { $ne: true },
+          },
+        ]);
   public static findSubscribed(this: ReturnModelType<typeof Channel>) {
     return this.find({
-      $or: [
-        {
-          organization: HOLODEX_FETCH_ORG,
-        },
-        {
-          extraCrawl: true,
-        },
-      ],
+      $or: [...this.SubscribedQuerys],
     });
   }
 

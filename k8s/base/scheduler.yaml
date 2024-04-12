@@ -30,11 +30,6 @@ spec:
             - configMapRef:
                 name: honeybee-config
           env:
-            - name: HOLODEX_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: honeybee-secrets
-                  key: HOLODEX_API_KEY
             - name: REDIS_URI
               valueFrom:
                 secretKeyRef:

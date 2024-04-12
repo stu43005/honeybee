@@ -9,10 +9,10 @@ import {
 } from "@stu43005/masterchat";
 import axios from "axios";
 import BeeQueue from "bee-queue";
-import { Video } from "holodex.js";
-import https from "https";
 import mongoose from "mongoose";
 import { FetchError } from "node-fetch";
+import assert from "node:assert";
+import https from "node:https";
 import { JOB_CONCURRENCY, SHUTDOWN_TIMEOUT } from "../constants";
 import {
   ErrorCode,
@@ -101,8 +101,10 @@ async function handleJob(
   job: BeeQueue.Job<HoneybeeJob>
 ): Promise<HoneybeeResult> {
   const { videoId } = job.data;
-  const stream = new Video(job.data.stream);
-  const { channelId } = stream;
+  const video = await VideoModel.findByVideoId(videoId);
+  assert(video, "Unable to find the video.");
+  const { channelId } = video;
+  const { name: channelName, avatarUrl: channelAvatarUrl } = await video.getChannel();
 
   const mc = new Masterchat(videoId, channelId, {
     mode: "live",
@@ -585,7 +587,7 @@ async function handleJob(
                 sourcePhoto: action.sourcePhoto,
                 originVideoId: mc.videoId,
                 originChannelId: mc.channelId,
-                originPhoto: stream.channel.avatarUrl,
+                originPhoto: channelAvatarUrl,
                 timestamp: new Date(),
               };
             });
@@ -609,8 +611,8 @@ async function handleJob(
                 outgoingId: action.actionId,
                 sourceVideoId: mc.videoId,
                 sourceChannelId: mc.channelId,
-                sourceName: stream.channel.name,
-                sourcePhoto: stream.channel.avatarUrl,
+                sourceName: channelName,
+                sourcePhoto: channelAvatarUrl,
                 originVideoId: action.targetVideoId,
                 // originChannelId: ,
                 originPhoto: action.targetPhoto,
@@ -765,7 +767,7 @@ async function handleJob(
           // immediately fail so that the scheduler can push the job to delayed queue
           // TODO: handle when querying archived stream
           throw new Error(
-            `chat is disabled OR archived stream (start_scheduled: ${stream.scheduledStart.toISOString()})`
+            `chat is disabled OR archived stream (start_scheduled: ${video.scheduledStart?.toISOString()})`
           );
         }
         case "unavailable": {

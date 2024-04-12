@@ -1,13 +1,18 @@
 import type { Masterchat } from "@stu43005/masterchat";
 import {
+  DocumentType,
   getModelForClass,
+  index,
+  isDocument,
   modelOptions,
   prop,
   type Ref,
   type ReturnModelType,
 } from "@typegoose/typegoose";
 import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
-import { Video as HolodexVideo } from "holodex.js";
+import { Video as HolodexVideo, VideoStatus } from "holodex.js";
+import type { FilterQuery } from "mongoose";
+import assert from "node:assert";
 import type { NotifiedData } from "youtube-notification";
 import {
   HoneybeeStatus,
@@ -27,6 +32,7 @@ export class Stats {
 }
 
 @modelOptions({ schemaOptions: { collection: "videos" } })
+@index({ status: 1, hbCleanedAt: 1 })
 export class Video extends TimeStamps {
   @prop({ required: true, unique: true })
   public id!: string;
@@ -44,7 +50,7 @@ export class Video extends TimeStamps {
   public topic?: string;
 
   @prop({ required: true, index: true })
-  public status!: string;
+  public status!: VideoStatus;
 
   @prop({ required: true })
   public duration!: number;
@@ -84,6 +90,44 @@ export class Video extends TimeStamps {
 
   @prop()
   public hbStats?: Stats;
+
+  public async getChannel(this: DocumentType<Video>) {
+    if (isDocument(this.channel)) {
+      return this.channel;
+    }
+    const channel = await ChannelModel.findByChannelId(this.channelId);
+    assert(channel, "Unable to get the channel.");
+    return channel;
+  }
+
+  public isLive(this: DocumentType<Video>) {
+    if (
+      this.hbCleanedAt ||
+      [VideoStatus.Past, VideoStatus.Missing].includes(this.status)
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  public static LiveQuerys: readonly FilterQuery<Video>[] = Object.freeze([
+    {
+      status: { $nin: [VideoStatus.Past, VideoStatus.Missing] },
+      hbCleanedAt: null,
+    },
+  ]);
+  public static findLiveVideos(this: ReturnModelType<typeof Video>) {
+    return this.find({
+      $or: [...this.LiveQuerys],
+    });
+  }
+
+  public static findByVideoId(
+    this: ReturnModelType<typeof Video>,
+    videoId: string
+  ) {
+    return this.findOne({ id: videoId }).populate("channel");
+  }
 
   public static async updateFromHolodex(
     this: ReturnModelType<typeof Video>,
@@ -243,7 +287,7 @@ export class Video extends TimeStamps {
     }
   }
 
-  public static async createFromNotification(
+  public static async updateFromNotification(
     this: ReturnModelType<typeof Video>,
     data: NotifiedData
   ) {
@@ -254,11 +298,13 @@ export class Video extends TimeStamps {
       {
         $setOnInsert: {
           id: data.video.id,
+          status: VideoStatus.New,
           hbStatus: HoneybeeStatus.Created,
           hbStart: new Date(),
         },
         $set: {
           channelId: data.channel.id,
+          channel: await ChannelModel.findByChannelId(data.channel.id),
           title: data.video.title,
         },
       },

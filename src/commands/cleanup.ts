@@ -98,10 +98,7 @@ export async function cleanup(argv: Arguments<CleanupOptions>) {
     const videos = await Video.find(
       {
         $or: [
-          {
-            hbCleanedAt: null,
-            hbStatus: { $ne: HoneybeeStatus.Created },
-          },
+          ...Video.LiveQuerys,
           {
             id: { $in: chatVideoIds },
           },

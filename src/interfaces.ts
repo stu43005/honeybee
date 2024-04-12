@@ -1,5 +1,3 @@
-import type { VideoRaw } from "holodex.js";
-
 export enum HoneybeeStatus {
   Created = "Created",
   Stalled = "Stalled",
@@ -10,21 +8,21 @@ export enum HoneybeeStatus {
 }
 
 export enum MessageType {
-	Milestone = "milestone",
-	Membership = "membership",
-	MembershipGift = "membershipGift",
-	MembershipGiftPurchase = "membershipGiftPurchase",
-	SuperChat = "superChat",
-	SuperSticker = "superSticker",
-	Chat = "chat",
+  Milestone = "milestone",
+  Membership = "membership",
+  MembershipGift = "membershipGift",
+  MembershipGiftPurchase = "membershipGiftPurchase",
+  SuperChat = "superChat",
+  SuperSticker = "superSticker",
+  Chat = "chat",
 }
 
 export enum MessageAuthorType {
-	Owner = "owner",
-	Moderator = "moderator",
-	Member = "member",
-	Verified = "verified",
-	Other = "other",
+  Owner = "owner",
+  Moderator = "moderator",
+  Member = "member",
+  Verified = "verified",
+  Other = "other",
 }
 
 export enum LiveViewersSource {
@@ -43,7 +41,6 @@ export enum ErrorCode {
 
 export interface HoneybeeJob {
   videoId: string;
-  stream: VideoRaw;
   defaultBackoffDelay: number;
 }
 

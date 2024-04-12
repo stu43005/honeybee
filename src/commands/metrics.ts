@@ -3,9 +3,7 @@ import type { AnyParamConstructor } from "@typegoose/typegoose/lib/types";
 import Fastify from "fastify";
 import type { AccumulatorOperator, FilterQuery, PipelineStage } from "mongoose";
 import { Gauge, Registry, type Metric } from "prom-client";
-import { HOLODEX_FETCH_ORG } from "../constants";
 import {
-  HoneybeeStatus,
   LiveViewersSource,
   MessageAuthorType,
   MessageType,
@@ -532,10 +530,7 @@ export async function metrics() {
         {
           match: {
             $or: [
-              {
-                hbCleanedAt: null,
-                hbStatus: { $ne: HoneybeeStatus.Created },
-              },
+              ...Video.LiveQuerys,
               {
                 id: {
                   $in: [...videoIds],
@@ -718,12 +713,7 @@ export async function metrics() {
         {
           match: {
             $or: [
-              {
-                organization: HOLODEX_FETCH_ORG,
-              },
-              {
-                extraCrawl: true,
-              },
+              ...Channel.SubscribedQuerys,
               {
                 id: {
                   $in: [...channelIds],
