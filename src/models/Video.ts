@@ -46,6 +46,9 @@ export class Video extends TimeStamps {
   @prop({ required: true })
   public title!: string;
 
+  @prop()
+  public description?: string;
+
   @prop({ index: true })
   public topic?: string;
 
@@ -91,6 +94,9 @@ export class Video extends TimeStamps {
   @prop()
   public hbStats?: Stats;
 
+  @prop({ index: true })
+  public crawledAt?: Date;
+
   public async getChannel(this: DocumentType<Video>) {
     if (isDocument(this.channel)) {
       return this.channel;
@@ -103,7 +109,9 @@ export class Video extends TimeStamps {
   public isLive(this: DocumentType<Video>) {
     if (
       this.hbCleanedAt ||
-      [VideoStatus.Past, VideoStatus.Missing].includes(this.status)
+      [VideoStatus.New, VideoStatus.Past, VideoStatus.Missing].includes(
+        this.status
+      )
     ) {
       return false;
     }
@@ -112,7 +120,9 @@ export class Video extends TimeStamps {
 
   public static LiveQuerys: readonly FilterQuery<Video>[] = Object.freeze([
     {
-      status: { $nin: [VideoStatus.Past, VideoStatus.Missing] },
+      status: {
+        $nin: [VideoStatus.New, VideoStatus.Past, VideoStatus.Missing],
+      },
       hbCleanedAt: null,
     },
   ]);
@@ -156,6 +166,7 @@ export class Video extends TimeStamps {
           channel: channel,
           channelId: stream.channelId,
           ...setIfDefine("title", stream.title),
+          ...setIfDefine("description", stream.description),
           ...setIfDefine("topic", stream.topic),
           ...setIfDefine("status", stream.status),
           ...setIfDefine("duration", stream.duration),

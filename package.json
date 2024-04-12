@@ -25,6 +25,7 @@
     "clui": "^0.3.6",
     "execa": "^5.1.1",
     "fastify": "^4.26.2",
+    "googleapis": "^134.0.0",
     "holodex.js": "^2.0.5",
     "json-templates": "^5.0.0",
     "kafkajs": "^2.2.4",

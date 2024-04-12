@@ -17,14 +17,18 @@ import {
   HOLODEX_MAX_UPCOMING_HOURS,
   YOUTUBE_PUBSUB_SECRET,
 } from "../constants";
+import { LiveViewersSource } from "../interfaces";
 import ChannelModel from "../models/Channel";
+import LiveViewersModel from "../models/LiveViewers";
 import VideoModel from "../models/Video";
 import { initMongo } from "../modules/db";
 import { getHolodex } from "../modules/holodex";
 import { getAgenda } from "../modules/schedule";
+import { getYoutubeApi } from "../modules/youtube";
 
 export async function runCrawler() {
   const holoapi = getHolodex();
+  const youtube = getYoutubeApi();
   const disconnectFromMongo = await initMongo();
   const agenda = getAgenda();
   await agenda.start();
@@ -256,10 +260,111 @@ export async function runCrawler() {
 
   //#endregion youtube pubsub
 
+  //#region youtube
+
+  async function statusUpdate(targetVideos: string[]) {
+    if (!targetVideos.length) return;
+
+    const response = await youtube.videos.list({
+      part: [
+        "snippet",
+        "status",
+        "contentDetails",
+        "liveStreamingDetails",
+        "statistics",
+      ],
+      id: targetVideos,
+      hl: "ja",
+      fields:
+        "items(id,snippet(title,description,publishedAt),contentDetails(licensedContent,contentRating/ytRating,duration),status(embeddable,privacyStatus),liveStreamingDetails,statistics/viewCount)",
+      maxResults: 50,
+    });
+    const ytVideoItems = response?.data?.items;
+    if (!ytVideoItems?.length) return;
+
+    for (const targetVideo of targetVideos) {
+      const video =
+        (await VideoModel.findByVideoId(targetVideo)) ??
+        new VideoModel({ id: targetVideo });
+      const ytInfo = ytVideoItems.find(
+        (ytVideoItem) => ytVideoItem.id === targetVideo
+      );
+      if (ytInfo) {
+        if (ytInfo.snippet?.title) video.title = ytInfo.snippet.title;
+        if (ytInfo.snippet?.description)
+          video.description = ytInfo.snippet.description;
+        if (ytInfo.snippet?.publishedAt)
+          video.publishedAt = new Date(ytInfo.snippet.publishedAt);
+
+        if (ytInfo.liveStreamingDetails) {
+          // live stream
+          video.scheduledStart = ytInfo.liveStreamingDetails.scheduledStartTime
+            ? new Date(ytInfo.liveStreamingDetails.scheduledStartTime)
+            : undefined;
+          video.actualStart = ytInfo.liveStreamingDetails.actualStartTime
+            ? new Date(ytInfo.liveStreamingDetails.actualStartTime)
+            : undefined;
+          video.actualEnd = ytInfo.liveStreamingDetails.actualEndTime
+            ? new Date(ytInfo.liveStreamingDetails.actualEndTime)
+            : undefined;
+          if (ytInfo.liveStreamingDetails.concurrentViewers) {
+            await LiveViewersModel.create({
+              originVideoId: video.id,
+              originChannelId: video.channelId,
+              viewers: ytInfo.liveStreamingDetails.concurrentViewers,
+              source: LiveViewersSource.Youtube,
+            });
+          }
+          if (video.actualEnd) {
+            video.status = VideoStatus.Past;
+          } else if (video.actualStart) {
+            video.status = VideoStatus.Live;
+          } else if (video.scheduledStart) {
+            video.status = VideoStatus.Upcoming;
+          } else {
+            video.status = VideoStatus.Upcoming;
+          }
+        } else {
+          // uploaded video
+          video.status = VideoStatus.Past;
+        }
+      } else {
+        video.status = VideoStatus.Missing;
+      }
+      video.crawledAt = new Date();
+      await video.save();
+    }
+  }
+
+  const JOB_YOUTUBE_UPDATE = "crawler youtube update";
+  agenda.define(JOB_YOUTUBE_UPDATE, async (job: Job): Promise<void> => {
+    const videoIds = Array.from(
+      new Set<string>([
+        ...(
+          await VideoModel.find({ status: VideoStatus.New }).select("id")
+        ).map((video) => video.id),
+        ...(
+          await VideoModel.findLiveVideos()
+            .sort({ crawledAt: 1 })
+            .limit(50)
+            .select("id")
+        ).map((video) => video.id),
+      ])
+    );
+    const batch: string[][] = [];
+    while (videoIds.length) batch.push(videoIds.splice(0, 50));
+    await Promise.all(batch.map((perBatch) => statusUpdate(perBatch)));
+  });
+  agenda.every("1 minute", JOB_YOUTUBE_UPDATE);
+
+  //#endregion youtube
+
   await fastify.listen({
     port: Number(process.env.PORT || 17835),
     host: "0.0.0.0",
   });
 
-  console.log(`crawler is ready (org=${HOLODEX_FETCH_ORG}, max_upcoming_hours=${HOLODEX_MAX_UPCOMING_HOURS})`);
+  console.log(
+    `crawler is ready (org=${HOLODEX_FETCH_ORG}, max_upcoming_hours=${HOLODEX_MAX_UPCOMING_HOURS})`
+  );
 }

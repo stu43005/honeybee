@@ -29,6 +29,7 @@ export enum LiveViewersSource {
   Holodex = "holodex",
   Masterchat = "masterchat",
   Honeybee = "honeybee",
+  Youtube = "youtube",
 }
 
 export enum ErrorCode {

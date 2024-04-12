@@ -222,7 +222,7 @@ Failed=${health.failed}`
 
   await queue.ready();
   await agenda.start();
-  agenda.every("1 minutes", rearrange);
+  agenda.every("1 minute", rearrange);
   agenda.every("1 minute", checkStalledJobs);
 
   VideoModel.watch([
