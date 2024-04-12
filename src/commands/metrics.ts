@@ -646,6 +646,9 @@ export async function metrics() {
               id: {
                 $in: [...videoIds],
               },
+              hbStatus: {
+                $in: ["Failed", "Finished"]
+              },
               hbEnd: { $ne: null },
             },
             labels: {
