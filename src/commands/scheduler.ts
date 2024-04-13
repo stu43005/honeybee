@@ -225,25 +225,50 @@ Failed=${health.failed}`
   agenda.every("1 minute", rearrange);
   agenda.every("1 minute", checkStalledJobs);
 
-  VideoModel.watch([
-    {
-      $match: {
-        operationType: "insert",
+  VideoModel.watch(
+    [
+      {
+        $match: {
+          operationType: { $in: ["insert", "update", "replace"] },
+        },
       },
-    },
-  ]).on("change", async (data: mongo.ChangeStreamDocument<Video>) => {
-    if (data.operationType === "insert") {
-      try {
-        const video = new VideoModel(data.fullDocument);
-        if (video.isLive()) {
-          await handleStream(video);
+    ],
+    {
+      fullDocument: "updateLookup",
+      fullDocumentBeforeChange: "whenAvailable",
+    }
+  ).on("change", async (data: mongo.ChangeStreamDocument<Video>) => {
+    switch (data.operationType) {
+      case "insert":
+        try {
+          const video = new VideoModel(data.fullDocument);
+          if (video.isLive()) {
+            await handleStream(video);
+          }
+        } catch (error) {
+          schedulerLog(
+            `Unable to schedule the stream: ${data.fullDocument.id},`,
+            error
+          );
         }
-      } catch (error) {
-        schedulerLog(
-          `Unable to schedule the stream: ${data.fullDocument.id},`,
-          error
-        );
-      }
+        break;
+      case "update":
+      case "replace":
+        if (data.fullDocumentBeforeChange && data.fullDocument) {
+          try {
+            const before = new VideoModel(data.fullDocumentBeforeChange);
+            const after = new VideoModel(data.fullDocument);
+            if (!before.isLive() && after.isLive()) {
+              await handleStream(after);
+            }
+          } catch (error) {
+            schedulerLog(
+              `Unable to schedule the stream: ${data.fullDocument.id},`,
+              error
+            );
+          }
+        }
+        break;
     }
   });
 

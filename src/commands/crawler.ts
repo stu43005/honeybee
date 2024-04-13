@@ -253,9 +253,14 @@ export async function runCrawler() {
     console.log(
       `Pubsub: ${data.channel.name} (${data.channel.id}) new video: [${data.video.id}] ${data.video.title}`
     );
-    const result = await VideoModel.updateFromNotification(data);
-    if (result.modifiedCount > 0) {
-      console.log(`Already seen this video: ${data.video.id}`);
+    try {
+      const result = await VideoModel.updateFromNotification(data);
+      if (result.modifiedCount > 0) {
+        console.log(`Already seen this video: ${data.video.id}`);
+      }
+      await updateVideoFromYoutube([data.video.id]);
+    } catch (error) {
+      console.error(`An error occurred:`, error);
     }
   });
 
@@ -263,7 +268,7 @@ export async function runCrawler() {
 
   //#region youtube
 
-  async function statusUpdate(targetVideos: string[]) {
+  async function updateVideoFromYoutube(targetVideos: string[]) {
     if (!targetVideos.length) return;
 
     const response = await youtube.videos.list({
@@ -375,7 +380,9 @@ export async function runCrawler() {
     );
     const batch: string[][] = [];
     while (videoIds.length) batch.push(videoIds.splice(0, 50));
-    await Promise.all(batch.map((perBatch) => statusUpdate(perBatch)));
+    await Promise.all(
+      batch.map((perBatch) => updateVideoFromYoutube(perBatch))
+    );
   });
   agenda.every("1 minute", JOB_YOUTUBE_UPDATE);
 
