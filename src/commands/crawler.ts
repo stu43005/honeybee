@@ -8,6 +8,7 @@ import {
   VideoType,
   type Channel as HolodexChannel,
 } from "holodex.js";
+import moment from "moment-timezone";
 import { setTimeout } from "timers/promises";
 import YouTubeNotifier from "youtube-notification";
 import {
@@ -328,9 +329,30 @@ export async function runCrawler() {
           // uploaded video
           video.status = VideoStatus.Past;
         }
+        if (video.actualEnd && video.actualStart) {
+          video.duration = moment(video.actualEnd).diff(
+            video.actualStart,
+            "seconds"
+          );
+        }
+        if (ytInfo.contentDetails?.duration && !video.duration) {
+          const ytDuration = moment
+            .duration(ytInfo.contentDetails.duration)
+            .as("seconds");
+          if (ytDuration > 0) {
+            video.duration = ytDuration;
+          }
+        }
       } else {
         video.status = VideoStatus.Missing;
       }
+      video.duration ??= 0;
+      video.availableAt =
+        video.actualStart ??
+        video.scheduledStart ??
+        video.publishedAt ??
+        video.availableAt ??
+        new Date();
       video.crawledAt = new Date();
       await video.save();
     }

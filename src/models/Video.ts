@@ -310,6 +310,8 @@ export class Video extends TimeStamps {
         $setOnInsert: {
           id: data.video.id,
           status: VideoStatus.New,
+          duration: 0,
+          availableAt: new Date(),
           hbStatus: HoneybeeStatus.Created,
           hbStart: new Date(),
         },
