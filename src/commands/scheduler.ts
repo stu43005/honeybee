@@ -254,12 +254,19 @@ Failed=${health.failed}`
         break;
       case "update":
       case "replace":
-        if (data.fullDocumentBeforeChange && data.fullDocument) {
+        if (data.fullDocument) {
           try {
-            const before = new VideoModel(data.fullDocumentBeforeChange);
-            const after = new VideoModel(data.fullDocument);
-            if (!before.isLive() && after.isLive()) {
-              await handleStream(after);
+            if (data.fullDocumentBeforeChange && data.fullDocument) {
+              const before = new VideoModel(data.fullDocumentBeforeChange);
+              const after = new VideoModel(data.fullDocument);
+              if (!before.isLive() && after.isLive()) {
+                await handleStream(after);
+              }
+            } else if (data.fullDocument) {
+              const video = new VideoModel(data.fullDocument);
+              if (!handledVideoIdCache.has(video.id) && video.isLive()) {
+                await handleStream(video);
+              }
             }
           } catch (error) {
             schedulerLog(
