@@ -23,9 +23,6 @@ endif
 	envsubst < ./k8s/output/production.yaml > ./k8s/output/production_apply.yaml
 	kubectl apply -f ./k8s/output/production_apply.yaml
 
-deployConfigs:
-	kubectl apply -k ./k8s/overlays/configs
-
 logs:
 	kubectl logs -n honeybee deployment/worker --tail=20000 -f | grep -iE 'required|<!>|unrecognized|unhandled'
 

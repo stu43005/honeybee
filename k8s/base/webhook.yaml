@@ -28,14 +28,16 @@ spec:
           imagePullPolicy: Always
           args:
             - "webhook"
-          envFrom:
-            - configMapRef:
-                name: honeybee-config
           env:
-            - name: MONGO_URI
+            - name: HOLODEX_FETCH_ORG
               valueFrom:
                 secretKeyRef:
                   name: honeybee-secrets
+                  key: HOLODEX_FETCH_ORG
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: honeybee-mongodb
                   key: MONGO_URI
           resources: {}
       topologySpreadConstraints:

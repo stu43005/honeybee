@@ -26,19 +26,26 @@ spec:
           imagePullPolicy: Always
           args:
             - "crawler"
-          envFrom:
-            - configMapRef:
-                name: honeybee-config
           env:
+            - name: HOLODEX_FETCH_ORG
+              valueFrom:
+                secretKeyRef:
+                  name: honeybee-secrets
+                  key: HOLODEX_FETCH_ORG
+            - name: HOLODEX_MAX_UPCOMING_HOURS
+              valueFrom:
+                secretKeyRef:
+                  name: honeybee-secrets
+                  key: HOLODEX_MAX_UPCOMING_HOURS
             - name: HOLODEX_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: honeybee-secrets
-                  key: HOLODEX_API_KEY
+                  name: holodex-api-key
+                  key: key
             - name: MONGO_URI
               valueFrom:
                 secretKeyRef:
-                  name: honeybee-secrets
+                  name: honeybee-mongodb
                   key: MONGO_URI
             - name: CRAWLER_ROOT_URL
               valueFrom:
@@ -53,8 +60,8 @@ spec:
             - name: GOOGLE_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: honeybee-secrets
-                  key: GOOGLE_API_KEY
+                  name: google-api-key
+                  key: key
           resources: {}
           ports:
             - name: http-port
