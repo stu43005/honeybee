@@ -269,6 +269,7 @@ export async function runCrawler() {
   //#region youtube
 
   async function updateVideoFromYoutube(targetVideos: string[]) {
+    const utcDate = moment.tz("UTC");
     if (!targetVideos.length) return;
 
     const response = await youtube.videos.list({
@@ -324,9 +325,29 @@ export async function runCrawler() {
           if (video.actualEnd) {
             video.status = VideoStatus.Past;
           } else if (video.actualStart) {
-            video.status = VideoStatus.Live;
+            if (
+              ytInfo.liveStreamingDetails.concurrentViewers === undefined &&
+              utcDate.isAfter(moment(video.actualStart).add(2, "days"))
+            ) {
+              // assume that a Livestream is LIVE for more than 2 days without any viewers is MISSING.
+              video.status = VideoStatus.Missing;
+            } else {
+              video.status = VideoStatus.Live;
+            }
           } else if (video.scheduledStart) {
-            video.status = VideoStatus.Upcoming;
+            if (utcDate.isSameOrAfter(video.scheduledStart)) {
+              if (
+                utcDate.isAfter(moment(video.scheduledStart).add(2, "days"))
+              ) {
+                // assume a live that is overslept for 48 hours is 'Missing'
+                video.status = VideoStatus.Missing;
+              } else {
+                // video.status = VideoStatus.Live;
+                video.status = VideoStatus.Upcoming;
+              }
+            } else {
+              video.status = VideoStatus.Upcoming;
+            }
           } else {
             video.status = VideoStatus.Upcoming;
           }
