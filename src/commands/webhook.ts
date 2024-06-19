@@ -220,12 +220,16 @@ async function handleChange(
       signal: timeout,
     });
 
-    await WebhookResultModel.updateOne(resultKey, {
-      $set: {
-        statusCode: res.status,
-        response: res.data,
-      },
-    });
+    if (webhook.followUpdate) {
+      await WebhookResultModel.updateOne(resultKey, {
+        $set: {
+          statusCode: res.status,
+          response: res.data,
+        },
+      });
+    } else {
+      await WebhookResultModel.deleteOne(resultKey);
+    }
   } catch (error) {
     if (error instanceof AxiosError) {
       await WebhookResultModel.updateOne(resultKey, {
