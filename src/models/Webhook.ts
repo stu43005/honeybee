@@ -34,6 +34,9 @@ export class Webhook {
   @prop()
   public match?: any;
 
+  @prop()
+  public matchPreset?: string;
+
   /**
    * Used in function processing, it has a more complete data structure.
    */

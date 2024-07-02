@@ -11,6 +11,7 @@ import {
   defaultInsertMethod,
   defaultUpdateMethod,
   defaultUpdateUrl,
+  matchPresets,
   templatePreset,
 } from "../data/webhook";
 import ChannelModel from "../models/Channel";
@@ -264,6 +265,27 @@ async function removeWebhook(data: string | { _id: mongo.ObjectId }) {
   }
 }
 
+async function prepareWebhook(webhook: DocumentType<Webhook>) {
+  if (webhook.matchPreset && matchPresets[webhook.matchPreset]) {
+    const match = await matchPresets[webhook.matchPreset](webhook);
+    if (JSON.stringify(webhook.match) !== JSON.stringify(match)) {
+      webhookLog(webhook, "change match");
+      webhook.match = match;
+      await webhook.save();
+    }
+  }
+}
+
+async function prepareAllWebhooks() {
+  for await (const webhook of WebhookModel.find({ enabled: { $ne: false } })) {
+    try {
+      await prepareWebhook(webhook);
+    } catch (error) {
+      webhookLog(webhook, "<!> [ERROR] Unable to prepare webhook", error);
+    }
+  }
+}
+
 async function setupWebhook(webhook: DocumentType<Webhook>) {
   // validation
   {
@@ -320,6 +342,11 @@ async function setupWebhook(webhook: DocumentType<Webhook>) {
     webhookLog(webhook, "<!> [FATAL] Unable to watch change stream.", error);
     process.exit(1);
   }
+  try {
+    await prepareWebhook(webhook);
+  } catch (error) {
+    webhookLog(webhook, "<!> [ERROR] Unable to prepare webhook", error);
+  }
 }
 
 export async function runWebhook() {
@@ -368,6 +395,11 @@ export async function runWebhook() {
       }
     }
   });
+
+  ChannelModel.watch([{ $match: { operationType: "insert" } }]).on(
+    "change",
+    () => prepareAllWebhooks()
+  );
 
   for await (const webhook of WebhookModel.find({ enabled: { $ne: false } })) {
     webhookLog(webhook, "START");

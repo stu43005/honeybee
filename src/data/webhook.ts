@@ -1,10 +1,16 @@
+import type { DocumentType } from "@typegoose/typegoose";
 import jsonTemplates from "json-templates";
 import path from "node:path";
+import ChannelModel from "../models/Channel";
+import type { Webhook } from "../models/Webhook";
 import { setIfDefine } from "../util";
 
 export const defaultUpdateUrl = (parameters: Record<string, any>): string => {
   const url = new URL(parameters.insertUrl);
-  url.pathname = path.posix.join(url.pathname, `./messages/${parameters.previousResponse.id}`);
+  url.pathname = path.posix.join(
+    url.pathname,
+    `./messages/${parameters.previousResponse.id}`
+  );
   url.searchParams.delete("wait");
   return url.toString();
 };
@@ -299,3 +305,19 @@ function getEmbedColor(parameters: Record<string, any>) {
     return 0x5e84f1; // 板手
   }
 }
+
+export const matchPresets: Readonly<
+  Record<string, (webhook: DocumentType<Webhook>) => Promise<any>>
+> = Object.freeze({
+  "organization-Hololive": async (webhook) => {
+    const channels = await ChannelModel.find(
+      { organization: "Hololive" },
+      { id: 1 }
+    ).sort({ id: 1 });
+    return {
+      authorChannelId: {
+        $in: channels.map((channel) => channel.id),
+      },
+    };
+  },
+});
