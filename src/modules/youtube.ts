@@ -3,7 +3,7 @@ import { VideoStatus } from "holodex.js";
 import moment from "moment-timezone";
 import assert from "node:assert";
 import { GOOGLE_API_KEY } from "../constants";
-import { LiveViewersSource } from "../interfaces";
+import { HoneybeeStatus, LiveViewersSource } from "../interfaces";
 import LiveViewersModel from "../models/LiveViewers";
 import VideoModel from "../models/Video";
 
@@ -38,7 +38,7 @@ export async function updateVideoFromYoutube(targetVideos: string[]) {
     id: targetVideos,
     hl: "ja",
     fields:
-      "items(id,snippet(title,description,publishedAt),contentDetails(licensedContent,contentRating/ytRating,duration),status(embeddable,privacyStatus),liveStreamingDetails,statistics/viewCount)",
+      "items(id,snippet(channelId,title,description,publishedAt),contentDetails(licensedContent,contentRating/ytRating,duration),status(uploadStatus,embeddable,privacyStatus),liveStreamingDetails,statistics/viewCount)",
     maxResults: 50,
   });
   const ytVideoItems = response?.data?.items;
@@ -52,6 +52,7 @@ export async function updateVideoFromYoutube(targetVideos: string[]) {
       (ytVideoItem) => ytVideoItem.id === targetVideo
     );
     if (ytInfo) {
+      if (ytInfo.snippet?.channelId) video.channelId = ytInfo.snippet.channelId;
       if (ytInfo.snippet?.title) video.title = ytInfo.snippet.title;
       if (ytInfo.snippet?.description)
         video.description = ytInfo.snippet.description;
@@ -75,7 +76,7 @@ export async function updateVideoFromYoutube(targetVideos: string[]) {
             originChannelId: video.channelId,
             viewers: ytInfo.liveStreamingDetails.concurrentViewers,
             source: LiveViewersSource.Youtube,
-          });
+          }).catch(() => void 0);
         }
         if (video.actualEnd) {
           video.status = VideoStatus.Past;
@@ -133,6 +134,7 @@ export async function updateVideoFromYoutube(targetVideos: string[]) {
       video.availableAt ??
       new Date();
     video.crawledAt = new Date();
+    video.hbStatus = HoneybeeStatus.Created;
     await video.save();
   }
 }
