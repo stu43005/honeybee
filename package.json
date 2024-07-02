@@ -15,6 +15,7 @@
     "hb": "lib/index.js"
   },
   "dependencies": {
+    "@discordjs/rest": "^2.3.0",
     "@fastify/express": "^2.3.0",
     "@stu43005/masterchat": "^1.4.6",
     "@typegoose/typegoose": "^12.2.0",

@@ -1,3 +1,9 @@
+import {
+  HTTPError,
+  REST,
+  type RequestMethod,
+  type RouteLike,
+} from "@discordjs/rest";
 import type { DocumentType } from "@typegoose/typegoose";
 import axios, { AxiosError } from "axios";
 import https from "https";
@@ -21,12 +27,29 @@ import WebhookResultModel from "../models/WebhookResult";
 import { initMongo } from "../modules/db";
 import { flatObjectKey, secondsToHms, setIfDefine } from "../util";
 
+const debug = false;
+
 const axiosInstance = axios.create({
   timeout: 4000,
   httpsAgent: new https.Agent({
     keepAlive: true,
   }),
 });
+const discordRest = new REST();
+
+const cache = new NodeCache({
+  stdTTL: 60,
+  useClones: false,
+  deleteOnExpire: true,
+});
+function getCache<T>(key: string, factory: (key: string) => T): T {
+  let data = cache.get<T>(key);
+  if (typeof data === "undefined") {
+    data = factory(key);
+    cache.set(key, data);
+  }
+  return data;
+}
 
 function webhookLog(
   data: mongo.ChangeStreamDocument | mongo.Document | string,
@@ -49,6 +72,101 @@ function webhookLog(
   console.log(`${id} -`, ...obj);
 }
 
+async function sendDiscordWebhook(
+  method: string,
+  url: string,
+  body: any,
+  webhook: Webhook,
+  resultKey: { webhookId: string; coll: string; docId: string }
+) {
+  const uri = new URL(url);
+  uri.searchParams.set("wait", "true");
+  try {
+    const response = await discordRest.request({
+      fullRoute: uri.pathname.replace(/^\/api/, "") as RouteLike,
+      method: method.toUpperCase() as RequestMethod,
+      body: body,
+      query: uri.searchParams,
+      auth: false,
+    });
+
+    if (webhook.followUpdate) {
+      await WebhookResultModel.updateOne(resultKey, {
+        $set: {
+          response: response,
+        },
+      });
+    } else {
+      await WebhookResultModel.deleteOne(resultKey);
+    }
+  } catch (error) {
+    if (error instanceof HTTPError) {
+      await WebhookResultModel.updateOne(resultKey, {
+        $set: {
+          statusCode: error.status,
+          response: {
+            error: `${error}`,
+          },
+        },
+      });
+    } else {
+      await WebhookResultModel.updateOne(resultKey, {
+        $set: {
+          response: {
+            error: `${error}`,
+          },
+        },
+      });
+    }
+  }
+}
+
+async function sendWebhook(
+  method: string,
+  url: string,
+  body: any,
+  webhook: Webhook,
+  resultKey: { webhookId: string; coll: string; docId: string }
+) {
+  try {
+    const timeout = AbortSignal.timeout(10000);
+    const res = await axiosInstance.request({
+      method,
+      url,
+      data: body,
+      signal: timeout,
+    });
+
+    if (webhook.followUpdate) {
+      await WebhookResultModel.updateOne(resultKey, {
+        $set: {
+          statusCode: res.status,
+          response: res.data,
+        },
+      });
+    } else {
+      await WebhookResultModel.deleteOne(resultKey);
+    }
+  } catch (error) {
+    if (error instanceof AxiosError) {
+      await WebhookResultModel.updateOne(resultKey, {
+        $set: {
+          statusCode: error.response?.status,
+          response: error.response?.data,
+        },
+      });
+    } else {
+      await WebhookResultModel.updateOne(resultKey, {
+        $set: {
+          response: {
+            error: `${error}`,
+          },
+        },
+      });
+    }
+  }
+}
+
 const jsonTemplateCache = new WeakMap<
   Webhook,
   Map<string, JsonTemplate<any>>
@@ -64,16 +182,6 @@ function getWebhookTemplateCache(webhook: Webhook) {
   };
 }
 
-const cache = new NodeCache({ stdTTL: 60, useClones: false });
-
-function getCache<T>(key: string, factory: (key: string) => T): T {
-  let data = cache.get<T>(key);
-  if (typeof data === "undefined") {
-    data = factory(key);
-    cache.set(key, data);
-  }
-  return data;
-}
 function getVideo(videoId?: string) {
   return videoId
     ? getCache(videoId, (id) => VideoModel.findByVideoId(id).exec())
@@ -212,34 +320,10 @@ async function handleChange(
     { upsert: true }
   );
 
-  try {
-    const timeout = AbortSignal.timeout(10_000);
-    const res = await axiosInstance.request({
-      method,
-      url,
-      data: body,
-      signal: timeout,
-    });
-
-    if (webhook.followUpdate) {
-      await WebhookResultModel.updateOne(resultKey, {
-        $set: {
-          statusCode: res.status,
-          response: res.data,
-        },
-      });
-    } else {
-      await WebhookResultModel.deleteOne(resultKey);
-    }
-  } catch (error) {
-    if (error instanceof AxiosError) {
-      await WebhookResultModel.updateOne(resultKey, {
-        $set: {
-          statusCode: error.response?.status,
-          response: error.response?.data,
-        },
-      });
-    }
+  if (url.startsWith("https://discord.com/api/webhooks/")) {
+    await sendDiscordWebhook(method, url, body, webhook, resultKey);
+  } else {
+    await sendWebhook(method, url, body, webhook, resultKey);
   }
 }
 
@@ -277,7 +361,7 @@ async function prepareWebhook(webhook: DocumentType<Webhook>) {
 }
 
 async function prepareAllWebhooks() {
-  for await (const webhook of WebhookModel.find({ enabled: { $ne: false } })) {
+  for await (const webhook of WebhookModel.find({ enabled: { $ne: debug } })) {
     try {
       await prepareWebhook(webhook);
     } catch (error) {
@@ -305,7 +389,7 @@ async function setupWebhook(webhook: DocumentType<Webhook>) {
     // close previous change stream
     const resumeAfter = await removeWebhook(id);
 
-    if (webhook.enabled === false) {
+    if (webhook.enabled === debug) {
       webhookLog(webhook, "webhook disabled, skip.");
       return;
     }
@@ -401,7 +485,7 @@ export async function runWebhook() {
     () => prepareAllWebhooks()
   );
 
-  for await (const webhook of WebhookModel.find({ enabled: { $ne: false } })) {
+  for await (const webhook of WebhookModel.find({ enabled: { $ne: debug } })) {
     webhookLog(webhook, "START");
     await setupWebhook(webhook);
   }
