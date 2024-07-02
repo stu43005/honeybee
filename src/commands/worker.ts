@@ -48,6 +48,7 @@ import {
 } from "../modules/currency-convert";
 import { initMongo } from "../modules/db";
 import { getQueueInstance } from "../modules/queue";
+import { updateVideoFromYoutube } from "../modules/youtube";
 import { groupBy, setIfDefine } from "../util";
 
 const { MongoError, MongoBulkWriteError } = mongoose.mongo;
@@ -104,7 +105,8 @@ async function handleJob(
   const video = await VideoModel.findByVideoId(videoId);
   assert(video, "Unable to find the video.");
   const { channelId } = video;
-  const { name: channelName, avatarUrl: channelAvatarUrl } = await video.getChannel();
+  const { name: channelName, avatarUrl: channelAvatarUrl } =
+    await video.getChannel();
 
   const mc = new Masterchat(videoId, channelId, {
     mode: "live",
@@ -592,13 +594,13 @@ async function handleJob(
               };
             });
             await RaidModel.bulkWrite(
-              payload.map((poll) => ({
+              payload.map((raid) => ({
                 updateOne: {
                   filter: {
-                    originVideoId: poll.originVideoId,
-                    sourceName: poll.sourceName,
+                    originVideoId: raid.originVideoId,
+                    sourceName: raid.sourceName,
                   },
-                  update: { $set: poll },
+                  update: { $set: raid },
                   upsert: true,
                 },
               }))
@@ -620,16 +622,19 @@ async function handleJob(
               };
             });
             await RaidModel.bulkWrite(
-              payload.map((poll) => ({
+              payload.map((raid) => ({
                 updateOne: {
                   filter: {
-                    originVideoId: poll.originVideoId,
-                    sourceName: poll.sourceName,
+                    originVideoId: raid.originVideoId,
+                    sourceName: raid.sourceName,
                   },
-                  update: { $set: poll },
+                  update: { $set: raid },
                   upsert: true,
                 },
               }))
+            );
+            await updateVideoFromYoutube(
+              payload.map((raid) => raid.originVideoId)
             );
             break;
           }

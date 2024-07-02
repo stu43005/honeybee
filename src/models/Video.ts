@@ -13,7 +13,6 @@ import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
 import { Video as HolodexVideo, VideoStatus } from "holodex.js";
 import type { FilterQuery } from "mongoose";
 import assert from "node:assert";
-import type { NotifiedData } from "youtube-notification";
 import {
   HoneybeeStatus,
   LiveViewersSource,
@@ -300,7 +299,15 @@ export class Video extends TimeStamps {
 
   public static async updateFromNotification(
     this: ReturnModelType<typeof Video>,
-    data: NotifiedData
+    data: {
+      video: {
+        id: string;
+        title: string;
+      };
+      channel: {
+        id: string;
+      };
+    }
   ) {
     return await this.updateOne(
       {

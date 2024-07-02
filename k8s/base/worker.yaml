@@ -47,6 +47,11 @@ spec:
                 secretKeyRef:
                   name: honeybee-mongodb
                   key: MONGO_URI
+            - name: GOOGLE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: google-api-key
+                  key: key
           resources: {}
       topologySpreadConstraints:
         - maxSkew: 1
