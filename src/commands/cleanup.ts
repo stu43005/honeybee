@@ -150,8 +150,8 @@ export async function cleanup(argv: Arguments<CleanupOptions>) {
             video.status === VideoStatus.Past &&
             video.actualEnd &&
             video.actualEnd.getTime() < Date.now() - 60 * 60 * 1000 &&
-            videoChat &&
-            videoChat.lastTime.getTime() < Date.now() - 60 * 60 * 1000
+            (!videoChat ||
+              videoChat.lastTime.getTime() < Date.now() - 60 * 60 * 1000)
           );
         })
         .map((video) => video.id),
