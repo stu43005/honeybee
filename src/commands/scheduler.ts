@@ -77,7 +77,7 @@ export async function runScheduler() {
       Math.floor(startUntil / divisor),
       1000 * 60 * minimumWaits
     );
-    await queue
+    const job = await queue
       .createJob({
         videoId,
         defaultBackoffDelay: estimatedDelay,
@@ -86,6 +86,10 @@ export async function runScheduler() {
       .retries(divisor - 1)
       .backoff("fixed", estimatedDelay)
       .save();
+    if (job.status === "succeeded" || job.status === "failed") {
+      job.remove();
+      return;
+    }
 
     schedulerLog(
       `scheduled ${videoId} (${title}) starts in ${startsInMin} minute(s)`
