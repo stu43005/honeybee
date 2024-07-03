@@ -93,14 +93,30 @@ export async function cleanup(argv: Arguments<CleanupOptions>) {
         },
       },
     ]);
-    const chatVideoIds = chats.map((r) => r._id.videoId);
+    const liveviewers = await LiveViewers.aggregate<{
+      _id: { videoId: string };
+      lastTime: Date;
+    }>([
+      {
+        $group: {
+          _id: { videoId: "$originVideoId" },
+          lastTime: { $last: "$createdAt" },
+        },
+      },
+    ]);
+    const videoIds = Array.from(
+      new Set([
+        ...chats.map((r) => r._id.videoId),
+        ...liveviewers.map((r) => r._id.videoId),
+      ])
+    );
 
     const videos = await Video.find(
       {
         $or: [
           ...Video.LiveQuerys,
           {
-            id: { $in: chatVideoIds },
+            id: { $in: videoIds },
           },
         ],
       },
@@ -142,7 +158,7 @@ export async function cleanup(argv: Arguments<CleanupOptions>) {
       // video have been cleaned
       ...videos.filter((video) => !!video.hbCleanedAt).map((video) => video.id),
       // video does not exist (may have been cleaned)
-      ...chatVideoIds.filter((id) => !videos.find((video) => video.id === id)),
+      ...videoIds.filter((id) => !videos.find((video) => video.id === id)),
     ]);
 
     if (toRemoveVideoIds.size) {
