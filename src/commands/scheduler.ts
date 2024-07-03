@@ -77,7 +77,7 @@ export async function runScheduler() {
       Math.floor(startUntil / divisor),
       1000 * 60 * minimumWaits
     );
-    const job = await queue
+    await queue
       .createJob({
         videoId,
         defaultBackoffDelay: estimatedDelay,
@@ -86,10 +86,6 @@ export async function runScheduler() {
       .retries(divisor - 1)
       .backoff("fixed", estimatedDelay)
       .save();
-    if (job.status === "succeeded" || job.status === "failed") {
-      job.remove();
-      return;
-    }
 
     schedulerLog(
       `scheduled ${videoId} (${title}) starts in ${startsInMin} minute(s)`
@@ -103,6 +99,15 @@ export async function runScheduler() {
     const res = await queue.checkStalledJobs();
     if (res > 0) {
       console.log("enqueue stalled jobs:", res);
+    }
+
+    const failedJobs = await queue.getJobs("failed", { size: 1000 });
+    for (const job of failedJobs) {
+      await job.remove();
+    }
+    const succeededJobs = await queue.getJobs("succeeded", { size: 1000 });
+    for (const job of succeededJobs) {
+      await job.remove();
     }
   });
 
