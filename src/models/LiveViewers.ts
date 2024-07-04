@@ -1,8 +1,14 @@
-import { getModelForClass, modelOptions, prop } from "@typegoose/typegoose";
+import {
+  getModelForClass,
+  index,
+  modelOptions,
+  prop,
+} from "@typegoose/typegoose";
 import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
 import type { LiveViewersSource } from "../interfaces";
 
 @modelOptions({ schemaOptions: { collection: "liveviewers" } })
+@index({ originVideoId: 1, source: 1 })
 export class LiveViewers extends TimeStamps {
   @prop({ required: true, index: true })
   public originVideoId!: string;

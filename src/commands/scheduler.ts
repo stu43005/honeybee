@@ -284,11 +284,6 @@ Failed=${health.failed}`
               ) {
                 await handleStream(after, after.getReplicas());
               }
-            } else if (data.fullDocument) {
-              const video = new VideoModel(data.fullDocument);
-              if (video.isLive()) {
-                await handleStream(video, 1);
-              }
             }
           } catch (error) {
             schedulerLog(
