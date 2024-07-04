@@ -117,22 +117,6 @@ async function handleJob(
   pipeSignal(globalSignal, cancelController);
   pipeSignal(stopController.signal, cancelController);
 
-  changeStreamCloseSignal(
-    VideoModel.watch(
-      [{ $match: { "fullDocument.id": videoId, operationType: "update" } }],
-      { fullDocument: "updateLookup" }
-    ).on("change", (data: mongo.ChangeStreamDocument<Video>) => {
-      if (
-        data.operationType === "update" &&
-        typeof data.fullDocument?.hbReplica === "number" &&
-        data.fullDocument.hbReplica < replica
-      ) {
-        stopController.abort(new Error("Stop replica"));
-      }
-    }),
-    cancelController.signal
-  );
-
   const mc = new Masterchat(videoId, channelId, {
     mode: "live",
     axiosInstance: axios.create({
@@ -783,6 +767,14 @@ async function handleJob(
         actionCount = 0;
         lastUpdateAt = Date.now();
         await updateVideoStats();
+      }
+
+      {
+        // check replica
+        const video = await VideoModel.findByVideoId(videoId);
+        if (video && video.getReplicas() < replica) {
+          stopController.abort(new Error("Stop replica"));
+        }
       }
     }
   } catch (err) {
