@@ -151,3 +151,13 @@ export function flatObjectKey(obj: object): object {
     })
   );
 }
+
+export function pipeSignal(signal: AbortSignal, controller: AbortController) {
+  if (signal.aborted) {
+    controller.abort(signal.reason);
+    return;
+  }
+  signal.addEventListener("abort", async () => {
+    controller.abort(signal.reason);
+  });
+}

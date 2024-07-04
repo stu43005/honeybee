@@ -42,6 +42,10 @@ export enum ErrorCode {
 
 export interface HoneybeeJob {
   videoId: string;
+  /**
+   * 1, 2, 3, ...
+   */
+  replica: number;
   defaultBackoffDelay: number;
 }
 

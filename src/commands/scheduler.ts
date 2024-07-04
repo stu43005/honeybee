@@ -22,7 +22,6 @@ export async function runScheduler() {
   const disconnectFromMongo = await initMongo();
   const queue = getQueueInstance({ isWorker: false });
   const agenda = getAgenda();
-  const handledVideoIdCache: Set<string> = new Set();
 
   process.on("SIGTERM", async () => {
     schedulerLog("quitting scheduler (SIGTERM) ...");
@@ -37,7 +36,7 @@ export async function runScheduler() {
     process.exit(0);
   });
 
-  async function handleStream(video: DocumentType<Video>) {
+  async function handleStream(video: DocumentType<Video>, replica: number) {
     const videoId = video.id;
     const title = video.title;
     const scheduledStartTime = video.scheduledStart;
@@ -46,19 +45,6 @@ export async function runScheduler() {
       ? new Date(scheduledStartTime).getTime() - Date.now()
       : 0;
     const startsInMin = Math.floor(startUntil / 1000 / 60);
-    // if (startsInMin < -10080 && !guessFreeChat(title)) {
-    //   schedulerLog(
-    //     `${videoId} (${title}) will be ignored. it was started in ${startsInMin} min and not a free chat, which must be abandoned.`
-    //   );
-    //   return;
-    // }
-
-    if (handledVideoIdCache.has(videoId)) {
-      schedulerLog(
-        `ignored ${videoId} (${title}) [${startsInMin}] as it is either being delayed`
-      );
-      return;
-    }
 
     // filter out freechat
     if (IGNORE_FREE_CHAT && guessFreeChat(title)) {
@@ -77,21 +63,21 @@ export async function runScheduler() {
       Math.floor(startUntil / divisor),
       1000 * 60 * minimumWaits
     );
+    const jobId = replica === 1 ? videoId : `${videoId}:${replica}`;
     await queue
       .createJob({
         videoId,
+        replica,
         defaultBackoffDelay: estimatedDelay,
       })
-      .setId(videoId)
+      .setId(jobId)
       .retries(divisor - 1)
       .backoff("fixed", estimatedDelay)
       .save();
 
     schedulerLog(
-      `scheduled ${videoId} (${title}) starts in ${startsInMin} minute(s)`
+      `scheduled ${jobId} (${title}) starts in ${startsInMin} minute(s)`
     );
-
-    handledVideoIdCache.add(videoId);
   }
 
   const checkStalledJobs = "scheduler checkStalledJobs";
@@ -113,14 +99,17 @@ export async function runScheduler() {
 
   const rearrange = "scheduler rearrange";
   agenda.define(rearrange, async (job: Job): Promise<void> => {
-    const alreadyActiveJobs = (
-      await queue.getJobs("active", { start: 0, end: 1000 })
-    ).map((job) => job.data.videoId);
+    const alreadyActiveJobs = await queue.getJobs("active", {
+      start: 0,
+      end: 1000,
+    });
 
     const liveAndUpcomingStreams = await VideoModel.findLiveVideos();
 
     const unscheduledStreams = liveAndUpcomingStreams.filter(
-      (video) => !alreadyActiveJobs.includes(video.id)
+      (video) =>
+        alreadyActiveJobs.filter((job) => job.data.videoId === video.id)
+          .length < video.getReplicas()
     );
 
     schedulerLog(`currently ${alreadyActiveJobs.length} job(s) are running`);
@@ -135,7 +124,15 @@ export async function runScheduler() {
     );
 
     for (const video of unscheduledStreams) {
-      await handleStream(video);
+      const videoJobs = alreadyActiveJobs.filter(
+        (job) => job.data.videoId === video.id
+      );
+      for (let replica = 1; replica <= video.getReplicas(); replica++) {
+        const job = videoJobs.find((job) => job.data.replica === replica);
+        if (!job) {
+          await handleStream(video, replica);
+        }
+      }
     }
 
     // show metrics
@@ -151,7 +148,11 @@ Failed=${health.failed}`
 
   queue.on("stalled", async (jobId) => {
     schedulerLog("[stalled]:", jobId);
-    await VideoModel.updateStatus(jobId, HoneybeeStatus.Stalled);
+    const job = await queue.getJob(jobId);
+    const { videoId, replica } = job.data;
+    if (replica === 1) {
+      await VideoModel.updateStatus(videoId, HoneybeeStatus.Stalled);
+    }
   });
 
   // redis related error
@@ -162,9 +163,12 @@ Failed=${health.failed}`
 
   queue.on("job succeeded", async (jobId, result: HoneybeeResult) => {
     const job = await queue.getJob(jobId);
+    const { videoId, replica } = job.data;
     await job.remove();
 
-    await VideoModel.updateResult(jobId, result);
+    if (replica === 1) {
+      await VideoModel.updateResult(videoId, result);
+    }
 
     switch (result.error) {
       case ErrorCode.MembersOnly: {
@@ -192,22 +196,27 @@ Failed=${health.failed}`
         break;
       }
     }
-
-    handledVideoIdCache.delete(jobId);
   });
 
   queue.on("job progress", async (jobId, progress: HoneybeeStats) => {
-    await VideoModel.updateStatus(jobId, HoneybeeStatus.Progress);
+    const job = await queue.getJob(jobId);
+    const { videoId, replica } = job.data;
+    if (replica === 1) {
+      await VideoModel.updateStatus(videoId, HoneybeeStatus.Progress);
+    }
   });
 
   queue.on("job retrying", async (jobId, err) => {
     const job = await queue.getJob(jobId);
+    const { videoId, replica } = job.data;
     const retries = job.options.retries;
     const retryDelay = job.options.backoff.delay
       ? `${Math.ceil(job.options.backoff.delay / 1000)}s`
       : "immediate";
 
-    await VideoModel.updateStatus(jobId, HoneybeeStatus.Retrying, err);
+    if (replica === 1) {
+      await VideoModel.updateStatus(videoId, HoneybeeStatus.Retrying, err);
+    }
 
     schedulerLog(
       "[job retrying]:",
@@ -217,12 +226,13 @@ Failed=${health.failed}`
 
   queue.on("job failed", async (jobId, err) => {
     schedulerLog(`[job failed]: ${jobId}`, err.message);
+    const job = await queue.getJob(jobId);
+    const { videoId, replica } = job.data;
+    await job.remove();
 
-    // chances that chat is disabled until live goes online
-    handledVideoIdCache.delete(jobId);
-    await queue.removeJob(jobId);
-
-    await VideoModel.updateStatusFailed(jobId, err);
+    if (replica === 1) {
+      await VideoModel.updateStatusFailed(videoId, err);
+    }
 
     schedulerLog(
       `[job failed]: removed ${jobId} from cache and job queue for later retry`
@@ -252,7 +262,7 @@ Failed=${health.failed}`
         try {
           const video = new VideoModel(data.fullDocument);
           if (video.isLive()) {
-            await handleStream(video);
+            await handleStream(video, 1);
           }
         } catch (error) {
           schedulerLog(
@@ -268,13 +278,16 @@ Failed=${health.failed}`
             if (data.fullDocumentBeforeChange && data.fullDocument) {
               const before = new VideoModel(data.fullDocumentBeforeChange);
               const after = new VideoModel(data.fullDocument);
-              if (!before.isLive() && after.isLive()) {
-                await handleStream(after);
+              if (
+                after.getReplicas() > 0 &&
+                before.getReplicas() < after.getReplicas()
+              ) {
+                await handleStream(after, after.getReplicas());
               }
             } else if (data.fullDocument) {
               const video = new VideoModel(data.fullDocument);
-              if (!handledVideoIdCache.has(video.id) && video.isLive()) {
-                await handleStream(video);
+              if (video.isLive()) {
+                await handleStream(video, 1);
               }
             }
           } catch (error) {

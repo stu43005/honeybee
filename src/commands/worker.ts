@@ -9,10 +9,11 @@ import {
 } from "@stu43005/masterchat";
 import axios from "axios";
 import BeeQueue from "bee-queue";
-import mongoose from "mongoose";
+import mongoose, { mongo } from "mongoose";
 import { FetchError } from "node-fetch";
 import assert from "node:assert";
 import https from "node:https";
+import { setTimeout } from "node:timers/promises";
 import { JOB_CONCURRENCY, SHUTDOWN_TIMEOUT } from "../constants";
 import {
   ErrorCode,
@@ -41,19 +42,17 @@ import RemoveChatActionModel, {
 } from "../models/RemoveChatAction";
 import SuperChatModel, { type SuperChat } from "../models/SuperChat";
 import SuperStickerModel, { type SuperSticker } from "../models/SuperSticker";
-import VideoModel from "../models/Video";
+import VideoModel, { type Video } from "../models/Video";
 import {
   currencyToJpyAmount,
   getCurrencymapItem,
 } from "../modules/currency-convert";
-import { initMongo } from "../modules/db";
+import { changeStreamCloseSignal, initMongo } from "../modules/db";
 import { getQueueInstance } from "../modules/queue";
 import { updateVideoFromYoutube } from "../modules/youtube";
-import { groupBy, setIfDefine } from "../util";
+import { groupBy, pipeSignal, setIfDefine } from "../util";
 
 const { MongoError, MongoBulkWriteError } = mongoose.mongo;
-
-const exitController = new AbortController();
 
 function emojiHandler(run: YTEmojiRun) {
   const { emoji } = run;
@@ -99,14 +98,40 @@ const stringifyOptions = {
 const insertOptions = { ordered: false };
 
 async function handleJob(
-  job: BeeQueue.Job<HoneybeeJob>
+  job: BeeQueue.Job<HoneybeeJob>,
+  globalSignal: AbortSignal
 ): Promise<HoneybeeResult> {
-  const { videoId } = job.data;
+  const { videoId, replica } = job.data;
+  assert(replica, "No specified replica.");
   const video = await VideoModel.findByVideoId(videoId);
   assert(video, "Unable to find the video.");
+  assert(video.getReplicas() >= replica, "Stop replica");
   const { channelId } = video;
   const { name: channelName, avatarUrl: channelAvatarUrl } =
     await video.getChannel();
+
+  // Control cancel all operations
+  const cancelController = new AbortController();
+  // Control whether to stop the job
+  const stopController = new AbortController();
+  pipeSignal(globalSignal, cancelController);
+  pipeSignal(stopController.signal, cancelController);
+
+  changeStreamCloseSignal(
+    VideoModel.watch(
+      [{ $match: { "fullDocument.id": videoId, operationType: "update" } }],
+      { fullDocument: "updateLookup" }
+    ).on("change", (data: mongo.ChangeStreamDocument<Video>) => {
+      if (
+        data.operationType === "update" &&
+        typeof data.fullDocument?.hbReplica === "number" &&
+        data.fullDocument.hbReplica < replica
+      ) {
+        stopController.abort(new Error("Stop replica"));
+      }
+    }),
+    cancelController.signal
+  );
 
   const mc = new Masterchat(videoId, channelId, {
     mode: "live",
@@ -120,7 +145,7 @@ async function handleJob(
   let stats: HoneybeeStats = { handled: 0, errors: 0 };
 
   function videoLog(...obj: any) {
-    console.log(`${videoId} ${channelId} -`, ...obj);
+    console.log(`${videoId} ${channelId} ${replica} -`, ...obj);
   }
 
   function refreshStats(actions: Action[]) {
@@ -730,6 +755,12 @@ async function handleJob(
     }
   }
 
+  // Delayed start of replica > 1
+  for (let i = 0; i < replica - 1; i++) {
+    job.reportProgress(stats);
+    await setTimeout(1000);
+  }
+
   job.reportProgress(stats);
   videoLog(`START`);
 
@@ -740,7 +771,7 @@ async function handleJob(
     await updateVideoStats();
 
     for await (const { actions } of mc.iterate({
-      signal: exitController.signal,
+      signal: cancelController.signal,
     })) {
       if (actions.length > 0) {
         await handleActions(actions);
@@ -786,7 +817,11 @@ async function handleJob(
       }
     }
 
-    if (err instanceof AbortError) {
+    if (err instanceof AbortError || axios.isCancel(err)) {
+      if (stopController.signal.aborted) {
+        videoLog(`END (Stop by signal)`);
+        return { error: null, result: stats };
+      }
       job.backoff("immediate");
       videoLog("<!> [ABORTED]");
       throw new Error("worker exiting");
@@ -808,6 +843,7 @@ async function handleJob(
 
 // collect live chat and save to mongodb
 export async function runWorker() {
+  const exitController = new AbortController();
   const disconnectFromMongo = await initMongo();
   const queue = getQueueInstance({ activateDelayedJobs: true });
 
@@ -837,5 +873,7 @@ export async function runWorker() {
     process.exit(1);
   });
 
-  queue.process<HoneybeeResult>(JOB_CONCURRENCY, handleJob);
+  queue.process<HoneybeeResult>(JOB_CONCURRENCY, (job) =>
+    handleJob(job, exitController.signal)
+  );
 }

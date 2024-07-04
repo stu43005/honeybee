@@ -51,10 +51,10 @@ export class Video extends TimeStamps {
   @prop({ index: true })
   public topic?: string;
 
-  @prop({ required: true, index: true })
+  @prop({ required: true, index: true, default: VideoStatus.New })
   public status!: VideoStatus;
 
-  @prop({ required: true })
+  @prop({ required: true, default: 0 })
   public duration!: number;
 
   @prop()
@@ -75,7 +75,7 @@ export class Video extends TimeStamps {
   @prop()
   public actualEnd?: Date;
 
-  @prop({ required: true, index: true })
+  @prop({ required: true, index: true, default: HoneybeeStatus.Created })
   public hbStatus!: HoneybeeStatus;
 
   @prop()
@@ -93,6 +93,9 @@ export class Video extends TimeStamps {
   @prop()
   public hbStats?: Stats;
 
+  @prop({ default: 1 })
+  public hbReplica?: number;
+
   @prop({ index: true })
   public crawledAt?: Date;
 
@@ -105,7 +108,7 @@ export class Video extends TimeStamps {
     return channel;
   }
 
-  public isLive(this: DocumentType<Video>) {
+  public isLive(this: DocumentType<Video>): boolean {
     if (
       this.hbCleanedAt ||
       [VideoStatus.New, VideoStatus.Past, VideoStatus.Missing].includes(
@@ -115,6 +118,13 @@ export class Video extends TimeStamps {
       return false;
     }
     return true;
+  }
+
+  public getReplicas(this: DocumentType<Video>): number {
+    if (!this.isLive()) {
+      return 0;
+    }
+    return Math.max(1, this.hbReplica ?? 1);
   }
 
   public static LiveQuerys: readonly FilterQuery<Video>[] = Object.freeze([
