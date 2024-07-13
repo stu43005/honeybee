@@ -155,6 +155,17 @@ export async function cleanup(argv: Arguments<CleanupOptions>) {
           );
         })
         .map((video) => video.id),
+      // The status of the video is missing, and the last chat have exceeded 1 hour
+      ...videos
+        .filter((video) => {
+          const videoChat = chats.find((chat) => chat._id.videoId === video.id);
+          return (
+            video.status === VideoStatus.Missing &&
+            (!videoChat ||
+              videoChat.lastTime.getTime() < Date.now() - 60 * 60 * 1000)
+          );
+        })
+        .map((video) => video.id),
       // video have been cleaned
       ...videos.filter((video) => !!video.hbCleanedAt).map((video) => video.id),
       // video does not exist (may have been cleaned)
