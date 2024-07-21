@@ -96,14 +96,17 @@ export async function updateVideoFromYoutube(targetVideos: string[]) {
               // assume a live that is overslept for 48 hours is 'Missing'
               video.status = VideoStatus.Missing;
             } else {
-              // video.status = VideoStatus.Live;
-              video.status = VideoStatus.Upcoming;
+              video.status = VideoStatus.Live;
             }
           } else {
             video.status = VideoStatus.Upcoming;
           }
         } else {
-          video.status = VideoStatus.Upcoming;
+          if (utcDate.isAfter(moment(video.publishedAt).add(5, "days"))) {
+            video.status = VideoStatus.Missing;
+          } else {
+            video.status = VideoStatus.Upcoming;
+          }
         }
       } else {
         // uploaded video
@@ -134,7 +137,7 @@ export async function updateVideoFromYoutube(targetVideos: string[]) {
       video.availableAt ??
       new Date();
     video.crawledAt = new Date();
-    video.hbStatus = HoneybeeStatus.Created;
+    video.hbStatus ??= HoneybeeStatus.Created;
     await video.save();
   }
 }
