@@ -140,7 +140,10 @@ export function secondsToHms(d: number) {
 export function flatObjectKey(obj: object): object {
   return Object.fromEntries(
     Object.entries(obj).flatMap(([key, value]) => {
-      if (typeof value === "object" && Object.keys(value).every((k) => !k.startsWith("$"))) {
+      if (
+        typeof value === "object" &&
+        Object.keys(value).every((k) => !k.startsWith("$"))
+      ) {
         const obj2 = flatObjectKey(value);
         return Object.entries(obj2).map(([key2, value2]) => [
           `${key}.${key2}`,
@@ -157,7 +160,11 @@ export function pipeSignal(signal: AbortSignal, controller: AbortController) {
     controller.abort(signal.reason);
     return;
   }
-  signal.addEventListener("abort", async () => {
-    controller.abort(signal.reason);
-  });
+  signal.addEventListener(
+    "abort",
+    async () => {
+      controller.abort(signal.reason);
+    },
+    { once: true }
+  );
 }

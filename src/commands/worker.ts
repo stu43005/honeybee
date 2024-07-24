@@ -9,11 +9,12 @@ import {
 } from "@stu43005/masterchat";
 import axios from "axios";
 import BeeQueue from "bee-queue";
-import mongoose, { mongo } from "mongoose";
+import moment from "moment-timezone";
+import mongoose from "mongoose";
 import { FetchError } from "node-fetch";
 import assert from "node:assert";
 import https from "node:https";
-import { setTimeout } from "node:timers/promises";
+import { setInterval, setTimeout } from "node:timers/promises";
 import { JOB_CONCURRENCY, SHUTDOWN_TIMEOUT } from "../constants";
 import {
   ErrorCode,
@@ -42,12 +43,13 @@ import RemoveChatActionModel, {
 } from "../models/RemoveChatAction";
 import SuperChatModel, { type SuperChat } from "../models/SuperChat";
 import SuperStickerModel, { type SuperSticker } from "../models/SuperSticker";
-import VideoModel, { type Video } from "../models/Video";
+import VideoModel from "../models/Video";
+import { ActionCounter } from "../modules/action-counter";
 import {
   currencyToJpyAmount,
   getCurrencymapItem,
 } from "../modules/currency-convert";
-import { changeStreamCloseSignal, initMongo } from "../modules/db";
+import { initMongo } from "../modules/db";
 import { getQueueInstance } from "../modules/queue";
 import { updateVideoFromYoutube } from "../modules/youtube";
 import { groupBy, pipeSignal, setIfDefine } from "../util";
@@ -103,6 +105,7 @@ async function handleJob(
 ): Promise<HoneybeeResult> {
   const { videoId, replica } = job.data;
   assert(replica, "No specified replica.");
+  const isFirstReplica = replica === 1;
   const video = await VideoModel.findByVideoId(videoId);
   assert(video, "Unable to find the video.");
   assert(video.getReplicas() >= replica, "Stop replica");
@@ -748,33 +751,77 @@ async function handleJob(
   job.reportProgress(stats);
   videoLog(`START`);
 
-  // iterate over live chat
-  let actionCount = 0;
-  let lastUpdateAt = Date.now();
+  const updateStatsCounter = {
+    actionCount: 0,
+    lastUpdateAt: moment.tz("UTC"),
+  };
+  const actionCounter = new ActionCounter();
+
+  (async () => {
+    for await (const _ of setInterval(5000, null, {
+      signal: cancelController.signal,
+    })) {
+      try {
+        if (isFirstReplica) {
+          // update video stats every 200 action or over 1 hour
+          // 2k messages / per 10m: every 1m
+          if (
+            updateStatsCounter.actionCount >= 200 ||
+            moment
+              .tz("UTC")
+              .subtract(1, "hour")
+              .isAfter(updateStatsCounter.lastUpdateAt)
+          ) {
+            updateStatsCounter.actionCount = 0;
+            updateStatsCounter.lastUpdateAt = moment.tz("UTC");
+            await updateVideoStats();
+          }
+
+          const recentActions = actionCounter.countRecentActions();
+          const video = await VideoModel.findByVideoId(videoId);
+          switch (video?.getReplicas()) {
+            case 1:
+              if (recentActions >= 600) {
+                // scale up
+                videoLog(`scale up`);
+                video.hbReplica = 2;
+                await video.save();
+              }
+              break;
+            case 2:
+              if (recentActions < 300) {
+                // scale down
+                videoLog(`scale down`);
+                video.hbReplica = 1;
+                await video.save();
+              }
+              break;
+          }
+        } else {
+          // check replica
+          const video = await VideoModel.findByVideoId(videoId);
+          if (video && video.getReplicas() < replica) {
+            stopController.abort(new Error("Stop replica"));
+          }
+        }
+      } catch (err) {
+        videoLog("<!> [ERROR]", err);
+      }
+    }
+  })();
+
   try {
     await updateVideoStats();
 
+    // iterate over live chat
     for await (const { actions } of mc.iterate({
       signal: cancelController.signal,
     })) {
       if (actions.length > 0) {
         await handleActions(actions);
-        actionCount += actions.length;
-      }
 
-      // 2k messages / per 10m: every 1m
-      if (actionCount >= 200 || Date.now() - lastUpdateAt > 3600_000) {
-        actionCount = 0;
-        lastUpdateAt = Date.now();
-        await updateVideoStats();
-      }
-
-      {
-        // check replica
-        const video = await VideoModel.findByVideoId(videoId);
-        if (video && video.getReplicas() < replica) {
-          stopController.abort(new Error("Stop replica"));
-        }
+        updateStatsCounter.actionCount += actions.length;
+        actionCounter.addActions(actions.length);
       }
     }
   } catch (err) {
@@ -827,6 +874,9 @@ async function handleJob(
     throw err;
   } finally {
     await updateVideoStats();
+    if (!cancelController.signal.aborted) {
+      cancelController.abort(new Error("Job exiting"));
+    }
   }
 
   videoLog(`END`);
