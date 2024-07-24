@@ -808,7 +808,7 @@ async function handleJob(
         videoLog("<!> [ERROR]", err);
       }
     }
-  })();
+  })().catch(() => void 0);
 
   try {
     await updateVideoStats();
