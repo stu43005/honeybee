@@ -88,11 +88,22 @@ export async function runScheduler() {
 
     const failedJobs = await queue.getJobs("failed", { size: 1000 });
     for (const job of failedJobs) {
+      const { videoId, replica } = job.data;
       await job.remove();
+      if (replica === 1) {
+        await VideoModel.updateStatusFailed(
+          videoId,
+          new Error("unknown error")
+        );
+      }
     }
     const succeededJobs = await queue.getJobs("succeeded", { size: 1000 });
     for (const job of succeededJobs) {
+      const { videoId, replica } = job.data;
       await job.remove();
+      if (replica === 1) {
+        await VideoModel.updateResult(videoId, { error: null });
+      }
     }
   });
 

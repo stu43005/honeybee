@@ -1,6 +1,6 @@
 import { VideoStatus } from "holodex.js";
+import moment from "moment-timezone";
 import type { Arguments, Argv } from "yargs";
-import { HoneybeeStatus } from "../interfaces";
 import BanAction from "../models/BanAction";
 import Chat from "../models/Chat";
 import LiveViewers from "../models/LiveViewers";
@@ -113,12 +113,7 @@ export async function cleanup(argv: Arguments<CleanupOptions>) {
 
     const videos = await Video.find(
       {
-        $or: [
-          Video.LiveQuery,
-          {
-            id: { $in: videoIds },
-          },
-        ],
+        id: { $in: videoIds },
       },
       {
         id: 1,
@@ -130,44 +125,25 @@ export async function cleanup(argv: Arguments<CleanupOptions>) {
       }
     );
 
+    const oneHourAgo = moment.tz("UTC").subtract(1, "hour");
     const toRemoveVideoIds = new Set<string>([
-      // Honeybee has stopped processing the video for over 1 hour
-      ...videos
-        .filter(
-          (video) =>
-            [HoneybeeStatus.Finished, HoneybeeStatus.Failed].includes(
-              video.hbStatus
-            ) &&
-            video.hbEnd &&
-            video.hbEnd.getTime() < Date.now() - 60 * 60 * 1000
-        )
-        .map((video) => video.id),
-      // The status of the video is already past, and both the end time and the last chat have exceeded 1 hour
+      // The status of the video is already past or missing, and the last chat have exceeded 1 hour ago
       ...videos
         .filter((video) => {
           const videoChat = chats.find((chat) => chat._id.videoId === video.id);
           return (
-            video.status === VideoStatus.Past &&
-            video.actualEnd &&
-            video.actualEnd.getTime() < Date.now() - 60 * 60 * 1000 &&
-            (!videoChat ||
-              videoChat.lastTime.getTime() < Date.now() - 60 * 60 * 1000)
+            [VideoStatus.Past, VideoStatus.Missing].includes(video.status) &&
+            (!video.availableAt ||
+              moment(video.availableAt).isBefore(oneHourAgo)) &&
+            (!video.publishedAt ||
+              moment(video.publishedAt).isBefore(oneHourAgo)) &&
+            (!video.actualEnd ||
+              moment(video.actualEnd).isBefore(oneHourAgo)) &&
+            (!video.hbEnd || moment(video.hbEnd).isBefore(oneHourAgo)) &&
+            (!videoChat || moment(videoChat.lastTime).isBefore(oneHourAgo))
           );
         })
         .map((video) => video.id),
-      // The status of the video is missing, and the last chat have exceeded 1 hour
-      ...videos
-        .filter((video) => {
-          const videoChat = chats.find((chat) => chat._id.videoId === video.id);
-          return (
-            video.status === VideoStatus.Missing &&
-            (!videoChat ||
-              videoChat.lastTime.getTime() < Date.now() - 60 * 60 * 1000)
-          );
-        })
-        .map((video) => video.id),
-      // video have been cleaned
-      ...videos.filter((video) => !!video.hbCleanedAt).map((video) => video.id),
       // video does not exist (may have been cleaned)
       ...videoIds.filter((id) => !videos.find((video) => video.id === id)),
     ]);

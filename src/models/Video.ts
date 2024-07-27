@@ -15,6 +15,7 @@ import type { FilterQuery } from "mongoose";
 import assert from "node:assert";
 import {
   HoneybeeStatus,
+  LiveStatus,
   LiveViewersSource,
   type HoneybeeResult,
 } from "../interfaces";
@@ -124,15 +125,7 @@ export class Video extends TimeStamps {
   }
 
   public isLive(this: DocumentType<Video>): boolean {
-    if (
-      this.hbCleanedAt ||
-      [VideoStatus.New, VideoStatus.Past, VideoStatus.Missing].includes(
-        this.status
-      )
-    ) {
-      return false;
-    }
-    return true;
+    return LiveStatus.includes(this.status);
   }
 
   //#region find methods
@@ -145,10 +138,7 @@ export class Video extends TimeStamps {
   }
 
   public static LiveQuery: Readonly<FilterQuery<Video>> = Object.freeze({
-    status: {
-      $nin: [VideoStatus.New, VideoStatus.Past, VideoStatus.Missing],
-    },
-    hbCleanedAt: null,
+    status: { $in: LiveStatus },
   });
   public static findLiveVideos(this: ReturnModelType<typeof Video>) {
     return this.find(this.LiveQuery);
@@ -180,11 +170,11 @@ export class Video extends TimeStamps {
           id: stream.videoId,
           hbStatus: HoneybeeStatus.Created,
           hbStart: new Date(),
-        },
-        $set: {
           channel: channel,
           channelId: stream.channelId,
           ...setIfDefine("title", stream.title),
+        },
+        $set: {
           ...setIfDefine("description", stream.description),
           ...setIfDefine("topic", stream.topic),
           ...setIfDefine("status", stream.status),
