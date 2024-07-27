@@ -1,12 +1,14 @@
 import { mongoose, type ReturnModelType } from "@typegoose/typegoose";
 import type { AnyParamConstructor } from "@typegoose/typegoose/lib/types";
 import Fastify from "fastify";
+import { VideoStatus } from "holodex.js";
+import moment from "moment-timezone";
 import type { AccumulatorOperator, FilterQuery, PipelineStage } from "mongoose";
 import { Gauge, Registry, type Metric } from "prom-client";
 import {
   LiveViewersSource,
   MessageAuthorType,
-  MessageType,
+  MessageType
 } from "../interfaces";
 import BanAction from "../models/BanAction";
 import BannerAction from "../models/BannerAction";
@@ -439,7 +441,41 @@ export async function metrics() {
   async function _collect() {
     try {
       const force = lastFullCollect + 3_600_000 < Date.now();
+
+      const halfHourAgo = moment.tz("UTC").subtract(30, "minutes").toDate();
+      const videoInfoRecords = await updateMetrics(
+        "honeybee_video_info",
+        Video,
+        {
+          match: {
+            $or: [
+              Video.LiveQuery,
+              {
+                status: VideoStatus.Past,
+                actualEnd: { $gt: halfHourAgo },
+              },
+              {
+                status: VideoStatus.Missing,
+                hbEnd: { $gt: halfHourAgo },
+              },
+            ],
+          },
+          labels: {
+            videoId: "$id",
+            channelId: "$channelId",
+            title: "$title",
+            topic: "$topic",
+          },
+          value: { $last: 1 },
+          fetchAll: true,
+          reset: true,
+        }
+      );
+
       const videoIds = new Set<string>();
+      const channelIds = new Set<string>();
+      collectLabelValues(videoIds, videoInfoRecords, "videoId");
+      collectLabelValues(channelIds, videoInfoRecords, "channelId");
 
       if (force) {
         metrics.honeybee_messages_total.reset();
@@ -452,6 +488,11 @@ export async function metrics() {
         await Promise.allSettled([
           ...messageTypes.map((type) =>
             updateMetrics("honeybee_messages_total", type.model, {
+              match: {
+                originVideoId: {
+                  $in: [...videoIds],
+                },
+              },
               labels: {
                 videoId: "$originVideoId",
                 authorType: authorTypeLabelmap(type.defaultAuthorType),
@@ -463,6 +504,11 @@ export async function metrics() {
           ),
           ...messageTypes.map((type) =>
             updateMetrics("honeybee_users_total", type.model, {
+              match: {
+                originVideoId: {
+                  $in: [...videoIds],
+                },
+              },
               groupBy: {
                 _id: {
                   authorChannelId: "$authorChannelId",
@@ -483,6 +529,11 @@ export async function metrics() {
           ),
           ...purchaseMessageTypes.map((type) =>
             updateMetrics("honeybee_purchase_amount_jpy_total", type.model, {
+              match: {
+                originVideoId: {
+                  $in: [...videoIds],
+                },
+              },
               labels: {
                 videoId: "$originVideoId",
                 authorType: authorTypeLabelmap(type.defaultAuthorType),
@@ -495,6 +546,11 @@ export async function metrics() {
           ),
           ...purchaseMessageTypes.map((type) =>
             updateMetrics("honeybee_purchase_amount_total", type.model, {
+              match: {
+                originVideoId: {
+                  $in: [...videoIds],
+                },
+              },
               labels: {
                 videoId: "$originVideoId",
                 authorType: authorTypeLabelmap(type.defaultAuthorType),
@@ -509,6 +565,11 @@ export async function metrics() {
             "honeybee_purchase_amount_total",
             MembershipGiftPurchase,
             {
+              match: {
+                originVideoId: {
+                  $in: [...videoIds],
+                },
+              },
               labels: {
                 videoId: "$originVideoId",
                 authorType: authorTypeLabelmap(),
@@ -518,44 +579,6 @@ export async function metrics() {
               fetchAll: force,
             }
           ),
-        ]),
-        (value: MetricPayload<"videoId">[]) =>
-          collectLabelValues(videoIds, value, "videoId"),
-        (reason) => console.error(reason)
-      );
-
-      const videoInfoRecords = await updateMetrics(
-        "honeybee_video_info",
-        Video,
-        {
-          match: {
-            $or: [
-              Video.LiveQuery,
-              {
-                id: {
-                  $in: [...videoIds],
-                },
-              },
-            ],
-          },
-          labels: {
-            videoId: "$id",
-            channelId: "$channelId",
-            title: "$title",
-            topic: "$topic",
-          },
-          value: { $last: 1 },
-          fetchAll: true,
-          reset: true,
-        }
-      );
-
-      const channelIds = new Set<string>();
-      collectLabelValues(videoIds, videoInfoRecords, "videoId");
-      collectLabelValues(channelIds, videoInfoRecords, "channelId");
-
-      promiseSettledCallback(
-        await Promise.allSettled([
           ...Object.entries(actions).map(([actionType, model]) =>
             updateMetrics("honeybee_actions_total", model, {
               match: {
@@ -647,7 +670,7 @@ export async function metrics() {
                 $in: [...videoIds],
               },
               hbStatus: {
-                $in: ["Failed", "Finished"]
+                $in: ["Failed", "Finished"],
               },
               hbEnd: { $ne: null },
             },
