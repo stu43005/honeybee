@@ -114,7 +114,7 @@ export async function cleanup(argv: Arguments<CleanupOptions>) {
     const videos = await Video.find(
       {
         $or: [
-          ...Video.LiveQuerys,
+          Video.LiveQuery,
           {
             id: { $in: videoIds },
           },

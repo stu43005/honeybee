@@ -530,7 +530,7 @@ export async function metrics() {
         {
           match: {
             $or: [
-              ...Video.LiveQuerys,
+              Video.LiveQuery,
               {
                 id: {
                   $in: [...videoIds],

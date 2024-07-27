@@ -738,7 +738,11 @@ async function handleJob(
     try {
       await VideoModel.updateFromMasterchat(mc);
     } catch (err) {
-      videoLog("<!> [STATS UPDATE ERROR]", err);
+      if (err instanceof AbortError || axios.isCancel(err)) {
+        // ignore
+      } else {
+        videoLog("<!> [STATS UPDATE ERROR]", err);
+      }
     }
   }
 

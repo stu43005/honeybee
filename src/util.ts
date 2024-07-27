@@ -1,9 +1,3 @@
-export function guessFreeChat(title: string) {
-  return /(?:[fF]ree\s?[cC]hat|(?:ふりー|フリー)(?:ちゃっと|チャット))/.test(
-    title
-  );
-}
-
 interface Record {
   name: string;
   current: number | undefined;

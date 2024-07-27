@@ -12,7 +12,6 @@ import VideoModel, { type Video } from "../models/Video";
 import { initMongo } from "../modules/db";
 import { getQueueInstance } from "../modules/queue";
 import { getAgenda } from "../modules/schedule";
-import { guessFreeChat } from "../util";
 
 function schedulerLog(...obj: any) {
   console.log(...obj);
@@ -47,7 +46,7 @@ export async function runScheduler() {
     const startsInMin = Math.floor(startUntil / 1000 / 60);
 
     // filter out freechat
-    if (IGNORE_FREE_CHAT && guessFreeChat(title)) {
+    if (IGNORE_FREE_CHAT && video.isFreeChat()) {
       schedulerLog(
         `ignored ${videoId} (${title}) [${startsInMin}] as it is freechat`
       );

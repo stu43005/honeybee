@@ -92,7 +92,10 @@ export async function updateVideoFromYoutube(targetVideos: string[]) {
           }
         } else if (video.scheduledStart) {
           if (utcDate.isSameOrAfter(video.scheduledStart)) {
-            if (utcDate.isAfter(moment(video.scheduledStart).add(2, "days"))) {
+            if (
+              utcDate.isAfter(moment(video.scheduledStart).add(2, "days")) &&
+              !video.isFreeChat()
+            ) {
               // assume a live that is overslept for 48 hours is 'Missing'
               video.status = VideoStatus.Missing;
             } else {

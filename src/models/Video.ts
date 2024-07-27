@@ -108,6 +108,21 @@ export class Video extends TimeStamps {
     return channel;
   }
 
+  public getReplicas(this: DocumentType<Video>): number {
+    if (!this.isLive()) {
+      return 0;
+    }
+    return Math.max(1, this.hbReplica ?? 1);
+  }
+
+  public isFreeChat(this: DocumentType<Video>): boolean {
+    return (
+      /(?:free\s?chat|chat\s?room|schedule|チャットルーム|ふりーちゃっと|フリーチャット|雑談部屋)/i.test(
+        this.title
+      ) || this.topic === "FreeChat"
+    );
+  }
+
   public isLive(this: DocumentType<Video>): boolean {
     if (
       this.hbCleanedAt ||
@@ -120,26 +135,7 @@ export class Video extends TimeStamps {
     return true;
   }
 
-  public getReplicas(this: DocumentType<Video>): number {
-    if (!this.isLive()) {
-      return 0;
-    }
-    return Math.max(1, this.hbReplica ?? 1);
-  }
-
-  public static LiveQuerys: readonly FilterQuery<Video>[] = Object.freeze([
-    {
-      status: {
-        $nin: [VideoStatus.New, VideoStatus.Past, VideoStatus.Missing],
-      },
-      hbCleanedAt: null,
-    },
-  ]);
-  public static findLiveVideos(this: ReturnModelType<typeof Video>) {
-    return this.find({
-      $or: [...this.LiveQuerys],
-    });
-  }
+  //#region find methods
 
   public static findByVideoId(
     this: ReturnModelType<typeof Video>,
@@ -147,6 +143,20 @@ export class Video extends TimeStamps {
   ) {
     return this.findOne({ id: videoId }).populate("channel");
   }
+
+  public static LiveQuery: Readonly<FilterQuery<Video>> = Object.freeze({
+    status: {
+      $nin: [VideoStatus.New, VideoStatus.Past, VideoStatus.Missing],
+    },
+    hbCleanedAt: null,
+  });
+  public static findLiveVideos(this: ReturnModelType<typeof Video>) {
+    return this.find(this.LiveQuery);
+  }
+
+  //#endregion find methods
+
+  //#region update methods
 
   public static async updateFromHolodex(
     this: ReturnModelType<typeof Video>,
@@ -343,6 +353,8 @@ export class Video extends TimeStamps {
       }
     );
   }
+
+  //#endregion update methods
 }
 
 export default getModelForClass(Video);
