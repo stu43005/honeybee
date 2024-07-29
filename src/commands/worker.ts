@@ -781,10 +781,10 @@ async function handleJob(
             await updateVideoStats();
           }
 
-          const recentActions = actionCounter.countRecentActions();
           const video = await VideoModel.findByVideoId(videoId);
           switch (video?.getReplicas()) {
-            case 1:
+            case 1: {
+              const recentActions = actionCounter.countRecentActions(moment.duration(1, "minute"));
               if (recentActions >= 600) {
                 // scale up
                 videoLog(`scale up`);
@@ -792,7 +792,9 @@ async function handleJob(
                 await video.save();
               }
               break;
-            case 2:
+            }
+            case 2: {
+              const recentActions = actionCounter.countRecentActions(moment.duration(10, "minute")) / 10;
               if (recentActions < 300) {
                 // scale down
                 videoLog(`scale down`);
@@ -800,6 +802,7 @@ async function handleJob(
                 await video.save();
               }
               break;
+            }
           }
         } else {
           // check replica

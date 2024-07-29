@@ -9,13 +9,13 @@ export class ActionCounter {
     this.cleanUpOldActions();
   }
 
-  // Calculate the number of events in the last minute
-  public countRecentActions() {
-    const oneMinuteAgo = moment.tz("UTC").subtract(1, "minute");
+  // Calculate the number of events in recent time
+  public countRecentActions(duration: moment.Duration) {
+    const recentTime = moment.tz("UTC").subtract(duration);
     let count = 0;
 
     for (const [time, actions] of this.handledActionCount) {
-      if (time.isAfter(oneMinuteAgo)) {
+      if (time.isAfter(recentTime)) {
         count += actions;
       }
     }
@@ -25,9 +25,9 @@ export class ActionCounter {
 
   // Clear events that are over one minute old
   public cleanUpOldActions() {
-    const oneMinuteAgo = moment.tz("UTC").subtract(1, "minute");
+    const removeBefore = moment.tz("UTC").subtract(10, "minute");
     this.handledActionCount = this.handledActionCount.filter(([time]) =>
-      time.isAfter(oneMinuteAgo)
+      time.isAfter(removeBefore)
     );
   }
 }
