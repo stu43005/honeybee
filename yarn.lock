@@ -4652,6 +4652,13 @@ p-map@^4.0.0:
   dependencies:
     aggregate-error "^3.0.0"
 
+p-mutex@^0.1.0:
+  version "0.1.0"
+  resolved "https://registry.yarnpkg.com/p-mutex/-/p-mutex-0.1.0.tgz#fe6417947a4db6c49d7d281d88185a1f6235ccba"
+  integrity sha512-JXTGUNjI6eLzbtYGhFqmad8Tp5wDBsaGDwrvXuoRzIZ6EyKZr5jlNO9sFe83T6/K//lhyONS4ejCocvGNYJz7Q==
+  dependencies:
+    yocto-queue "^1.0.0"
+
 p-props@^4.0.0:
   version "4.0.0"
   resolved "https://registry.yarnpkg.com/p-props/-/p-props-4.0.0.tgz#f37c877a9a722057833e1dc38d43edf3906b3437"
@@ -5842,6 +5849,11 @@ yocto-queue@^0.1.0:
   version "0.1.0"
   resolved "https://registry.yarnpkg.com/yocto-queue/-/yocto-queue-0.1.0.tgz#0294eb3dee05028d31ee1a5fa2c556a6aaf10a1b"
   integrity sha512-rVksvsnNCdJ/ohGc6xgPwyN8eheCxsiLM8mxuE/t/mOVqJewPuO1miLpTHQiRgTKCLexL4MeAFVagts7HmNZ2Q==
+
+yocto-queue@^1.0.0:
+  version "1.1.1"
+  resolved "https://registry.yarnpkg.com/yocto-queue/-/yocto-queue-1.1.1.tgz#fef65ce3ac9f8a32ceac5a634f74e17e5b232110"
+  integrity sha512-b4JR1PFR10y1mKjhHY9LaGo6tmrgjit7hxVIeAmyMw3jegXR4dhYqLaQF5zMXZxY7tLpMyJeLjr1C4rLmkVe8g==
 
 youtube-notification@^1.1.0:
   version "1.1.0"

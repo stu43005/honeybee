@@ -4,11 +4,12 @@ import Fastify from "fastify";
 import { VideoStatus } from "holodex.js";
 import moment from "moment-timezone";
 import type { AccumulatorOperator, FilterQuery, PipelineStage } from "mongoose";
+import Mutex from "p-mutex";
 import { Gauge, Registry, type Metric } from "prom-client";
 import {
   LiveViewersSource,
   MessageAuthorType,
-  MessageType
+  MessageType,
 } from "../interfaces";
 import BanAction from "../models/BanAction";
 import BannerAction from "../models/BannerAction";
@@ -138,10 +139,10 @@ export async function metrics() {
     process.exit(0);
   });
 
-  const collectData = throttleWithReturnValue(_collect, 30_000);
+  const collectData = throttleWithReturnValue(_collectWithLock, 59_000);
   const checkHealth = throttleWithReturnValue(
     () => queue.checkHealth(),
-    30_000
+    59_000
   );
   const metrics = {
     honeybee_channel_info: new Gauge({
@@ -435,6 +436,16 @@ export async function metrics() {
       lastIdMap.set(idKey, records[records.length - 1].lastId);
     }
     return records;
+  }
+
+  const mutex = new Mutex();
+  async function _collectWithLock() {
+    if (mutex.isLocked) {
+      // Only wait for the previous collect task to unlock, but do not take any action.
+      await mutex.withLock(() => {});
+      return;
+    }
+    await mutex.withLock(_collect);
   }
 
   let lastFullCollect = 0;
