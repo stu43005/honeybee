@@ -785,7 +785,7 @@ async function handleJob(
           switch (video?.getReplicas()) {
             case 1: {
               const recentActions = actionCounter.countRecentActions(moment.duration(1, "minute"));
-              if (recentActions >= 600) {
+              if (recentActions !== null && recentActions >= 600) {
                 // scale up
                 videoLog(`scale up`);
                 video.hbReplica = 2;
@@ -794,8 +794,8 @@ async function handleJob(
               break;
             }
             case 2: {
-              const recentActions = actionCounter.countRecentActions(moment.duration(10, "minute")) / 10;
-              if (recentActions < 300) {
+              const recentActions = actionCounter.countRecentActions(moment.duration(10, "minute"));
+              if (recentActions !== null && recentActions / 10 < 300) {
                 // scale down
                 videoLog(`scale down`);
                 video.hbReplica = 1;
