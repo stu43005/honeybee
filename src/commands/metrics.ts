@@ -4,7 +4,7 @@ import Fastify from "fastify";
 import { VideoStatus } from "holodex.js";
 import moment from "moment-timezone";
 import type { AccumulatorOperator, FilterQuery, PipelineStage } from "mongoose";
-import Mutex from "p-mutex";
+import PQueue from "p-queue";
 import { Gauge, Registry, type Metric } from "prom-client";
 import {
   LiveViewersSource,
@@ -438,14 +438,14 @@ export async function metrics() {
     return records;
   }
 
-  const mutex = new Mutex();
+  const pqueue = new PQueue({ concurrency: 1 });
   async function _collectWithLock() {
-    if (mutex.isLocked) {
+    if (pqueue.size > 0) {
       // Only wait for the previous collect task to unlock, but do not take any action.
-      await mutex.withLock(() => {});
+      await pqueue.onEmpty();
       return;
     }
-    await mutex.withLock(_collect);
+    await pqueue.add(_collect);
   }
 
   let lastFullCollect = 0;
