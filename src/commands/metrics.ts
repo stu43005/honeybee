@@ -460,7 +460,16 @@ export async function metrics() {
         {
           match: {
             $or: [
-              Video.LiveQuery,
+              {
+                $and: [
+                  Video.LiveQuery,
+                  {
+                    availableAt: {
+                      $lt: moment.tz("UTC").add(48, "hours").toDate(),
+                    },
+                  },
+                ],
+              },
               {
                 status: VideoStatus.Past,
                 actualEnd: { $gt: halfHourAgo },
