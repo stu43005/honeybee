@@ -750,7 +750,7 @@ export async function metrics() {
         {
           match: {
             $or: [
-              ...Channel.SubscribedQuerys,
+              Channel.SubscribedQuery,
               {
                 id: {
                   $in: [...channelIds],

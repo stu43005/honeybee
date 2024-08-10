@@ -55,14 +55,13 @@ export class Channel extends TimeStamps {
     return this.findOne({ id: channelId });
   }
 
-  public static SubscribedQuerys: readonly FilterQuery<Channel>[] =
+  public static SubscribedQuery: Readonly<FilterQuery<Channel>> =
     HOLODEX_FETCH_ORG === HOLODEX_ALL_VTUBERS
-      ? Object.freeze([
-          {
+      ? Object.freeze({
             isInactive: { $ne: true },
-          },
-        ])
-      : Object.freeze([
+        })
+      : Object.freeze({
+          $or: [
           {
             organization: HOLODEX_FETCH_ORG,
             isInactive: { $ne: true },
@@ -71,11 +70,10 @@ export class Channel extends TimeStamps {
             extraCrawl: true,
             isInactive: { $ne: true },
           },
-        ]);
+          ],
+        });
   public static findSubscribed(this: ReturnModelType<typeof Channel>) {
-    return this.find({
-      $or: [...this.SubscribedQuerys],
-    });
+    return this.find(this.SubscribedQuery);
   }
 
   public static async updateFromHolodex(
