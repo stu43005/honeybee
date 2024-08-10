@@ -48,6 +48,9 @@ export class Channel extends TimeStamps {
   @prop({ index: true })
   public extraCrawl?: Boolean;
 
+  @prop({ index: true })
+  public holodexCrawledAt?: Date;
+
   public static findByChannelId(
     this: ReturnModelType<typeof Channel>,
     channelId: string
@@ -96,6 +99,7 @@ export class Channel extends TimeStamps {
           ...setIfDefine("avatarUrl", channel.avatarUrl),
           ...setIfDefine("bannerUrl", channel.bannerUrl),
           ...setIfDefine("isInactive", channel.isInactive),
+          holodexCrawledAt: new Date(),
         },
         $max: {
           subscriberCount: channel.subscriberCount,

@@ -8,6 +8,7 @@ import {
   VideoType,
   type Channel as HolodexChannel,
 } from "holodex.js";
+import moment from "moment-timezone";
 import { setTimeout } from "timers/promises";
 import YouTubeNotifier from "youtube-notification";
 import {
@@ -127,13 +128,20 @@ export async function runCrawler() {
   agenda.define(JOB_HOLODEX_OUTDATE_VIDEO, async (job: Job): Promise<void> => {
     const needUpdate = await VideoModel.findLiveVideos()
       .where({
-        updatedAt: {
-          $lt: new Date(Date.now() - 20 * 60 * 1000),
+        $or: [
+          {
+            holodexCrawledAt: null,
+          },
+          {
+            holodexCrawledAt: {
+              $lt: moment.tz("UTC").subtract(20, "minutes").toDate(),
         },
+          },
+        ],
       })
-      .sort({ updatedAt: 1 })
+      .sort({ holodexCrawledAt: 1 })
       .limit(1);
-    if (needUpdate.length) {
+    if (needUpdate.length > 0) {
       try {
         const stream = await holoapi.getVideo(needUpdate[0].id);
         if (stream) {
@@ -151,6 +159,9 @@ export async function runCrawler() {
   const JOB_HOLODEX_UPDATE_CHANNELS = "crawler holodex update channels";
   agenda.define(
     JOB_HOLODEX_UPDATE_CHANNELS,
+    {
+      lockLifetime: moment.duration(10, "minutes").asMilliseconds(),
+    },
     async (job: Job): Promise<void> => {
       let offset = 0;
       const limit = 50;
@@ -159,13 +170,14 @@ export async function runCrawler() {
           org: HOLODEX_FETCH_ORG,
           type: "vtuber",
           limit,
+          offset,
         });
         for (const channel of channels) {
           await ChannelModel.updateFromHolodex(channel);
         }
         if (channels.length < limit) break;
         offset += channels.length;
-        await setTimeout(5 * 60 * 1000);
+        await setTimeout(moment.duration(5, "minutes").asMilliseconds());
         await job.touch();
       }
     }
@@ -178,11 +190,18 @@ export async function runCrawler() {
     async (job: Job): Promise<void> => {
       const needUpdate = await ChannelModel.findSubscribed()
         .where({
-          updatedAt: {
-            $lt: new Date(Date.now() - 20 * 60 * 1000),
+          $or: [
+            {
+              holodexCrawledAt: null,
+            },
+            {
+              holodexCrawledAt: {
+                $lt: moment.tz("UTC").subtract(20, "minutes").toDate(),
           },
+            },
+          ],
         })
-        .sort({ updatedAt: 1 })
+        .sort({ holodexCrawledAt: 1 })
         .limit(1);
       if (needUpdate.length > 0) {
         try {

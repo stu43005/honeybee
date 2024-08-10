@@ -100,6 +100,9 @@ export class Video extends TimeStamps {
   @prop({ index: true })
   public crawledAt?: Date;
 
+  @prop({ index: true })
+  public holodexCrawledAt?: Date;
+
   public async getChannel(this: DocumentType<Video>) {
     if (isDocument(this.channel)) {
       return this.channel;
@@ -184,6 +187,7 @@ export class Video extends TimeStamps {
           ...setIfDefine("scheduledStart", stream.scheduledStart),
           ...setIfDefine("actualStart", stream.actualStart),
           ...setIfDefine("actualEnd", stream.actualEnd),
+          holodexCrawledAt: new Date(),
         },
       },
       {
