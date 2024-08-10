@@ -48,6 +48,12 @@ spec:
           ports:
             - name: metrics-port
               containerPort: 3000
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: metrics-port
+            failureThreshold: 30
+            periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /healthz

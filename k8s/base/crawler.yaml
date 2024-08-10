@@ -66,6 +66,12 @@ spec:
           ports:
             - name: http-port
               containerPort: 17835
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http-port
+            failureThreshold: 30
+            periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /healthz
