@@ -23,7 +23,10 @@ import VideoModel from "../models/Video";
 import { initMongo } from "../modules/db";
 import { getHolodex } from "../modules/holodex";
 import { getAgenda } from "../modules/schedule";
-import { updateVideoFromYoutube } from "../modules/youtube";
+import {
+  updateChannelFromYoutube,
+  updateVideoFromYoutube,
+} from "../modules/youtube";
 
 export async function runCrawler() {
   const holoapi = getHolodex();
@@ -135,7 +138,7 @@ export async function runCrawler() {
           {
             holodexCrawledAt: {
               $lt: moment.tz("UTC").subtract(20, "minutes").toDate(),
-        },
+            },
           },
         ],
       })
@@ -197,7 +200,7 @@ export async function runCrawler() {
             {
               holodexCrawledAt: {
                 $lt: moment.tz("UTC").subtract(20, "minutes").toDate(),
-          },
+              },
             },
           ],
         })
@@ -283,8 +286,8 @@ export async function runCrawler() {
 
   //#region youtube
 
-  const JOB_YOUTUBE_UPDATE = "crawler youtube update";
-  agenda.define(JOB_YOUTUBE_UPDATE, async (job: Job): Promise<void> => {
+  const JOB_YOUTUBE_UPDATE_VIDEOS = "crawler youtube update";
+  agenda.define(JOB_YOUTUBE_UPDATE_VIDEOS, async (job: Job): Promise<void> => {
     const videoIds = Array.from(
       new Set<string>([
         ...(
@@ -304,7 +307,30 @@ export async function runCrawler() {
       batch.map((perBatch) => updateVideoFromYoutube(perBatch))
     );
   });
-  agenda.every("1 minute", JOB_YOUTUBE_UPDATE);
+  agenda.every("1 minute", JOB_YOUTUBE_UPDATE_VIDEOS);
+
+  const JOB_YOUTUBE_UPDATE_CHANNELS = "crawler youtube update channels";
+  agenda.define(
+    JOB_YOUTUBE_UPDATE_CHANNELS,
+    async (job: Job): Promise<void> => {
+      const channelIds = Array.from(
+        new Set<string>([
+          ...(
+            await ChannelModel.find()
+              .sort({ crawledAt: 1 })
+              .limit(50)
+              .select("id")
+          ).map((channel) => channel.id),
+        ])
+      );
+      const batch: string[][] = [];
+      while (channelIds.length) batch.push(channelIds.splice(0, 50));
+      await Promise.all(
+        batch.map((perBatch) => updateChannelFromYoutube(perBatch))
+      );
+    }
+  );
+  agenda.every("10 minute", JOB_YOUTUBE_UPDATE_CHANNELS);
 
   //#endregion youtube
 

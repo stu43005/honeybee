@@ -4,6 +4,7 @@ import moment from "moment-timezone";
 import assert from "node:assert";
 import { GOOGLE_API_KEY } from "../constants";
 import { HoneybeeStatus, LiveViewersSource } from "../interfaces";
+import ChannelModel from "../models/Channel";
 import LiveViewersModel from "../models/LiveViewers";
 import VideoModel from "../models/Video";
 
@@ -44,6 +45,7 @@ export async function updateVideoFromYoutube(targetVideos: string[]) {
   const ytVideoItems = response?.data?.items;
   if (!ytVideoItems?.length) return;
 
+  const needUpdateChannels: string[] = [];
   for (const targetVideo of targetVideos) {
     const video =
       (await VideoModel.findByVideoId(targetVideo)) ??
@@ -132,6 +134,16 @@ export async function updateVideoFromYoutube(targetVideos: string[]) {
     } else {
       video.status = VideoStatus.Missing;
     }
+
+    if (video.channelId && !video.channel) {
+      const channel = await ChannelModel.findByChannelId(video.channelId);
+      if (channel) {
+        video.channel = channel;
+      } else {
+        needUpdateChannels.push(video.channelId);
+      }
+    }
+
     video.duration ??= 0;
     video.availableAt =
       video.actualStart ??
@@ -142,5 +154,49 @@ export async function updateVideoFromYoutube(targetVideos: string[]) {
     video.crawledAt = new Date();
     video.hbStatus ??= HoneybeeStatus.Created;
     await video.save();
+  }
+
+  await updateChannelFromYoutube(needUpdateChannels);
+}
+
+export async function updateChannelFromYoutube(targetChannels: string[]) {
+  if (!targetChannels.length) return;
+
+  const youtube = getYoutubeApi();
+  const response = await youtube.channels.list({
+    part: ["snippet", "contentDetails", "statistics", "brandingSettings"],
+    id: targetChannels,
+    hl: "ja",
+    maxResults: 50,
+  });
+  const ytChannelItems = response?.data?.items;
+  if (!ytChannelItems?.length) return;
+
+  for (const targetChannel of targetChannels) {
+    const channel =
+      (await ChannelModel.findByChannelId(targetChannel)) ??
+      new ChannelModel({ id: targetChannel });
+    const ytInfo = ytChannelItems.find(
+      (ytChannelItem) => ytChannelItem.id === targetChannel
+    );
+    if (ytInfo) {
+      if (ytInfo.snippet?.title) channel.name = ytInfo.snippet.title;
+      if (ytInfo.snippet?.description)
+        channel.description = ytInfo.snippet.description;
+      if (ytInfo.snippet?.thumbnails?.high?.url)
+        channel.avatarUrl = ytInfo.snippet.thumbnails.high.url;
+      if (ytInfo.brandingSettings?.image?.bannerExternalUrl)
+        channel.bannerUrl = ytInfo.brandingSettings.image.bannerExternalUrl;
+      if (ytInfo.snippet?.publishedAt)
+        channel.publishedAt = new Date(ytInfo.snippet.publishedAt);
+      if (ytInfo.statistics?.viewCount)
+        channel.viewCount = Number(ytInfo.statistics.viewCount);
+      if (ytInfo.statistics?.videoCount)
+        channel.videoCount = Number(ytInfo.statistics.videoCount);
+      if (ytInfo.statistics?.subscriberCount)
+        channel.subscriberCount = Number(ytInfo.statistics.subscriberCount);
+    }
+    channel.crawledAt = new Date();
+    await channel.save();
   }
 }

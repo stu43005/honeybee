@@ -24,6 +24,9 @@ export class Channel extends TimeStamps {
   @prop({ index: true })
   public englishName!: string;
 
+  @prop()
+  public description?: string;
+
   @prop({ index: true })
   public organization?: string;
 
@@ -37,16 +40,25 @@ export class Channel extends TimeStamps {
   public bannerUrl?: string;
 
   @prop()
+  public publishedAt?: Date;
+
+  @prop()
   public subscriberCount?: number;
 
   @prop()
   public viewCount?: number;
+
+  @prop()
+  public videoCount?: number;
 
   @prop({ index: true })
   public isInactive?: Boolean;
 
   @prop({ index: true })
   public extraCrawl?: Boolean;
+
+  @prop({ index: true })
+  public crawledAt?: Date;
 
   @prop({ index: true })
   public holodexCrawledAt?: Date;
@@ -61,18 +73,18 @@ export class Channel extends TimeStamps {
   public static SubscribedQuery: Readonly<FilterQuery<Channel>> =
     HOLODEX_FETCH_ORG === HOLODEX_ALL_VTUBERS
       ? Object.freeze({
-            isInactive: { $ne: true },
+          isInactive: { $ne: true },
         })
       : Object.freeze({
           $or: [
-          {
-            organization: HOLODEX_FETCH_ORG,
-            isInactive: { $ne: true },
-          },
-          {
-            extraCrawl: true,
-            isInactive: { $ne: true },
-          },
+            {
+              organization: HOLODEX_FETCH_ORG,
+              isInactive: { $ne: true },
+            },
+            {
+              extraCrawl: true,
+              isInactive: { $ne: true },
+            },
           ],
         });
   public static findSubscribed(this: ReturnModelType<typeof Channel>) {
@@ -99,11 +111,13 @@ export class Channel extends TimeStamps {
           ...setIfDefine("avatarUrl", channel.avatarUrl),
           ...setIfDefine("bannerUrl", channel.bannerUrl),
           ...setIfDefine("isInactive", channel.isInactive),
+          ...setIfDefine("publishedAt", channel.createdAt),
           holodexCrawledAt: new Date(),
         },
         $max: {
           subscriberCount: channel.subscriberCount,
           viewCount: channel.viewCount,
+          videoCount: channel.videoCount,
         },
       },
       {
