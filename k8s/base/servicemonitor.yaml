@@ -11,7 +11,7 @@ spec:
       path: /metrics
       port: metrics-port
       scheme: http
-      scrapeTimeout: 30s
+      scrapeTimeout: 60s
       relabelings:
         - action: labeldrop
           regex: (service|pod|namespace|endpoint|container)
