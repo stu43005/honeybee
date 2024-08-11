@@ -1,6 +1,12 @@
-import { getModelForClass, modelOptions, prop } from "@typegoose/typegoose";
+import {
+  getModelForClass,
+  index,
+  modelOptions,
+  prop,
+} from "@typegoose/typegoose";
 
 @modelOptions({ schemaOptions: { collection: "membershipgifts" } })
+@index({ originVideoId: 1, authorChannelId: 1 })
 export class MembershipGift {
   @prop({ required: true, unique: true })
   public id!: string;

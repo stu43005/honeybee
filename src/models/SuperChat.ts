@@ -1,5 +1,6 @@
 import {
   getModelForClass,
+  index,
   modelOptions,
   prop,
   Severity,
@@ -9,6 +10,7 @@ import {
   options: { allowMixed: Severity.ALLOW },
   schemaOptions: { collection: "superchats" },
 })
+@index({ originVideoId: 1, authorChannelId: 1 })
 export class SuperChat {
   @prop({ required: true, unique: true })
   public id!: string;

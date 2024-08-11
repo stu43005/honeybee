@@ -1,5 +1,6 @@
 import {
   getModelForClass,
+  index,
   modelOptions,
   prop,
   Severity,
@@ -9,6 +10,7 @@ import {
   options: { allowMixed: Severity.ALLOW },
   schemaOptions: { collection: "superstickers" },
 })
+@index({ originVideoId: 1, authorChannelId: 1 })
 export class SuperSticker {
   @prop({ required: true, unique: true })
   public id!: string;
