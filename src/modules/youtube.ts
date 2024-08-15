@@ -3,9 +3,8 @@ import { VideoStatus } from "holodex.js";
 import moment from "moment-timezone";
 import assert from "node:assert";
 import { GOOGLE_API_KEY } from "../constants";
-import { HoneybeeStatus, LiveViewersSource } from "../interfaces";
+import { HoneybeeStatus } from "../interfaces";
 import ChannelModel from "../models/Channel";
-import LiveViewersModel from "../models/LiveViewers";
 import VideoModel from "../models/Video";
 
 let youtubeApi: youtube_v3.Youtube | undefined;
@@ -73,12 +72,11 @@ export async function updateVideoFromYoutube(targetVideos: string[]) {
           ? new Date(ytInfo.liveStreamingDetails.actualEndTime)
           : undefined;
         if (ytInfo.liveStreamingDetails.concurrentViewers) {
-          await LiveViewersModel.create({
-            originVideoId: video.id,
-            originChannelId: video.channelId,
-            viewers: ytInfo.liveStreamingDetails.concurrentViewers,
-            source: LiveViewersSource.Youtube,
-          }).catch(() => void 0);
+          video.viewers = +ytInfo.liveStreamingDetails.concurrentViewers;
+          video.maxViewers = Math.max(
+            video.maxViewers ?? 0,
+            +ytInfo.liveStreamingDetails.concurrentViewers
+          );
         }
         if (video.actualEnd) {
           video.status = VideoStatus.Past;

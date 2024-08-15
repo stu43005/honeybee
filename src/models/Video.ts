@@ -13,15 +13,9 @@ import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
 import { Video as HolodexVideo, VideoStatus } from "holodex.js";
 import type { FilterQuery } from "mongoose";
 import assert from "node:assert";
-import {
-  HoneybeeStatus,
-  LiveStatus,
-  LiveViewersSource,
-  type HoneybeeResult,
-} from "../interfaces";
+import { HoneybeeStatus, LiveStatus, type HoneybeeResult } from "../interfaces";
 import { setIfDefine } from "../util";
 import ChannelModel, { Channel } from "./Channel";
-import LiveViewers from "./LiveViewers";
 
 export class Stats {
   @prop({ required: true })
@@ -60,6 +54,12 @@ export class Video extends TimeStamps {
 
   @prop()
   public likes?: number;
+
+  @prop()
+  public viewers?: number;
+
+  @prop()
+  public maxViewers?: number;
 
   @prop()
   public publishedAt?: Date;
@@ -156,14 +156,6 @@ export class Video extends TimeStamps {
     stream: HolodexVideo
   ) {
     const channel = await ChannelModel.updateFromHolodex(stream.channel);
-    if (stream.liveViewers > 0) {
-      await LiveViewers.create({
-        originVideoId: stream.videoId,
-        originChannelId: stream.channelId,
-        viewers: stream.liveViewers,
-        source: LiveViewersSource.Holodex,
-      });
-    }
     return await this.findOneAndUpdate(
       {
         id: stream.videoId,
@@ -176,6 +168,7 @@ export class Video extends TimeStamps {
           channel: channel,
           channelId: stream.channelId,
           ...setIfDefine("title", stream.title),
+          ...setIfDefine("viewers", stream.liveViewers),
         },
         $set: {
           ...setIfDefine("description", stream.description),
@@ -188,6 +181,9 @@ export class Video extends TimeStamps {
           ...setIfDefine("actualStart", stream.actualStart),
           ...setIfDefine("actualEnd", stream.actualEnd),
           holodexCrawledAt: new Date(),
+        },
+        $max: {
+          ...setIfDefine("maxViewers", stream.liveViewers),
         },
       },
       {
@@ -202,7 +198,7 @@ export class Video extends TimeStamps {
     mc: Masterchat
   ) {
     const metadata = await mc.fetchMetadataFromWatch(mc.videoId);
-    if ("subscribers" in metadata && metadata.subscribers) {
+    if ("subscribers" in metadata && typeof metadata.subscribers === "number") {
       await ChannelModel.updateOne(
         { id: mc.channelId },
         {
@@ -212,26 +208,19 @@ export class Video extends TimeStamps {
         }
       );
     }
-    if ("viewCount" in metadata && typeof metadata.viewCount === "number") {
-      const lastViewCount = await LiveViewers.findOne({
-        originVideoId: mc.videoId,
-        source: LiveViewersSource.Masterchat,
-      }).sort({ createdAt: -1 });
-      if (!lastViewCount || lastViewCount.viewers !== metadata.viewCount) {
-        await LiveViewers.create({
-          originVideoId: mc.videoId,
-          originChannelId: mc.channelId,
-          viewers: metadata.viewCount,
-          source: LiveViewersSource.Masterchat,
-        });
-      }
-    }
-    if ("likes" in metadata && metadata.likes) {
+    if (
+      ("viewCount" in metadata && typeof metadata.viewCount === "number") ||
+      ("likes" in metadata && typeof metadata.likes === "number")
+    ) {
       await this.updateOne(
         { id: mc.videoId },
         {
+          $set: {
+            ...setIfDefine("viewers", metadata.viewCount),
+          },
           $max: {
-            likes: metadata.likes,
+            ...setIfDefine("maxViewers", metadata.viewCount),
+            ...setIfDefine("likes", metadata.likes),
           },
         }
       );
@@ -283,12 +272,13 @@ export class Video extends TimeStamps {
     videoId: string,
     result: HoneybeeResult
   ) {
-    const video = await this.findOneAndUpdate(
+    await this.updateOne(
       {
         id: videoId,
       },
       {
         $set: {
+          viewers: 0,
           hbStatus: HoneybeeStatus.Finished,
           hbErrorCode: result.error,
           hbEnd: new Date(),
@@ -298,17 +288,11 @@ export class Video extends TimeStamps {
           "hbStats.handled": result.result?.handled ?? 0,
           "hbStats.errorCount": result.result?.errors ?? 0,
         },
+        $max: {
+          maxViewers: 0,
+        },
       }
     );
-    if (video) {
-      // set live viewers to 0
-      await LiveViewers.create({
-        originVideoId: video.id,
-        originChannelId: video.channelId,
-        viewers: 0,
-        source: LiveViewersSource.Honeybee,
-      });
-    }
   }
 
   public static async updateFromNotification(

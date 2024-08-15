@@ -32,13 +32,6 @@ export enum MessageAuthorType {
   Other = "other",
 }
 
-export enum LiveViewersSource {
-  Holodex = "holodex",
-  Masterchat = "masterchat",
-  Honeybee = "honeybee",
-  Youtube = "youtube",
-}
-
 export enum ErrorCode {
   MembersOnly = "MEMBERS_ONLY",
   Private = "PRIVATE",

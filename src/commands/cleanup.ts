@@ -3,7 +3,6 @@ import moment from "moment-timezone";
 import type { Arguments, Argv } from "yargs";
 import BanAction from "../models/BanAction";
 import Chat from "../models/Chat";
-import LiveViewers from "../models/LiveViewers";
 import Membership from "../models/Membership";
 import MembershipGift from "../models/MembershipGift";
 import MembershipGiftPurchase from "../models/MembershipGiftPurchase";
@@ -57,7 +56,6 @@ async function cleanVideos(videoIds: string[]) {
   await MembershipGift.deleteMany({ originVideoId: { $in: videoIds } });
   await MembershipGiftPurchase.deleteMany({ originVideoId: { $in: videoIds } });
   await Chat.deleteMany({ originVideoId: { $in: videoIds } });
-  await LiveViewers.deleteMany({ originVideoId: { $in: videoIds } });
   await Video.updateMany(
     { id: { $in: videoIds } },
     { $set: { hbCleanedAt: new Date() } }
@@ -93,23 +91,7 @@ export async function cleanup(argv: Arguments<CleanupOptions>) {
         },
       },
     ]);
-    const liveviewers = await LiveViewers.aggregate<{
-      _id: { videoId: string };
-      lastTime: Date;
-    }>([
-      {
-        $group: {
-          _id: { videoId: "$originVideoId" },
-          lastTime: { $last: "$createdAt" },
-        },
-      },
-    ]);
-    const videoIds = Array.from(
-      new Set([
-        ...chats.map((r) => r._id.videoId),
-        ...liveviewers.map((r) => r._id.videoId),
-      ])
-    );
+    const videoIds = Array.from(new Set([...chats.map((r) => r._id.videoId)]));
 
     const videos = await Video.find(
       {

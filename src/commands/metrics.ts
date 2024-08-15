@@ -6,17 +6,12 @@ import moment from "moment-timezone";
 import type { AccumulatorOperator, FilterQuery, PipelineStage } from "mongoose";
 import PQueue from "p-queue";
 import { Gauge, Registry, type Metric } from "prom-client";
-import {
-  LiveViewersSource,
-  MessageAuthorType,
-  MessageType,
-} from "../interfaces";
+import { MessageAuthorType, MessageType } from "../interfaces";
 import BanAction from "../models/BanAction";
 import BannerAction from "../models/BannerAction";
 import Channel from "../models/Channel";
 import Chat from "../models/Chat";
 import ErrorLog from "../models/ErrorLog";
-import LiveViewers from "../models/LiveViewers";
 import Membership from "../models/Membership";
 import MembershipGift from "../models/MembershipGift";
 import MembershipGiftPurchase from "../models/MembershipGiftPurchase";
@@ -614,32 +609,30 @@ export async function metrics() {
               fetchAll: force,
             })
           ),
-          updateMetrics("honeybee_video_viewers", LiveViewers, {
+          updateMetrics("honeybee_video_viewers", Video, {
             match: {
-              originVideoId: {
+              id: {
                 $in: [...videoIds],
-              },
-              source: {
-                $ne: LiveViewersSource.Holodex,
               },
             },
             labels: {
-              videoId: "$originVideoId",
+              videoId: "$id",
             },
             value: { $last: "$viewers" },
             fetchAll: true,
             reset: true,
           }),
-          updateMetrics("honeybee_video_max_viewers", LiveViewers, {
+          updateMetrics("honeybee_video_max_viewers", Video, {
             match: {
-              originVideoId: {
+              id: {
                 $in: [...videoIds],
               },
+              maxViewers: { $gt: 0 },
             },
             labels: {
-              videoId: "$originVideoId",
+              videoId: "$id",
             },
-            value: { $max: "$viewers" },
+            value: { $max: "$maxViewers" },
             fetchAll: true,
             reset: true,
           }),
