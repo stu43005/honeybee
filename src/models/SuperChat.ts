@@ -1,6 +1,5 @@
 import {
   getModelForClass,
-  index,
   modelOptions,
   prop,
   Severity,
@@ -10,7 +9,6 @@ import {
   options: { allowMixed: Severity.ALLOW },
   schemaOptions: { collection: "superchats" },
 })
-@index({ originVideoId: 1, authorChannelId: 1 })
 export class SuperChat {
   @prop({ required: true, unique: true })
   public id!: string;
@@ -24,19 +22,19 @@ export class SuperChat {
   @prop()
   public authorPhoto?: string;
 
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   public authorChannelId!: string;
 
   @prop()
   public membership?: string;
 
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   public isVerified!: Boolean;
 
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   public isOwner!: Boolean;
 
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   public isModerator!: Boolean;
 
   @prop({ required: true })
@@ -45,10 +43,10 @@ export class SuperChat {
   @prop({ required: true })
   public jpyAmount!: number;
 
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   public currency!: string;
 
-  @prop({ index: true })
+  @prop()
   public significance?: number;
 
   @prop()
@@ -57,10 +55,10 @@ export class SuperChat {
   @prop({ required: true, index: true })
   public originVideoId!: string;
 
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   public originChannelId!: string;
 
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   public timestamp!: Date;
 }
 

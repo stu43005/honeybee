@@ -17,19 +17,19 @@ export class Membership {
   @prop()
   public authorPhoto?: string;
 
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   public authorChannelId!: string;
 
   @prop()
   public membership?: string;
 
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   public isVerified!: Boolean;
 
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   public isOwner!: Boolean;
 
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   public isModerator!: Boolean;
 
   @prop()
@@ -41,10 +41,10 @@ export class Membership {
   @prop({ required: true })
   public originVideoId!: string;
 
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   public originChannelId!: string;
 
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   public timestamp!: Date;
 }
 

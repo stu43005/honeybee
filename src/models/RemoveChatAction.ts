@@ -11,10 +11,10 @@ export class RemoveChatAction {
   @prop({ required: true, index: true })
   originVideoId!: string;
 
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   originChannelId!: string;
 
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   timestamp!: Date;
 }
 

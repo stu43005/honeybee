@@ -6,23 +6,23 @@ export class Raid {
   /**
    * incoming raid id
    */
-  @prop({ index: true })
+  @prop()
   public id?: string;
 
   /**
    * outgoing raid id
    */
-  @prop({ index: true })
+  @prop()
   public outgoingId?: string;
 
   // source
-  @prop({ index: true })
+  @prop()
   public sourceVideoId?: string;
 
-  @prop({ index: true })
+  @prop()
   public sourceChannelId?: string;
 
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   public sourceName!: string;
 
   @prop()
@@ -32,13 +32,13 @@ export class Raid {
   @prop({ required: true, index: true })
   public originVideoId!: string;
 
-  @prop({ index: true })
+  @prop()
   public originChannelId?: string;
 
   @prop()
   public originPhoto?: string;
 
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   timestamp!: Date;
 }
 

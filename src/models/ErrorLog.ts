@@ -10,16 +10,16 @@ import {
   schemaOptions: { collection: "errorlogs" },
 })
 export class ErrorLog {
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   public timestamp!: Date;
 
   @prop({ index: true })
   public originVideoId?: string;
 
-  @prop({ index: true })
+  @prop()
   public originChannelId?: string;
 
-  @prop({ index: true })
+  @prop()
   public error?: string;
 
   @prop()

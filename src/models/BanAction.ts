@@ -3,16 +3,16 @@ import { getModelForClass, index, modelOptions, prop } from "@typegoose/typegoos
 @modelOptions({ schemaOptions: { collection: "banactions" } })
 @index({ channelId: 1, originVideoId: 1 }, { unique: true })
 export class BanAction {
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   channelId!: string;
 
   @prop({ required: true, index: true })
   originVideoId!: string;
 
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   originChannelId!: string;
 
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   timestamp!: Date;
 }
 

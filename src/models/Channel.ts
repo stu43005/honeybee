@@ -18,10 +18,10 @@ export class Channel extends TimeStamps {
   @prop({ required: true, unique: true })
   public id!: string;
 
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   public name!: string;
 
-  @prop({ index: true })
+  @prop()
   public englishName!: string;
 
   @prop()
@@ -30,7 +30,7 @@ export class Channel extends TimeStamps {
   @prop({ index: true })
   public organization?: string;
 
-  @prop({ index: true })
+  @prop()
   public group?: string;
 
   @prop()
@@ -51,10 +51,10 @@ export class Channel extends TimeStamps {
   @prop()
   public videoCount?: number;
 
-  @prop({ index: true })
+  @prop()
   public isInactive?: Boolean;
 
-  @prop({ index: true })
+  @prop()
   public extraCrawl?: Boolean;
 
   @prop({ index: true })

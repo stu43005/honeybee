@@ -2,10 +2,10 @@ import { getModelForClass, modelOptions, prop } from "@typegoose/typegoose";
 
 @modelOptions({ schemaOptions: { collection: "modechanges" } })
 export class ModeChange {
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   timestamp!: Date;
 
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   mode!: string;
 
   @prop({ required: true })
@@ -17,7 +17,7 @@ export class ModeChange {
   @prop({ required: true, index: true })
   originVideoId!: string;
 
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   originChannelId!: string;
 }
 

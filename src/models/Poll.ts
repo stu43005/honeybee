@@ -37,7 +37,7 @@ export class Poll extends TimeStamps {
   @prop({ required: true, index: true })
   public originVideoId!: string;
 
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   public originChannelId!: string;
 }
 

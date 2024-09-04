@@ -3,7 +3,7 @@ import { getModelForClass, modelOptions, prop } from "@typegoose/typegoose";
 // @modelOptions({ options: { allowMixed: Severity.ALLOW } })
 @modelOptions({ schemaOptions: { collection: "placeholders" } })
 export class Placeholder {
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   timestamp!: Date;
 
   @prop({ required: true, unique: true })
@@ -12,7 +12,7 @@ export class Placeholder {
   @prop({ required: true, index: true })
   originVideoId!: string;
 
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   originChannelId!: string;
 }
 

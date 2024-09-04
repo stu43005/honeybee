@@ -2,7 +2,6 @@ import type { Masterchat } from "@stu43005/masterchat";
 import {
   DocumentType,
   getModelForClass,
-  index,
   isDocument,
   modelOptions,
   prop,
@@ -26,12 +25,11 @@ export class Stats {
 }
 
 @modelOptions({ schemaOptions: { collection: "videos" } })
-@index({ status: 1, hbCleanedAt: 1 })
 export class Video extends TimeStamps {
   @prop({ required: true, unique: true })
   public id!: string;
 
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   public channelId!: string;
 
   @prop({ ref: () => Channel })
@@ -43,7 +41,7 @@ export class Video extends TimeStamps {
   @prop()
   public description?: string;
 
-  @prop({ index: true })
+  @prop()
   public topic?: string;
 
   @prop({ required: true, index: true, default: VideoStatus.New })
@@ -64,7 +62,7 @@ export class Video extends TimeStamps {
   @prop()
   public publishedAt?: Date;
 
-  @prop({ required: true, index: true })
+  @prop({ required: true })
   public availableAt?: Date;
 
   @prop()
@@ -76,7 +74,7 @@ export class Video extends TimeStamps {
   @prop()
   public actualEnd?: Date;
 
-  @prop({ required: true, index: true, default: HoneybeeStatus.Created })
+  @prop({ required: true, default: HoneybeeStatus.Created })
   public hbStatus!: HoneybeeStatus;
 
   @prop()
@@ -97,10 +95,10 @@ export class Video extends TimeStamps {
   @prop({ default: 1 })
   public hbReplica?: number;
 
-  @prop({ index: true })
+  @prop()
   public crawledAt?: Date;
 
-  @prop({ index: true })
+  @prop()
   public holodexCrawledAt?: Date;
 
   public async getChannel(this: DocumentType<Video>) {
