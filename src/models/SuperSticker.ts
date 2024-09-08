@@ -4,6 +4,7 @@ import {
   prop,
   Severity,
 } from "@typegoose/typegoose";
+import type { MessageAuthorType } from "../interfaces";
 
 @modelOptions({
   options: { allowMixed: Severity.ALLOW },
@@ -21,6 +22,9 @@ export class SuperSticker {
 
   @prop({ required: true })
   public authorChannelId!: string;
+
+  @prop({ required: true })
+  public authorType!: MessageAuthorType;
 
   @prop()
   public membership?: string;

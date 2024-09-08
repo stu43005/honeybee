@@ -20,6 +20,7 @@ import {
   ErrorCode,
   HoneybeeResult,
   HoneybeeStats,
+  MessageAuthorType,
   type HoneybeeJob,
 } from "../interfaces";
 import BanActionModel, { type BanAction } from "../models/BanAction";
@@ -75,6 +76,22 @@ function emojiHandler(run: YTEmojiRun) {
 
 function normalizeMembership(membership?: MCMembership) {
   return membership ? membership.since ?? "new" : undefined;
+}
+
+function authorTypeLabelmap(
+  action: {
+    isOwner?: boolean;
+    isModerator?: boolean;
+    isVerified?: boolean;
+    membership?: string;
+  },
+  defaultType = MessageAuthorType.Other
+): MessageAuthorType {
+  if (action.isOwner) return MessageAuthorType.Owner;
+  if (action.isModerator) return MessageAuthorType.Moderator;
+  if (action.membership) return MessageAuthorType.Member;
+  if (action.isVerified) return MessageAuthorType.Verified;
+  return defaultType;
 }
 
 const stringifyOptions = {
@@ -158,6 +175,12 @@ async function handleJob(
                 authorName: action.authorName,
                 authorPhoto: action.authorPhoto,
                 authorChannelId: action.authorChannelId,
+                authorType: authorTypeLabelmap({
+                  membership: normMembership,
+                  isVerified: action.isVerified,
+                  isOwner: action.isOwner,
+                  isModerator: action.isModerator,
+                }),
                 membership: normMembership,
                 isVerified: action.isVerified,
                 isOwner: action.isOwner,
@@ -194,6 +217,12 @@ async function handleJob(
                   authorName: action.authorName,
                   authorPhoto: action.authorPhoto,
                   authorChannelId: action.authorChannelId,
+                  authorType: authorTypeLabelmap({
+                    membership: normMembership,
+                    isVerified: action.isVerified,
+                    isOwner: action.isOwner,
+                    isModerator: action.isModerator,
+                  }),
                   membership: normMembership,
                   isVerified: action.isVerified,
                   isOwner: action.isOwner,
@@ -222,6 +251,12 @@ async function handleJob(
                     authorName: action.authorName,
                     authorPhoto: action.authorPhoto,
                     authorChannelId: action.authorChannelId,
+                    authorType: authorTypeLabelmap({
+                      membership: normMembership,
+                      isVerified: action.isVerified,
+                      isOwner: action.isOwner,
+                      isModerator: action.isModerator,
+                    }),
                     membership: normMembership,
                     isVerified: action.isVerified,
                     isOwner: action.isOwner,
@@ -277,6 +312,15 @@ async function handleJob(
                 authorName: action.authorName,
                 authorPhoto: action.authorPhoto,
                 authorChannelId: action.authorChannelId,
+                authorType: authorTypeLabelmap(
+                  {
+                    membership: normMembership,
+                    isVerified: action.isVerified,
+                    isOwner: action.isOwner,
+                    isModerator: action.isModerator,
+                  },
+                  MessageAuthorType.Member
+                ),
                 membership: normMembership,
                 isVerified: action.isVerified,
                 isOwner: action.isOwner,
@@ -306,6 +350,15 @@ async function handleJob(
                 authorName: action.authorName,
                 authorPhoto: action.authorPhoto,
                 authorChannelId: action.authorChannelId,
+                authorType: authorTypeLabelmap(
+                  {
+                    membership: normMembership,
+                    isVerified: action.isVerified,
+                    isOwner: action.isOwner,
+                    isModerator: action.isModerator,
+                  },
+                  MessageAuthorType.Member
+                ),
                 membership: normMembership,
                 isVerified: action.isVerified,
                 isOwner: action.isOwner,
@@ -400,6 +453,12 @@ async function handleJob(
                       authorName: item.authorName,
                       authorPhoto: item.authorPhoto,
                       authorChannelId: item.authorChannelId,
+                      authorType: authorTypeLabelmap({
+                        membership: normMembership,
+                        isVerified: item.isVerified,
+                        isOwner: item.isOwner,
+                        isModerator: item.isModerator,
+                      }),
                       membership: normMembership,
                       isVerified: item.isVerified,
                       isOwner: item.isOwner,
@@ -440,6 +499,12 @@ async function handleJob(
                           authorName: item.authorName,
                           authorPhoto: item.authorPhoto,
                           authorChannelId: item.authorChannelId,
+                          authorType: authorTypeLabelmap({
+                            membership: normMembership,
+                            isVerified: item.isVerified,
+                            isOwner: item.isOwner,
+                            isModerator: item.isModerator,
+                          }),
                           membership: normMembership,
                           isVerified: item.isVerified,
                           isOwner: item.isOwner,
@@ -552,6 +617,12 @@ async function handleJob(
                   authorName: action.authorName,
                   authorPhoto: action.authorPhoto,
                   authorChannelId: action.authorChannelId,
+                  authorType: authorTypeLabelmap({
+                    membership: normMembership,
+                    isVerified: action.isVerified,
+                    isOwner: action.isOwner,
+                    isModerator: action.isModerator,
+                  }),
                   membership: normMembership,
                   isVerified: action.isVerified,
                   isOwner: action.isOwner,
@@ -578,6 +649,15 @@ async function handleJob(
                   authorName: action.authorName,
                   authorPhoto: action.authorPhoto,
                   authorChannelId: action.authorChannelId,
+                  authorType: authorTypeLabelmap(
+                    {
+                      membership: normMembership,
+                      isVerified: action.isVerified,
+                      isOwner: action.isOwner,
+                      isModerator: action.isModerator,
+                    },
+                    MessageAuthorType.Member
+                  ),
                   membership: normMembership,
                   isVerified: action.isVerified,
                   isOwner: action.isOwner,
@@ -784,7 +864,9 @@ async function handleJob(
           const video = await VideoModel.findByVideoId(videoId);
           switch (video?.getReplicas()) {
             case 1: {
-              const recentActions = actionCounter.countRecentActions(moment.duration(1, "minute"));
+              const recentActions = actionCounter.countRecentActions(
+                moment.duration(1, "minute")
+              );
               if (recentActions !== null && recentActions >= 600) {
                 // scale up
                 videoLog(`scale up`);
@@ -794,7 +876,9 @@ async function handleJob(
               break;
             }
             case 2: {
-              const recentActions = actionCounter.countRecentActions(moment.duration(10, "minute"));
+              const recentActions = actionCounter.countRecentActions(
+                moment.duration(10, "minute")
+              );
               if (recentActions !== null && recentActions / 10 < 300) {
                 // scale down
                 videoLog(`scale down`);

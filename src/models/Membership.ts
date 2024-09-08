@@ -3,6 +3,7 @@ import {
   modelOptions,
   prop,
 } from "@typegoose/typegoose";
+import type { MessageAuthorType } from "../interfaces";
 
 @modelOptions({ schemaOptions: { collection: "memberships" } })
 export class Membership {
@@ -17,6 +18,9 @@ export class Membership {
 
   @prop({ required: true })
   public authorChannelId!: string;
+
+  @prop({ required: true })
+  public authorType!: MessageAuthorType;
 
   @prop()
   public membership?: string;

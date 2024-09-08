@@ -53,7 +53,6 @@ function collectLabelValues<L extends string>(
 const purchaseMessageTypes: {
   messageType: MessageType;
   model: ReturnModelType<AnyParamConstructor<any>>;
-  defaultAuthorType?: MessageAuthorType;
 }[] = [
   { messageType: MessageType.SuperChat, model: SuperChat },
   { messageType: MessageType.SuperSticker, model: SuperSticker },
@@ -63,12 +62,10 @@ const messageTypes: typeof purchaseMessageTypes = [
   {
     messageType: MessageType.Membership,
     model: Membership,
-    defaultAuthorType: MessageAuthorType.Member,
   },
   {
     messageType: MessageType.MembershipGift,
     model: MembershipGift,
-    defaultAuthorType: MessageAuthorType.Member,
   },
   {
     messageType: MessageType.MembershipGiftPurchase,
@@ -77,7 +74,6 @@ const messageTypes: typeof purchaseMessageTypes = [
   {
     messageType: MessageType.Milestone,
     model: Milestone,
-    defaultAuthorType: MessageAuthorType.Member,
   },
   ...purchaseMessageTypes,
 ];
@@ -91,26 +87,6 @@ const actions: Record<string, ReturnModelType<AnyParamConstructor<any>>> = {
   raid: Raid,
   errorLog: ErrorLog,
 };
-
-function authorTypeLabelmap(_default = MessageAuthorType.Other) {
-  return {
-    $switch: {
-      branches: [
-        { case: { $eq: ["$isOwner", true] }, then: MessageAuthorType.Owner },
-        {
-          case: { $eq: ["$isModerator", true] },
-          then: MessageAuthorType.Moderator,
-        },
-        { case: "$membership", then: MessageAuthorType.Member },
-        {
-          case: { $eq: ["$isVerified", true] },
-          then: MessageAuthorType.Verified,
-        },
-      ],
-      default: _default,
-    },
-  };
-}
 
 export async function metrics() {
   const disconnect = await initMongo();
@@ -510,7 +486,7 @@ export async function metrics() {
               },
               labels: {
                 videoId: "$originVideoId",
-                authorType: authorTypeLabelmap(type.defaultAuthorType),
+                authorType: "$authorType",
                 type: type.messageType,
               },
               value: { $sum: 1 },
@@ -530,7 +506,7 @@ export async function metrics() {
                   videoId: "$originVideoId",
                 },
                 authorType: {
-                  $last: authorTypeLabelmap(type.defaultAuthorType),
+                  $last: "$authorType",
                 },
               },
               labels: {
@@ -551,7 +527,7 @@ export async function metrics() {
               },
               labels: {
                 videoId: "$originVideoId",
-                authorType: authorTypeLabelmap(type.defaultAuthorType),
+                authorType: "$authorType",
                 type: type.messageType,
                 currency: "$currency",
               },
@@ -568,7 +544,7 @@ export async function metrics() {
               },
               labels: {
                 videoId: "$originVideoId",
-                authorType: authorTypeLabelmap(type.defaultAuthorType),
+                authorType: "$authorType",
                 type: type.messageType,
                 currency: "$currency",
               },
@@ -587,7 +563,7 @@ export async function metrics() {
               },
               labels: {
                 videoId: "$originVideoId",
-                authorType: authorTypeLabelmap(),
+                authorType: "$authorType",
                 type: MessageType.MembershipGiftPurchase,
               },
               value: { $sum: "$amount" },
