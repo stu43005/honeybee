@@ -6,7 +6,7 @@ import moment from "moment-timezone";
 import type { AccumulatorOperator, FilterQuery, PipelineStage } from "mongoose";
 import PQueue from "p-queue";
 import { Gauge, Registry, type Metric } from "prom-client";
-import { MessageAuthorType, MessageType } from "../interfaces";
+import { MessageType } from "../interfaces";
 import BanAction from "../models/BanAction";
 import BannerAction from "../models/BannerAction";
 import Channel from "../models/Channel";
@@ -37,18 +37,6 @@ type MetricPayload<L extends string> = {
   value: any;
   lastId: string;
 };
-
-function collectLabelValues<L extends string>(
-  set: Set<string>,
-  payloads: MetricPayload<L>[],
-  label: NoInfer<L>
-) {
-  for (const payload of payloads) {
-    const { _id: labels } = payload;
-    set.add(labels[label]);
-  }
-  return set;
-}
 
 const purchaseMessageTypes: {
   messageType: MessageType;
@@ -424,49 +412,102 @@ export async function metrics() {
     try {
       const force = lastFullCollect + 3_600_000 < Date.now();
 
+      const videoIds = new Set<string>();
+      const channelIds = new Set<string>();
+
       const halfHourAgo = moment.tz("UTC").subtract(30, "minutes").toDate();
-      const videoInfoRecords = await updateMetrics(
-        "honeybee_video_info",
-        Video,
-        {
-          match: {
-            $or: [
+      const videos = await Video.find({
+        $or: [
+          {
+            $and: [
+              Video.LiveQuery,
               {
-                $and: [
-                  Video.LiveQuery,
-                  {
-                    availableAt: {
-                      $lt: moment.tz("UTC").add(48, "hours").toDate(),
-                    },
-                  },
-                ],
-              },
-              {
-                status: VideoStatus.Past,
-                actualEnd: { $gt: halfHourAgo },
-              },
-              {
-                status: VideoStatus.Missing,
-                hbEnd: { $gt: halfHourAgo },
+                availableAt: {
+                  $lt: moment.tz("UTC").add(48, "hours").toDate(),
+                },
               },
             ],
           },
-          labels: {
-            videoId: "$id",
-            channelId: "$channelId",
-            title: "$title",
-            topic: "$topic",
+          {
+            status: VideoStatus.Past,
+            actualEnd: { $gt: halfHourAgo },
           },
-          value: { $last: 1 },
-          fetchAll: true,
-          reset: true,
-        }
-      );
+          {
+            status: VideoStatus.Missing,
+            hbEnd: { $gt: halfHourAgo },
+          },
+        ],
+      });
 
-      const videoIds = new Set<string>();
-      const channelIds = new Set<string>();
-      collectLabelValues(videoIds, videoInfoRecords, "videoId");
-      collectLabelValues(channelIds, videoInfoRecords, "channelId");
+      metrics.honeybee_video_info.reset();
+      metrics.honeybee_video_viewers.reset();
+      metrics.honeybee_video_max_viewers.reset();
+      metrics.honeybee_video_likes.reset();
+      metrics.honeybee_video_start_time_seconds.reset();
+      metrics.honeybee_video_actual_start_time_seconds.reset();
+      metrics.honeybee_video_end_time_seconds.reset();
+      metrics.honeybee_video_actual_end_time_seconds.reset();
+      metrics.honeybee_video_duration_seconds.reset();
+
+      if (videos.length > 0) {
+        for (const video of videos) {
+          videoIds.add(video.id);
+          channelIds.add(video.channelId);
+
+          metrics.honeybee_video_info.set(
+            {
+              videoId: video.id,
+              channelId: video.channelId,
+              title: video.title,
+              topic: video.topic,
+            },
+            1
+          );
+
+          const videoIdLabel = { videoId: video.id };
+          if (video.viewers)
+            metrics.honeybee_video_viewers.set(videoIdLabel, video.viewers);
+          if (video.maxViewers && video.maxViewers > 0)
+            metrics.honeybee_video_max_viewers.set(
+              videoIdLabel,
+              video.maxViewers
+            );
+          if (video.likes && video.likes > 0)
+            metrics.honeybee_video_likes.set(videoIdLabel, video.likes);
+          if (video.availableAt)
+            metrics.honeybee_video_start_time_seconds.set(
+              videoIdLabel,
+              video.availableAt.getTime() / 1000
+            );
+          if (video.actualStart)
+            metrics.honeybee_video_actual_start_time_seconds.set(
+              videoIdLabel,
+              video.actualStart.getTime() / 1000
+            );
+          if (video.hbEnd && ["Failed", "Finished"].includes(video.hbStatus))
+            metrics.honeybee_video_end_time_seconds.set(
+              videoIdLabel,
+              video.hbEnd.getTime() / 1000
+            );
+          if (video.actualEnd)
+            metrics.honeybee_video_actual_end_time_seconds.set(
+              videoIdLabel,
+              video.actualEnd.getTime() / 1000
+            );
+
+          // duration
+          if (video.duration)
+            metrics.honeybee_video_duration_seconds.set(
+              videoIdLabel,
+              video.duration
+            );
+          else if (video.actualStart)
+            metrics.honeybee_video_duration_seconds.set(
+              videoIdLabel,
+              moment.tz("UTC").diff(video.actualStart, "second")
+            );
+        }
+      }
 
       if (force) {
         metrics.honeybee_messages_total.reset();
@@ -585,193 +626,49 @@ export async function metrics() {
               fetchAll: force,
             })
           ),
-          updateMetrics("honeybee_video_viewers", Video, {
-            match: {
-              id: {
-                $in: [...videoIds],
-              },
-            },
-            labels: {
-              videoId: "$id",
-            },
-            value: { $last: "$viewers" },
-            fetchAll: true,
-            reset: true,
-          }),
-          updateMetrics("honeybee_video_max_viewers", Video, {
-            match: {
-              id: {
-                $in: [...videoIds],
-              },
-              maxViewers: { $gt: 0 },
-            },
-            labels: {
-              videoId: "$id",
-            },
-            value: { $max: "$maxViewers" },
-            fetchAll: true,
-            reset: true,
-          }),
-          updateMetrics("honeybee_video_likes", Video, {
-            match: {
-              id: {
-                $in: [...videoIds],
-              },
-              likes: { $gt: 0 },
-            },
-            labels: {
-              videoId: "$id",
-            },
-            value: { $max: "$likes" },
-            fetchAll: true,
-            reset: true,
-          }),
-          updateMetrics("honeybee_video_start_time_seconds", Video, {
-            match: {
-              id: {
-                $in: [...videoIds],
-              },
-            },
-            labels: {
-              videoId: "$id",
-            },
-            value: { $last: "$availableAt" },
-            fetchAll: true,
-            reset: true,
-          }),
-          updateMetrics("honeybee_video_actual_start_time_seconds", Video, {
-            match: {
-              id: {
-                $in: [...videoIds],
-              },
-              actualStart: { $ne: null },
-            },
-            labels: {
-              videoId: "$id",
-            },
-            value: { $last: "$actualStart" },
-            fetchAll: true,
-            reset: true,
-          }),
-          updateMetrics("honeybee_video_end_time_seconds", Video, {
-            match: {
-              id: {
-                $in: [...videoIds],
-              },
-              hbStatus: {
-                $in: ["Failed", "Finished"],
-              },
-              hbEnd: { $ne: null },
-            },
-            labels: {
-              videoId: "$id",
-            },
-            value: { $last: "$hbEnd" },
-            fetchAll: true,
-            reset: true,
-          }),
-          updateMetrics("honeybee_video_actual_end_time_seconds", Video, {
-            match: {
-              id: {
-                $in: [...videoIds],
-              },
-              actualEnd: { $ne: null },
-            },
-            labels: {
-              videoId: "$id",
-            },
-            value: { $last: "$actualEnd" },
-            fetchAll: true,
-            reset: true,
-          }),
-          updateMetrics("honeybee_video_duration_seconds", Video, {
-            match: {
-              id: {
-                $in: [...videoIds],
-              },
-            },
-            labels: {
-              videoId: "$id",
-            },
-            value: {
-              $last: {
-                $cond: {
-                  if: "$duration",
-                  then: "$duration",
-                  else: {
-                    $cond: {
-                      if: "$actualStart",
-                      then: {
-                        $dateDiff: {
-                          startDate: "$actualStart",
-                          endDate: new Date(),
-                          unit: "second",
-                        },
-                      },
-                      else: null,
-                    },
-                  },
-                },
-              },
-            },
-            fetchAll: true,
-            reset: true,
-          }),
         ]),
         () => void 0,
         (reason) => console.error(reason)
       );
 
-      const channelInfoRecords = await updateMetrics(
-        "honeybee_channel_info",
-        Channel,
-        {
-          match: {
-            $or: [
-              Channel.SubscribedQuery,
-              {
-                id: {
-                  $in: [...channelIds],
-                },
-              },
-            ],
+      const channels = await Channel.find({
+        $or: [
+          Channel.SubscribedQuery,
+          {
+            id: {
+              $in: [...channelIds],
+            },
           },
-          labels: {
-            channelId: "$id",
-            name: "$name",
-            englishName: "$englishName",
-            organization: "$organization",
-            group: "$group",
-            avatarUrl: "$avatarUrl",
-          },
-          value: { $last: 1 },
-          fetchAll: true,
-          reset: true,
+        ],
+      });
+
+      metrics.honeybee_channel_info.reset();
+      metrics.honeybee_channel_subscribers.reset();
+
+      if (channels.length > 0) {
+        for (const channel of channels) {
+          channelIds.add(channel.id);
+
+          metrics.honeybee_channel_info.set(
+            {
+              channelId: channel.id,
+              name: channel.name,
+              englishName: channel.englishName,
+              organization: channel.organization,
+              group: channel.group,
+              avatarUrl: channel.avatarUrl,
+            },
+            1
+          );
+
+          const channelIdLabel = { channelId: channel.id };
+          if (channel.subscriberCount && channel.subscriberCount > 0)
+            metrics.honeybee_channel_subscribers.set(
+              channelIdLabel,
+              channel.subscriberCount
+            );
         }
-      );
-
-      collectLabelValues(channelIds, channelInfoRecords, "channelId");
-
-      promiseSettledCallback(
-        await Promise.allSettled([
-          updateMetrics("honeybee_channel_subscribers", Channel, {
-            match: {
-              id: {
-                $in: [...channelIds],
-              },
-              subscriberCount: { $gt: 0 },
-            },
-            labels: {
-              channelId: "$id",
-            },
-            value: { $max: "$subscriberCount" },
-            fetchAll: true,
-            reset: true,
-          }),
-        ]),
-        () => void 0,
-        (reason) => console.error(reason)
-      );
+      }
 
       if (force) {
         lastFullCollect = Date.now();
