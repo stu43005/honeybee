@@ -407,10 +407,21 @@ export async function metrics() {
     await pqueue.add(_collect);
   }
 
-  let lastFullCollect = 0;
+  const lastFullCollect = {
+    honeybee_messages_total: Date.now(),
+    honeybee_purchase_amount_jpy_total: Date.now(),
+    honeybee_purchase_amount_total: Date.now(),
+    honeybee_actions_total: Date.now(),
+  } satisfies Partial<Record<keyof typeof metrics, number>>;
+
   async function _collect() {
     try {
-      const force = lastFullCollect + 3_600_000 < Date.now();
+      const force = Object.entries(lastFullCollect).find(
+        ([, time]) => time + 3_600_000 < Date.now()
+      )?.[0] as keyof typeof lastFullCollect | undefined;
+      if (force) {
+        metrics[force].reset();
+      }
 
       const videoIds = new Set<string>();
       const channelIds = new Set<string>();
@@ -509,13 +520,8 @@ export async function metrics() {
         }
       }
 
-      if (force) {
-        metrics.honeybee_messages_total.reset();
-        metrics.honeybee_purchase_amount_jpy_total.reset();
-        metrics.honeybee_purchase_amount_total.reset();
-        metrics.honeybee_actions_total.reset();
-      }
       metrics.honeybee_users_total.reset();
+
       promiseSettledCallback(
         await Promise.allSettled([
           ...messageTypes.map((type) =>
@@ -531,7 +537,7 @@ export async function metrics() {
                 type: type.messageType,
               },
               value: { $sum: 1 },
-              fetchAll: force,
+              fetchAll: force === "honeybee_messages_total",
             })
           ),
           ...messageTypes.map((type) =>
@@ -573,7 +579,7 @@ export async function metrics() {
                 currency: "$currency",
               },
               value: { $sum: "$jpyAmount" },
-              fetchAll: force,
+              fetchAll: force === "honeybee_purchase_amount_jpy_total",
             })
           ),
           ...purchaseMessageTypes.map((type) =>
@@ -590,7 +596,7 @@ export async function metrics() {
                 currency: "$currency",
               },
               value: { $sum: "$amount" },
-              fetchAll: force,
+              fetchAll: force === "honeybee_purchase_amount_total",
             })
           ),
           updateMetrics(
@@ -608,7 +614,7 @@ export async function metrics() {
                 type: MessageType.MembershipGiftPurchase,
               },
               value: { $sum: "$amount" },
-              fetchAll: force,
+              fetchAll: force === "honeybee_purchase_amount_total",
             }
           ),
           ...Object.entries(actions).map(([actionType, model]) =>
@@ -623,7 +629,7 @@ export async function metrics() {
                 actionType: actionType,
               },
               value: { $sum: 1 },
-              fetchAll: force,
+              fetchAll: force === "honeybee_actions_total",
             })
           ),
         ]),
@@ -671,7 +677,7 @@ export async function metrics() {
       }
 
       if (force) {
-        lastFullCollect = Date.now();
+        lastFullCollect[force] = Date.now();
       }
     } catch (error) {
       console.error("[FATAL] Collect failed:", error);
