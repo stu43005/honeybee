@@ -8,18 +8,12 @@ import PQueue from "p-queue";
 import { Gauge, Registry, type Metric } from "prom-client";
 import { MessageType } from "../interfaces";
 import BanAction from "../models/BanAction";
-import BannerAction from "../models/BannerAction";
 import Channel from "../models/Channel";
 import Chat from "../models/Chat";
-import ErrorLog from "../models/ErrorLog";
 import Membership from "../models/Membership";
 import MembershipGift from "../models/MembershipGift";
 import MembershipGiftPurchase from "../models/MembershipGiftPurchase";
 import Milestone from "../models/Milestone";
-import ModeChange from "../models/ModeChange";
-import Placeholder from "../models/Placeholder";
-import Poll from "../models/Poll";
-import Raid from "../models/Raid";
 import RemoveChatAction from "../models/RemoveChatAction";
 import SuperChat from "../models/SuperChat";
 import SuperSticker from "../models/SuperSticker";
@@ -38,15 +32,15 @@ type MetricPayload<L extends string> = {
   lastId: string;
 };
 
-const purchaseMessageTypes: {
+type MessageTypeModel = {
   messageType: MessageType;
   model: ReturnModelType<AnyParamConstructor<any>>;
-}[] = [
-  { messageType: MessageType.SuperChat, model: SuperChat },
-  { messageType: MessageType.SuperSticker, model: SuperSticker },
-];
-const messageTypes: typeof purchaseMessageTypes = [
-  { messageType: MessageType.Chat, model: Chat },
+  calcUsersTotal?: boolean;
+  calcAmount?: boolean;
+  calcJpyAmount?: boolean;
+};
+const messageTypes: MessageTypeModel[] = [
+  { messageType: MessageType.Chat, model: Chat, calcUsersTotal: true },
   {
     messageType: MessageType.Membership,
     model: Membership,
@@ -58,22 +52,37 @@ const messageTypes: typeof purchaseMessageTypes = [
   {
     messageType: MessageType.MembershipGiftPurchase,
     model: MembershipGiftPurchase,
+    calcUsersTotal: true,
+    calcAmount: true,
   },
   {
     messageType: MessageType.Milestone,
     model: Milestone,
   },
-  ...purchaseMessageTypes,
+  {
+    messageType: MessageType.SuperChat,
+    model: SuperChat,
+    calcUsersTotal: true,
+    calcAmount: false,
+    calcJpyAmount: true,
+  },
+  {
+    messageType: MessageType.SuperSticker,
+    model: SuperSticker,
+    calcUsersTotal: true,
+    calcAmount: false,
+    calcJpyAmount: true,
+  },
 ];
 const actions: Record<string, ReturnModelType<AnyParamConstructor<any>>> = {
   banAction: BanAction,
   removeChatAction: RemoveChatAction,
-  bannerAction: BannerAction,
-  modeChange: ModeChange,
-  placeholder: Placeholder,
-  poll: Poll,
-  raid: Raid,
-  errorLog: ErrorLog,
+  // bannerAction: BannerAction,
+  // modeChange: ModeChange,
+  // placeholder: Placeholder,
+  // poll: Poll,
+  // raid: Raid,
+  // errorLog: ErrorLog,
 };
 
 export async function metrics() {
@@ -316,6 +325,7 @@ export async function metrics() {
       groupBy,
       fetchAll = false,
       reset = false,
+      method = "inc",
     }: {
       match?: FilterQuery<any>;
       groupBy?: PipelineStage.Group["$group"];
@@ -323,6 +333,7 @@ export async function metrics() {
       value: AccumulatorOperator;
       fetchAll?: boolean;
       reset?: boolean;
+      method?: "inc" | "set";
     }
   ): Promise<MetricPayload<HoneybeeMetricLabels<M>>[]> {
     const gauge: Gauge<string> = metrics[key];
@@ -377,17 +388,17 @@ export async function metrics() {
       for (const record of records) {
         const { _id: labels, value } = record;
         if (typeof value === "number") {
-          gauge.inc(labels, value);
+          gauge[method](labels, value);
         } else if (typeof value === "bigint") {
           if (value > Number.MAX_SAFE_INTEGER) {
             throw new TypeError("can't convert BigInt to number");
           }
-          gauge.inc(labels, Number(value));
+          gauge[method](labels, Number(value));
         } else if (value instanceof Long) {
           if (value.greaterThan(Number.MAX_SAFE_INTEGER)) {
             throw new TypeError("can't convert Long to number");
           }
-          gauge.inc(labels, value.toInt());
+          gauge[method](labels, value.toInt());
         } else if (value instanceof Date) {
           gauge.set(labels, value.getTime() / 1000);
         }
@@ -409,10 +420,12 @@ export async function metrics() {
 
   const lastFullCollect = {
     honeybee_messages_total: Date.now(),
+    honeybee_users_total: 0,
     honeybee_purchase_amount_jpy_total: Date.now(),
     honeybee_purchase_amount_total: Date.now(),
     honeybee_actions_total: Date.now(),
   } satisfies Partial<Record<keyof typeof metrics, number>>;
+  const recentUpdateUsersVideoIds = new Set<string>();
 
   async function _collect() {
     try {
@@ -421,6 +434,12 @@ export async function metrics() {
       )?.[0] as keyof typeof lastFullCollect | undefined;
       if (force) {
         metrics[force].reset();
+      }
+      const forceUsersTotal =
+        force === "honeybee_users_total" ||
+        lastFullCollect.honeybee_users_total === 0;
+      if (forceUsersTotal) {
+        metrics.honeybee_users_total.reset();
       }
 
       const videoIds = new Set<string>();
@@ -476,43 +495,46 @@ export async function metrics() {
           );
 
           const videoIdLabel = { videoId: video.id };
-          if (video.viewers)
+          if (video.viewers !== undefined)
             metrics.honeybee_video_viewers.set(videoIdLabel, video.viewers);
-          if (video.maxViewers && video.maxViewers > 0)
+          if (video.maxViewers !== undefined && video.maxViewers > 0)
             metrics.honeybee_video_max_viewers.set(
               videoIdLabel,
               video.maxViewers
             );
-          if (video.likes && video.likes > 0)
+          if (video.likes !== undefined && video.likes > 0)
             metrics.honeybee_video_likes.set(videoIdLabel, video.likes);
-          if (video.availableAt)
+          if (video.availableAt !== undefined)
             metrics.honeybee_video_start_time_seconds.set(
               videoIdLabel,
               video.availableAt.getTime() / 1000
             );
-          if (video.actualStart)
+          if (video.actualStart !== undefined)
             metrics.honeybee_video_actual_start_time_seconds.set(
               videoIdLabel,
               video.actualStart.getTime() / 1000
             );
-          if (video.hbEnd && ["Failed", "Finished"].includes(video.hbStatus))
+          if (
+            video.hbEnd !== undefined &&
+            ["Failed", "Finished"].includes(video.hbStatus)
+          )
             metrics.honeybee_video_end_time_seconds.set(
               videoIdLabel,
               video.hbEnd.getTime() / 1000
             );
-          if (video.actualEnd)
+          if (video.actualEnd !== undefined)
             metrics.honeybee_video_actual_end_time_seconds.set(
               videoIdLabel,
               video.actualEnd.getTime() / 1000
             );
 
           // duration
-          if (video.duration)
+          if (video.duration !== undefined)
             metrics.honeybee_video_duration_seconds.set(
               videoIdLabel,
               video.duration
             );
-          else if (video.actualStart)
+          else if (video.actualStart !== undefined)
             metrics.honeybee_video_duration_seconds.set(
               videoIdLabel,
               moment.tz("UTC").diff(video.actualStart, "second")
@@ -520,7 +542,28 @@ export async function metrics() {
         }
       }
 
-      metrics.honeybee_users_total.reset();
+      let updateUsersVideoIds: string[];
+      if (forceUsersTotal) {
+        updateUsersVideoIds = [...videoIds];
+        recentUpdateUsersVideoIds.clear();
+      } else {
+        const updateSize = Math.round(videoIds.size / 10);
+        updateUsersVideoIds = [...videoIds]
+          .filter((vid) => !recentUpdateUsersVideoIds.has(vid))
+          .sort(() => Math.random() - 0.5)
+          .slice(0, updateSize);
+        if (updateUsersVideoIds.length < updateSize) {
+          updateUsersVideoIds = updateUsersVideoIds.concat(
+            [...videoIds]
+              .filter((vid) => !updateUsersVideoIds.includes(vid))
+              .sort(() => Math.random() - 0.5)
+              .slice(0, updateSize - updateUsersVideoIds.length)
+          );
+          recentUpdateUsersVideoIds.clear();
+        }
+        for (const vid of updateUsersVideoIds)
+          recentUpdateUsersVideoIds.add(vid);
+      }
 
       promiseSettledCallback(
         await Promise.allSettled([
@@ -540,83 +583,72 @@ export async function metrics() {
               fetchAll: force === "honeybee_messages_total",
             })
           ),
-          ...messageTypes.map((type) =>
-            updateMetrics("honeybee_users_total", type.model, {
-              match: {
-                originVideoId: {
-                  $in: [...videoIds],
+          ...messageTypes
+            .filter((type) => type.calcUsersTotal)
+            .map((type) =>
+              updateMetrics("honeybee_users_total", type.model, {
+                match: {
+                  originVideoId: {
+                    $in: updateUsersVideoIds,
+                  },
                 },
-              },
-              groupBy: {
-                _id: {
-                  authorChannelId: "$authorChannelId",
+                groupBy: {
+                  _id: {
+                    authorChannelId: "$authorChannelId",
+                    videoId: "$originVideoId",
+                  },
+                  authorType: {
+                    $last: "$authorType",
+                  },
+                },
+                labels: {
+                  videoId: "$_id.videoId",
+                  authorType: "$authorType",
+                  type: type.messageType,
+                },
+                value: { $sum: 1 },
+                fetchAll: true,
+                method: "set",
+              })
+            ),
+          ...messageTypes
+            .filter((type) => type.calcJpyAmount)
+            .map((type) =>
+              updateMetrics("honeybee_purchase_amount_jpy_total", type.model, {
+                match: {
+                  originVideoId: {
+                    $in: [...videoIds],
+                  },
+                },
+                labels: {
                   videoId: "$originVideoId",
+                  authorType: "$authorType",
+                  type: type.messageType,
+                  currency: "$currency",
                 },
-                authorType: {
-                  $last: "$authorType",
+                value: { $sum: "$jpyAmount" },
+                fetchAll: force === "honeybee_purchase_amount_jpy_total",
+              })
+            ),
+          ...messageTypes
+            .filter((type) => type.calcAmount)
+            .map((type) =>
+              updateMetrics("honeybee_purchase_amount_total", type.model, {
+                match: {
+                  originVideoId: {
+                    $in: [...videoIds],
+                  },
                 },
-              },
-              labels: {
-                videoId: "$_id.videoId",
-                authorType: "$authorType",
-                type: type.messageType,
-              },
-              value: { $sum: 1 },
-              fetchAll: true,
-            })
-          ),
-          ...purchaseMessageTypes.map((type) =>
-            updateMetrics("honeybee_purchase_amount_jpy_total", type.model, {
-              match: {
-                originVideoId: {
-                  $in: [...videoIds],
+                labels: {
+                  videoId: "$originVideoId",
+                  authorType: "$authorType",
+                  type: type.messageType,
+                  currency: "$currency",
                 },
-              },
-              labels: {
-                videoId: "$originVideoId",
-                authorType: "$authorType",
-                type: type.messageType,
-                currency: "$currency",
-              },
-              value: { $sum: "$jpyAmount" },
-              fetchAll: force === "honeybee_purchase_amount_jpy_total",
-            })
-          ),
-          ...purchaseMessageTypes.map((type) =>
-            updateMetrics("honeybee_purchase_amount_total", type.model, {
-              match: {
-                originVideoId: {
-                  $in: [...videoIds],
-                },
-              },
-              labels: {
-                videoId: "$originVideoId",
-                authorType: "$authorType",
-                type: type.messageType,
-                currency: "$currency",
-              },
-              value: { $sum: "$amount" },
-              fetchAll: force === "honeybee_purchase_amount_total",
-            })
-          ),
-          updateMetrics(
-            "honeybee_purchase_amount_total",
-            MembershipGiftPurchase,
-            {
-              match: {
-                originVideoId: {
-                  $in: [...videoIds],
-                },
-              },
-              labels: {
-                videoId: "$originVideoId",
-                authorType: "$authorType",
-                type: MessageType.MembershipGiftPurchase,
-              },
-              value: { $sum: "$amount" },
-              fetchAll: force === "honeybee_purchase_amount_total",
-            }
-          ),
+                value: { $sum: "$amount" },
+                fetchAll: force === "honeybee_purchase_amount_total",
+              })
+            ),
           ...Object.entries(actions).map(([actionType, model]) =>
             updateMetrics("honeybee_actions_total", model, {
               match: {
@@ -668,7 +700,10 @@ export async function metrics() {
           );
 
           const channelIdLabel = { channelId: channel.id };
-          if (channel.subscriberCount && channel.subscriberCount > 0)
+          if (
+            channel.subscriberCount !== undefined &&
+            channel.subscriberCount > 0
+          )
             metrics.honeybee_channel_subscribers.set(
               channelIdLabel,
               channel.subscriberCount
@@ -678,6 +713,9 @@ export async function metrics() {
 
       if (force) {
         lastFullCollect[force] = Date.now();
+      }
+      if (forceUsersTotal) {
+        lastFullCollect.honeybee_users_total = Date.now();
       }
     } catch (error) {
       console.error("[FATAL] Collect failed:", error);
