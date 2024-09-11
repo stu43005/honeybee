@@ -529,7 +529,7 @@ export async function metrics() {
             );
 
           // duration
-          if (video.duration !== undefined)
+          if (video.duration !== undefined && video.duration > 0)
             metrics.honeybee_video_duration_seconds.set(
               videoIdLabel,
               video.duration
