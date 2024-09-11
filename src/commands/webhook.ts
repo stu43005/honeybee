@@ -9,10 +9,8 @@ import axios, { AxiosError } from "axios";
 import https from "https";
 import jsonTemplates, { type JsonTemplate } from "json-templates";
 import mongoose, { mongo } from "mongoose";
-import NodeCache from "node-cache";
 import { setInterval } from "node:timers/promises";
 import pProps from "p-props";
-import { isMatching } from "ts-pattern";
 import {
   defaultInsertMethod,
   defaultUpdateMethod,
@@ -24,7 +22,9 @@ import ChannelModel from "../models/Channel";
 import VideoModel from "../models/Video";
 import WebhookModel, { type Webhook } from "../models/Webhook";
 import WebhookResultModel from "../models/WebhookResult";
+import { HoneybeeCache } from "../modules/cache";
 import { initMongo } from "../modules/db";
+import { isMatching } from "../modules/matching";
 import { flatObjectKey, secondsToHms, setIfDefine } from "../util";
 
 const debug = false;
@@ -37,19 +37,11 @@ const axiosInstance = axios.create({
 });
 const discordRest = new REST();
 
-const cache = new NodeCache({
-  stdTTL: 60,
+const cache = new HoneybeeCache({
   useClones: false,
-  deleteOnExpire: true,
+  timeToLiveSeconds: 300,
+  timeToFetchSeconds: 30,
 });
-function getCache<T>(key: string, factory: (key: string) => T): T {
-  let data = cache.get<T>(key);
-  if (typeof data === "undefined") {
-    data = factory(key);
-    cache.set(key, data);
-  }
-  return data;
-}
 
 function webhookLog(
   data: mongo.ChangeStreamDocument | mongo.Document | string,
@@ -184,33 +176,42 @@ function getWebhookTemplateCache(webhook: Webhook) {
 
 function getVideo(videoId?: string) {
   return videoId
-    ? getCache(videoId, (id) => VideoModel.findByVideoId(id).exec())
+    ? cache.getOrFetch(videoId, () => VideoModel.findByVideoId(videoId).exec())
     : null;
 }
 function getChannel(channelId?: string) {
   return channelId
-    ? getCache(channelId, (id) => ChannelModel.findByChannelId(id).exec())
+    ? cache.getOrFetch(channelId, () =>
+        ChannelModel.findByChannelId(channelId).exec()
+      )
     : null;
 }
 async function getWebhookResult(
   resultKey: Record<string, any>,
   data: mongo.ChangeStreamDocument
 ) {
+  const cacheKey = `WebhookResult-${JSON.stringify(resultKey)}`;
   {
-    const result = await WebhookResultModel.findOne(resultKey).exec();
+    const result = await cache.getOrFetch(cacheKey, () =>
+      WebhookResultModel.findOne(resultKey).exec()
+    );
     if (result?.response || data.operationType === "insert") {
       return result;
     }
+    cache.del(cacheKey);
   }
   const timeout = AbortSignal.timeout(3000);
   for await (const _ of setInterval(300)) {
-    const result = await WebhookResultModel.findOne(resultKey).exec();
+    const result = await cache.getOrFetch(cacheKey, () =>
+      WebhookResultModel.findOne(resultKey).exec()
+    );
     if (result?.response) {
       return result;
     }
     if (timeout.aborted && result) {
       return result;
     }
+    cache.del(cacheKey);
     if (timeout.aborted) {
       break;
     }
