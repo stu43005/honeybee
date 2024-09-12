@@ -131,7 +131,9 @@ export const templatePreset: Readonly<
           thumbnail: {
             url: `https://i.ytimg.com/vi/${parameters.originVideoId}/mqdefault.jpg`,
           },
-          description: `${parameters.question}\n${parameters.choices
+          description: `${
+            parameters.question ?? "(empty question)"
+          }\n${parameters.choices
             .map(
               (choice: any) =>
                 choice.text +
