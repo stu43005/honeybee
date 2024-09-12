@@ -547,6 +547,7 @@ async function handleJob(
                   text: stringify(choice.text, stringifyOptions),
                 })),
                 pollType: action.pollType,
+                finished: false,
                 originVideoId: mc.videoId,
                 originChannelId: mc.channelId,
               };
@@ -565,6 +566,7 @@ async function handleJob(
                 })),
                 pollType: action.pollType,
                 voteCount: action.voteCount,
+                finished: "addPollResultAction" in groupedActions,
                 originVideoId: mc.videoId,
                 originChannelId: mc.channelId,
               };
@@ -580,33 +582,26 @@ async function handleJob(
             );
             break;
           }
-          // case "addPollResultAction": {
-          //   const payload: Poll[] = groupedActions[type].map((action) => {
-          //     return {
-          //       id: action.id,
-          //       question: action.question
-          //         ? stringify(action.question, stringifyOptions)
-          //         : undefined,
-          //       voteCount: action.total,
-          //       choices: action.choices.map((choice) => ({
-          //         text: stringify(choice.text, stringifyOptions),
-          //         voteRatio: parseFloat(choice.votePercentage) / 100,
-          //       })),
-          //       originVideoId: mc.videoId,
-          //       originChannelId: mc.channelId,
-          //     };
-          //   });
-          //   await PollModel.bulkWrite(
-          //     payload.map((poll) => ({
-          //       updateOne: {
-          //         filter: { id: poll.id },
-          //         update: { $set: poll },
-          //         upsert: true,
-          //       },
-          //     }))
-          //   );
-          //   break;
-          // }
+          case "addPollResultAction": {
+            const bulk = groupedActions[type].map((action) => {
+              return {
+                updateOne: {
+                  filter: {
+                    originVideoId: mc.videoId,
+                    originChannelId: mc.channelId,
+                    finished: false,
+                  },
+                  update: {
+                    $set: {
+                      finished: true,
+                    },
+                  },
+                },
+              };
+            });
+            await PollModel.bulkWrite(bulk);
+            break;
+          }
           case "membershipGiftPurchaseAction": {
             const payload: MembershipGiftPurchase[] = groupedActions[type].map(
               (action) => {

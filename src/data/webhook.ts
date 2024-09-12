@@ -126,7 +126,8 @@ export const templatePreset: Readonly<
           },
           title:
             `Poll • At ${parameters.timeCode}` +
-            (parameters.voteCount ? ` • ${parameters.voteCount} votes` : ""),
+            (parameters.voteCount ? ` • ${parameters.voteCount} votes` : "") +
+            (parameters.finished ? ` • Completed` : ""),
           url: `https://youtu.be/${parameters.originVideoId}?t=${parameters.timeSecond}`,
           thumbnail: {
             url: `https://i.ytimg.com/vi/${parameters.originVideoId}/mqdefault.jpg`,
