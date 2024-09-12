@@ -17,7 +17,7 @@
   "dependencies": {
     "@discordjs/rest": "^2.3.0",
     "@fastify/express": "^2.3.0",
-    "@stu43005/masterchat": "^1.4.6",
+    "@stu43005/masterchat": "^1.4.7",
     "@typegoose/typegoose": "^12.2.0",
     "agenda": "^5.0.0",
     "axios": "^1.6.8",
