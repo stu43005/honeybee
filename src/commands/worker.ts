@@ -740,20 +740,33 @@ async function handleJob(
           // case "moderationMessageAction":
           //   break;
           case "unknown": {
-            const payload: ErrorLog[] = groupedActions[type].map((action) => {
-              return {
-                timestamp: new Date(),
-                originVideoId: mc.videoId,
-                originChannelId: mc.channelId,
-                error: type,
-                payload: action.payload,
-              };
-            });
-            await ErrorLogModel.insertMany(payload);
+            const payload = groupedActions[type]
+              .filter((action) => {
+                // Ignore the payload with only the clickTrackingParams field.
+                if (
+                  action.payload &&
+                  typeof action.payload === "object" &&
+                  Object.keys(action.payload).length === 1 &&
+                  "clickTrackingParams" in action.payload
+                ) {
+                  return false;
+                }
+                return true;
+              })
+              .map((action): ErrorLog => {
+                return {
+                  timestamp: new Date(),
+                  originVideoId: mc.videoId,
+                  originChannelId: mc.channelId,
+                  error: type,
+                  payload: action.payload,
+                };
+              });
+            if (payload.length > 0) await ErrorLogModel.insertMany(payload);
             break;
           }
           case "parserError": {
-            const payload: ErrorLog[] = groupedActions[type].map((action) => {
+            const payload = groupedActions[type].map((action): ErrorLog => {
               return {
                 timestamp: new Date(),
                 originVideoId: mc.videoId,
