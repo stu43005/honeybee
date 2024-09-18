@@ -18,7 +18,7 @@ const REFRESH_INTERVAL = Number(process.env.REFRESH_INTERVAL || 10);
 
 export async function health() {
   const disconnect = await initMongo();
-  const queue = getQueueInstance({ isWorker: false });
+  const queue = getQueueInstance("honeybee", { isWorker: false });
 
   process.on("SIGINT", async () => {
     await queue.close();

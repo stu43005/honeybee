@@ -19,7 +19,7 @@ function schedulerLog(...obj: any) {
 
 export async function runScheduler() {
   const disconnectFromMongo = await initMongo();
-  const queue = getQueueInstance({ isWorker: false });
+  const queue = getQueueInstance("honeybee", { isWorker: false });
   const agenda = getAgenda();
 
   process.on("SIGTERM", async () => {

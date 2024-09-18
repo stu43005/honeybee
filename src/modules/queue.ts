@@ -2,14 +2,16 @@ import assert from "assert";
 import Queue from "bee-queue";
 import type { HoneybeeJob } from "../interfaces";
 
-// feature flags
-const QUEUE_NAME = "honeybee";
 const REDIS_URI = process.env.REDIS_URI;
 
-export function getQueueInstance(args: any = {}) {
+type QueueTypes = {
+  "honeybee": HoneybeeJob;
+}
+
+export function getQueueInstance<T extends keyof QueueTypes>(queueName: T, args: any = {}): Queue<QueueTypes[T]> {
   assert(REDIS_URI, "REDIS_URI should be defined.");
 
-  return new Queue<HoneybeeJob>(QUEUE_NAME, {
+  return new Queue(queueName, {
     redis: {
       url: REDIS_URI,
     },

@@ -87,7 +87,7 @@ const actions: Record<string, ReturnModelType<AnyParamConstructor<any>>> = {
 
 export async function metrics() {
   const disconnect = await initMongo();
-  const queue = getQueueInstance({ isWorker: false });
+  const queue = getQueueInstance("honeybee", { isWorker: false });
   const fastify = Fastify({
     logger: true,
   });

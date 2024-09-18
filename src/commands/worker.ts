@@ -986,7 +986,7 @@ async function handleJob(
 export async function runWorker() {
   const exitController = new AbortController();
   const disconnectFromMongo = await initMongo();
-  const queue = getQueueInstance({ activateDelayedJobs: true });
+  const queue = getQueueInstance("honeybee", { activateDelayedJobs: true });
 
   process.on("SIGTERM", async (s) => {
     console.log("quitting worker (SIGTERM) ...");

@@ -71,7 +71,7 @@ export async function runManager() {
 
   let previousWorkers: number | null = null;
 
-  const queue = getQueueInstance({ isWorker: false });
+  const queue = getQueueInstance("honeybee", { isWorker: false });
 
   process.on("SIGTERM", async () => {
     console.log("quitting manager (SIGTERM) ...");
