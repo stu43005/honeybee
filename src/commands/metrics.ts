@@ -5,7 +5,7 @@ import { VideoStatus } from "holodex.js";
 import moment from "moment-timezone";
 import type { AccumulatorOperator, FilterQuery, PipelineStage } from "mongoose";
 import PQueue from "p-queue";
-import { Gauge, Registry, type Metric } from "prom-client";
+import { Gauge, Registry, type Metric, type MetricValue } from "prom-client";
 import { MessageType } from "../interfaces";
 import BanAction from "../models/BanAction";
 import Channel from "../models/Channel";
@@ -418,6 +418,18 @@ export async function metrics() {
     await pqueue.add(_collect);
   }
 
+  function getMessagesTotal() {
+    let total = 0;
+    const values = Object.values<MetricValue<string>>(
+      (metrics.honeybee_messages_total as any).hashMap
+    );
+    for (const entry of values) {
+      const value = entry.value;
+      total += value;
+    }
+    return total;
+  }
+
   const lastFullCollect = {
     honeybee_messages_total: Date.now(),
     honeybee_users_total: 0,
@@ -429,8 +441,14 @@ export async function metrics() {
 
   async function _collect() {
     try {
+      const messagesTotalMils = Math.max(
+        1,
+        Math.ceil(getMessagesTotal() / 1_000_000)
+      );
+
+      const resetTimeMs = 3_600_000 * messagesTotalMils;
       const force = Object.entries(lastFullCollect).find(
-        ([, time]) => time + 3_600_000 < Date.now()
+        ([, time]) => time + resetTimeMs < Date.now()
       )?.[0] as keyof typeof lastFullCollect | undefined;
       if (force) {
         metrics[force].reset();
@@ -547,7 +565,7 @@ export async function metrics() {
         updateUsersVideoIds = [...videoIds];
         recentUpdateUsersVideoIds.clear();
       } else {
-        const updateSize = Math.round(videoIds.size / 10);
+        const updateSize = Math.round(videoIds.size / 10 / messagesTotalMils);
         updateUsersVideoIds = [...videoIds]
           .filter((vid) => !recentUpdateUsersVideoIds.has(vid))
           .sort(() => Math.random() - 0.5)
