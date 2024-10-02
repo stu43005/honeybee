@@ -270,6 +270,15 @@ export async function metrics() {
         await collectData();
       },
     }),
+    honeybee_scrape_duration_seconds: new Gauge({
+      registers: [register],
+      name: "honeybee_scrape_duration_seconds",
+      help: "",
+      labelNames: ["metric_name", "type"],
+      async collect() {
+        await collectData();
+      },
+    }),
     honeybee_queue_active_jobs: new Gauge({
       registers: [register],
       name: "honeybee_queue_active_jobs",
@@ -408,6 +417,24 @@ export async function metrics() {
     return records;
   }
 
+  async function wrapScrapeDuration<T>(
+    metricName: string,
+    type: string | undefined,
+    fn: () => Promise<T>
+  ): Promise<T> {
+    const start = performance.now();
+    const result = await fn();
+    const durationMs = performance.now() - start;
+    metrics.honeybee_scrape_duration_seconds.set(
+      {
+        metric_name: metricName,
+        type: type,
+      },
+      durationMs / 1000
+    );
+    return result;
+  }
+
   const pqueue = new PQueue({ concurrency: 1 });
   async function _collectWithLock() {
     if (pqueue.size > 0) {
@@ -459,33 +486,39 @@ export async function metrics() {
       if (forceUsersTotal) {
         metrics.honeybee_users_total.reset();
       }
+      metrics.honeybee_scrape_duration_seconds.reset();
 
       const videoIds = new Set<string>();
       const channelIds = new Set<string>();
 
       const halfHourAgo = moment.tz("UTC").subtract(30, "minutes").toDate();
-      const videos = await Video.find({
-        $or: [
-          {
-            $and: [
-              Video.LiveQuery,
+      const videos = await wrapScrapeDuration(
+        "honeybee_video_info",
+        undefined,
+        () =>
+          Video.find({
+            $or: [
               {
-                availableAt: {
-                  $lt: moment.tz("UTC").add(48, "hours").toDate(),
-                },
+                $and: [
+                  Video.LiveQuery,
+                  {
+                    availableAt: {
+                      $lt: moment.tz("UTC").add(48, "hours").toDate(),
+                    },
+                  },
+                ],
+              },
+              {
+                status: VideoStatus.Past,
+                actualEnd: { $gt: halfHourAgo },
+              },
+              {
+                status: VideoStatus.Missing,
+                hbEnd: { $gt: halfHourAgo },
               },
             ],
-          },
-          {
-            status: VideoStatus.Past,
-            actualEnd: { $gt: halfHourAgo },
-          },
-          {
-            status: VideoStatus.Missing,
-            hbEnd: { $gt: halfHourAgo },
-          },
-        ],
-      });
+          })
+      );
 
       metrics.honeybee_video_info.reset();
       metrics.honeybee_video_viewers.reset();
@@ -586,72 +619,111 @@ export async function metrics() {
       promiseSettledCallback(
         await Promise.allSettled([
           ...messageTypes.map((type) =>
-            updateMetrics("honeybee_messages_total", type.model, {
-              match: {
-                originVideoId: {
-                  $in: [...videoIds],
-                },
-              },
-              labels: {
-                videoId: "$originVideoId",
-                authorType: "$authorType",
-                type: type.messageType,
-              },
-              value: { $sum: 1 },
-              fetchAll: force === "honeybee_messages_total",
-            })
+            wrapScrapeDuration(
+              "honeybee_messages_total",
+              type.messageType,
+              () =>
+                updateMetrics("honeybee_messages_total", type.model, {
+                  match: {
+                    originVideoId: {
+                      $in: [...videoIds],
+                    },
+                  },
+                  labels: {
+                    videoId: "$originVideoId",
+                    authorType: "$authorType",
+                    type: type.messageType,
+                  },
+                  value: { $sum: 1 },
+                  fetchAll: force === "honeybee_messages_total",
+                })
+            )
           ),
           ...messageTypes
             .filter((type) => type.calcUsersTotal)
             .map((type) =>
-              updateMetrics("honeybee_users_total", type.model, {
-                match: {
-                  originVideoId: {
-                    $in: updateUsersVideoIds,
+              wrapScrapeDuration("honeybee_users_total", type.messageType, () =>
+                updateMetrics("honeybee_users_total", type.model, {
+                  match: {
+                    originVideoId: {
+                      $in: updateUsersVideoIds,
+                    },
                   },
-                },
-                groupBy: {
-                  _id: {
-                    authorChannelId: "$authorChannelId",
-                    videoId: "$originVideoId",
+                  groupBy: {
+                    _id: {
+                      authorChannelId: "$authorChannelId",
+                      videoId: "$originVideoId",
+                    },
+                    authorType: {
+                      $last: "$authorType",
+                    },
                   },
-                  authorType: {
-                    $last: "$authorType",
+                  labels: {
+                    videoId: "$_id.videoId",
+                    authorType: "$authorType",
+                    type: type.messageType,
                   },
-                },
-                labels: {
-                  videoId: "$_id.videoId",
-                  authorType: "$authorType",
-                  type: type.messageType,
-                },
-                value: { $sum: 1 },
-                fetchAll: true,
-                method: "set",
-              })
+                  value: { $sum: 1 },
+                  fetchAll: true,
+                  method: "set",
+                })
+              )
             ),
           ...messageTypes
             .filter((type) => type.calcJpyAmount)
             .map((type) =>
-              updateMetrics("honeybee_purchase_amount_jpy_total", type.model, {
-                match: {
-                  originVideoId: {
-                    $in: [...videoIds],
-                  },
-                },
-                labels: {
-                  videoId: "$originVideoId",
-                  authorType: "$authorType",
-                  type: type.messageType,
-                  currency: "$currency",
-                },
-                value: { $sum: "$jpyAmount" },
-                fetchAll: force === "honeybee_purchase_amount_jpy_total",
-              })
+              wrapScrapeDuration(
+                "honeybee_purchase_amount_jpy_total",
+                type.messageType,
+                () =>
+                  updateMetrics(
+                    "honeybee_purchase_amount_jpy_total",
+                    type.model,
+                    {
+                      match: {
+                        originVideoId: {
+                          $in: [...videoIds],
+                        },
+                      },
+                      labels: {
+                        videoId: "$originVideoId",
+                        authorType: "$authorType",
+                        type: type.messageType,
+                        currency: "$currency",
+                      },
+                      value: { $sum: "$jpyAmount" },
+                      fetchAll: force === "honeybee_purchase_amount_jpy_total",
+                    }
+                  )
+              )
             ),
           ...messageTypes
             .filter((type) => type.calcAmount)
             .map((type) =>
-              updateMetrics("honeybee_purchase_amount_total", type.model, {
+              wrapScrapeDuration(
+                "honeybee_purchase_amount_total",
+                type.messageType,
+                () =>
+                  updateMetrics("honeybee_purchase_amount_total", type.model, {
+                    match: {
+                      originVideoId: {
+                        $in: [...videoIds],
+                      },
+                    },
+                    labels: {
+                      videoId: "$originVideoId",
+                      authorType: "$authorType",
+                      type: type.messageType,
+                      currency: "$currency",
+                    },
+                    value: { $sum: "$amount" },
+                    fetchAll: force === "honeybee_purchase_amount_total",
+                  })
+              )
+            ),
+          ...Object.entries(actions).map(([actionType, model]) =>
+            wrapScrapeDuration("honeybee_actions_total", actionType, () =>
+              updateMetrics("honeybee_actions_total", model, {
                 match: {
                   originVideoId: {
                     $in: [...videoIds],
@@ -659,44 +731,33 @@ export async function metrics() {
                 },
                 labels: {
                   videoId: "$originVideoId",
-                  authorType: "$authorType",
-                  type: type.messageType,
-                  currency: "$currency",
+                  actionType: actionType,
                 },
-                value: { $sum: "$amount" },
-                fetchAll: force === "honeybee_purchase_amount_total",
+                value: { $sum: 1 },
+                fetchAll: force === "honeybee_actions_total",
               })
-            ),
-          ...Object.entries(actions).map(([actionType, model]) =>
-            updateMetrics("honeybee_actions_total", model, {
-              match: {
-                originVideoId: {
-                  $in: [...videoIds],
-                },
-              },
-              labels: {
-                videoId: "$originVideoId",
-                actionType: actionType,
-              },
-              value: { $sum: 1 },
-              fetchAll: force === "honeybee_actions_total",
-            })
+            )
           ),
         ]),
         () => void 0,
         (reason) => console.error(reason)
       );
 
-      const channels = await Channel.find({
-        $or: [
-          Channel.SubscribedQuery,
-          {
-            id: {
-              $in: [...channelIds],
-            },
-          },
-        ],
-      });
+      const channels = await wrapScrapeDuration(
+        "honeybee_channel_info",
+        undefined,
+        () =>
+          Channel.find({
+            $or: [
+              Channel.SubscribedQuery,
+              {
+                id: {
+                  $in: [...channelIds],
+                },
+              },
+            ],
+          })
+      );
 
       metrics.honeybee_channel_info.reset();
       metrics.honeybee_channel_subscribers.reset();
