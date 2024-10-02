@@ -2,6 +2,7 @@ import type { Masterchat } from "@stu43005/masterchat";
 import {
   DocumentType,
   getModelForClass,
+  index,
   isDocument,
   modelOptions,
   prop,
@@ -10,9 +11,8 @@ import {
 } from "@typegoose/typegoose";
 import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
 import { Video as HolodexVideo, VideoStatus } from "holodex.js";
-import type { FilterQuery } from "mongoose";
 import assert from "node:assert";
-import { HoneybeeStatus, LiveStatus, type HoneybeeResult } from "../interfaces";
+import { HoneybeeStatus, type HoneybeeResult } from "../interfaces";
 import { setIfDefine } from "../util";
 import ChannelModel, { Channel } from "./Channel";
 
@@ -24,7 +24,36 @@ export class Stats {
   errorCount!: number;
 }
 
+export const LiveStatus = Object.freeze([
+  VideoStatus.Upcoming,
+  VideoStatus.Live,
+]);
+
 @modelOptions({ schemaOptions: { collection: "videos" } })
+@index(
+  { availableAt: 1 },
+  {
+    partialFilterExpression: {
+      status: { $in: LiveStatus },
+    },
+  }
+)
+@index(
+  { actualEnd: 1 },
+  {
+    partialFilterExpression: {
+      status: VideoStatus.Past,
+    },
+  }
+)
+@index(
+  { hbEnd: 1 },
+  {
+    partialFilterExpression: {
+      status: VideoStatus.Missing,
+    },
+  }
+)
 export class Video extends TimeStamps {
   @prop({ required: true, unique: true })
   public id!: string;
@@ -138,11 +167,10 @@ export class Video extends TimeStamps {
     return this.findOne({ id: videoId }).populate("channel");
   }
 
-  public static LiveQuery: Readonly<FilterQuery<Video>> = Object.freeze({
-    status: { $in: LiveStatus },
-  });
   public static findLiveVideos(this: ReturnModelType<typeof Video>) {
-    return this.find(this.LiveQuery);
+    return this.find({
+      status: { $in: LiveStatus },
+    });
   }
 
   //#endregion find methods

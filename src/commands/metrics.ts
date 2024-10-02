@@ -17,7 +17,7 @@ import Milestone from "../models/Milestone";
 import RemoveChatAction from "../models/RemoveChatAction";
 import SuperChat from "../models/SuperChat";
 import SuperSticker from "../models/SuperSticker";
-import Video from "../models/Video";
+import Video, { LiveStatus } from "../models/Video";
 import { initMongo } from "../modules/db";
 import { getQueueInstance } from "../modules/queue";
 import { promiseSettledCallback, throttleWithReturnValue } from "../util";
@@ -499,14 +499,10 @@ export async function metrics() {
           Video.find({
             $or: [
               {
-                $and: [
-                  Video.LiveQuery,
-                  {
-                    availableAt: {
-                      $lt: moment.tz("UTC").add(48, "hours").toDate(),
-                    },
-                  },
-                ],
+                status: { $in: LiveStatus },
+                availableAt: {
+                  $lt: moment.tz("UTC").add(48, "hours").toDate(),
+                },
               },
               {
                 status: VideoStatus.Past,
