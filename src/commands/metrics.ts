@@ -419,7 +419,7 @@ export async function metrics() {
 
   async function wrapScrapeDuration<T>(
     metricName: string,
-    type: string | undefined,
+    type: string,
     fn: () => Promise<T>
   ): Promise<T> {
     const start = performance.now();
@@ -450,11 +450,21 @@ export async function metrics() {
     const values = Object.values<MetricValue<string>>(
       (metrics.honeybee_messages_total as any).hashMap
     );
-    for (const entry of values) {
-      const value = entry.value;
+    for (const { value } of values) {
       total += value;
     }
     return total;
+  }
+
+  function removeOtherVideos(metric: Gauge<"videoId">, videoIds: Set<string>) {
+    const values = Object.values<MetricValue<"videoId">>(
+      (metric as any).hashMap
+    );
+    for (const { labels } of values) {
+      if (labels.videoId && !videoIds.has(labels.videoId.toString())) {
+        metric.remove(labels);
+      }
+    }
   }
 
   const lastFullCollect = {
@@ -473,7 +483,7 @@ export async function metrics() {
         Math.ceil(getMessagesTotal() / 1_000_000)
       );
 
-      const resetTimeMs = 3_600_000 * messagesTotalMils;
+      const resetTimeMs = 2 * 3_600_000 * messagesTotalMils;
       const force = Object.entries(lastFullCollect).find(
         ([, time]) => time + resetTimeMs < Date.now()
       )?.[0] as keyof typeof lastFullCollect | undefined;
@@ -494,7 +504,7 @@ export async function metrics() {
       const halfHourAgo = moment.tz("UTC").subtract(30, "minutes").toDate();
       const videos = await wrapScrapeDuration(
         "honeybee_video_info",
-        undefined,
+        "video",
         () =>
           Video.find({
             $or: [
@@ -588,6 +598,12 @@ export async function metrics() {
             );
         }
       }
+
+      removeOtherVideos(metrics.honeybee_messages_total, videoIds);
+      removeOtherVideos(metrics.honeybee_users_total, videoIds);
+      removeOtherVideos(metrics.honeybee_purchase_amount_jpy_total, videoIds);
+      removeOtherVideos(metrics.honeybee_purchase_amount_total, videoIds);
+      removeOtherVideos(metrics.honeybee_actions_total, videoIds);
 
       let updateUsersVideoIds: string[];
       if (forceUsersTotal) {
@@ -741,7 +757,7 @@ export async function metrics() {
 
       const channels = await wrapScrapeDuration(
         "honeybee_channel_info",
-        undefined,
+        "channel",
         () =>
           Channel.find({
             $or: [
