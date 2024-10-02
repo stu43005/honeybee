@@ -273,7 +273,7 @@ export async function metrics() {
     honeybee_scrape_duration_seconds: new Gauge({
       registers: [register],
       name: "honeybee_scrape_duration_seconds",
-      help: "",
+      help: "Data collect time in seconds",
       labelNames: ["metric_name", "type"],
       async collect() {
         await collectData();
