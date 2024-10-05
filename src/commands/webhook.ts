@@ -244,13 +244,17 @@ async function handleChange(
   const sourceVideo = getVideo(data.fullDocument.sourceVideoId);
   const sourceChannel = getChannel(data.fullDocument.sourceChannelId);
 
-  const timestamp: Date = data.fullDocument.timestamp ?? new Date();
-  const timeSecond = video?.then((video) =>
-    !video?.actualStart || video.actualStart > timestamp
-      ? 0
-      : Math.floor((timestamp.getTime() - video.actualStart.getTime()) / 1000)
+  const timestamp: Date =
+    data.fullDocument.timestamp ?? data.fullDocument.updatedAt ?? new Date();
+  const timeSecond = video?.then(
+    (video) => video?.getTimeSeconds(timestamp) ?? 0
   );
   const timeCode = timeSecond?.then((timeSecond) => secondsToHms(timeSecond));
+
+  const createdAt: Date | undefined = data.fullDocument.createdAt;
+  const createdAtTimeCode =
+    createdAt &&
+    video?.then((video) => secondsToHms(video?.getTimeSeconds(createdAt) ?? 0));
 
   const resultKey = {
     webhookId: webhook._id.toHexString(),
@@ -271,6 +275,7 @@ async function handleChange(
     timestamp: timestamp.toISOString(),
     timeSecond: timeSecond,
     timeCode: timeCode,
+    createdAtTimeCode: createdAtTimeCode,
     video: doc2Json(video),
     channel: doc2Json(channel),
     authorChannel: doc2Json(authorChannel),

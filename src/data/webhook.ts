@@ -125,7 +125,7 @@ export const templatePreset: Readonly<
             icon_url: parameters.channel.avatarUrl,
           },
           title:
-            `Poll • At ${parameters.timeCode}` +
+            `Poll • At ${parameters.createdAtTimeCode} ~ ${parameters.timeCode}` +
             (parameters.voteCount ? ` • ${parameters.voteCount} votes` : "") +
             (parameters.finished ? ` • Completed` : ""),
           url: `https://youtu.be/${parameters.originVideoId}?t=${parameters.timeSecond}`,

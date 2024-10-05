@@ -158,6 +158,13 @@ export class Video extends TimeStamps {
     return LiveStatus.includes(this.status);
   }
 
+  public getTimeSeconds(this: DocumentType<Video>, timestamp: Date): number {
+    if (!this.actualStart || timestamp < this.actualStart) return 0;
+    return Math.floor(
+      (timestamp.getTime() - this.actualStart.getTime()) / 1000
+    );
+  }
+
   //#region find methods
 
   public static findByVideoId(
