@@ -1,10 +1,3 @@
-import { VideoStatus } from "holodex.js";
-
-export const LiveStatus = Object.freeze([
-  VideoStatus.Upcoming,
-  VideoStatus.Live,
-]);
-
 export enum HoneybeeStatus {
   Created = "Created",
   Stalled = "Stalled",

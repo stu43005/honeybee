@@ -467,13 +467,13 @@ export async function metrics() {
     }
   }
 
-  const lastFullCollect = {
-    honeybee_messages_total: Date.now(),
-    honeybee_users_total: 0,
+  const lastFullCollect: Partial<Record<keyof typeof metrics, number>> = {
+    // honeybee_messages_total: Date.now(),
+    // honeybee_users_total: 0,
     honeybee_purchase_amount_jpy_total: Date.now(),
     honeybee_purchase_amount_total: Date.now(),
     honeybee_actions_total: Date.now(),
-  } satisfies Partial<Record<keyof typeof metrics, number>>;
+  };
   const recentUpdateUsersVideoIds = new Set<string>();
 
   async function _collect() {
@@ -486,7 +486,7 @@ export async function metrics() {
       const resetTimeMs = 2 * 3_600_000 * messagesTotalMils;
       const force = Object.entries(lastFullCollect).find(
         ([, time]) => time + resetTimeMs < Date.now()
-      )?.[0] as keyof typeof lastFullCollect | undefined;
+      )?.[0] as keyof typeof metrics | undefined;
       if (force) {
         metrics[force].reset();
       }
