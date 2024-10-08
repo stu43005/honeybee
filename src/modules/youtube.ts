@@ -38,7 +38,7 @@ export async function updateVideoFromYoutube(targetVideos: string[]) {
     id: targetVideos,
     hl: "ja",
     fields:
-      "items(id,snippet(channelId,title,description,publishedAt),contentDetails(licensedContent,contentRating/ytRating,duration),status(uploadStatus,embeddable,privacyStatus),liveStreamingDetails,statistics/viewCount)",
+      "items(id,snippet(channelId,title,description,publishedAt,liveBroadcastContent),contentDetails(licensedContent,contentRating/ytRating,duration),status(uploadStatus,embeddable,privacyStatus),liveStreamingDetails,statistics(viewCount,likeCount))",
     maxResults: 50,
   });
   const ytVideoItems = response?.data?.items;
@@ -59,6 +59,8 @@ export async function updateVideoFromYoutube(targetVideos: string[]) {
         video.description = ytInfo.snippet.description;
       if (ytInfo.snippet?.publishedAt)
         video.publishedAt = new Date(ytInfo.snippet.publishedAt);
+      if (ytInfo.statistics?.likeCount)
+        video.likes = Math.max(video.likes ?? 0, +ytInfo.statistics.likeCount);
 
       if (ytInfo.liveStreamingDetails) {
         // live stream
@@ -114,6 +116,7 @@ export async function updateVideoFromYoutube(targetVideos: string[]) {
       } else {
         // uploaded video
         video.status = VideoStatus.Past;
+        video.uploadedVideo = true;
       }
       if (video.actualEnd && video.actualStart) {
         video.duration = moment(video.actualEnd).diff(
@@ -129,8 +132,17 @@ export async function updateVideoFromYoutube(targetVideos: string[]) {
           video.duration = ytDuration;
         }
       }
+      video.premiere =
+        video.premiere ||
+        ((ytInfo.snippet?.liveBroadcastContent === "upcoming" ||
+          ytInfo.snippet?.liveBroadcastContent === "live") &&
+          ytInfo.status?.uploadStatus === "processed");
+      video.memberLimited =
+        ytInfo.statistics && ytInfo.statistics.viewCount === undefined;
+      if (video.deleted) video.deleted = false;
     } else {
       video.status = VideoStatus.Missing;
+      video.deleted = true;
     }
 
     if (video.channelId && !video.channel) {

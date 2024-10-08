@@ -162,3 +162,25 @@ export function pipeSignal(signal: AbortSignal, controller: AbortController) {
     { once: true }
   );
 }
+
+/**
+ * 在字串超過指定長度時，縮短字串並加上省略號。
+ */
+export function abbreviate(str: string, maxWidth: number) {
+  if (typeof str !== 'string' || typeof maxWidth !== 'number') {
+      throw new Error('Invalid arguments');
+  }
+
+  if (str.length <= maxWidth) {
+      return str;
+  }
+
+  const ellipsis = '...';
+  const cutoffLength = maxWidth - ellipsis.length;
+
+  if (cutoffLength <= 0) {
+      return ellipsis.substring(0, maxWidth);
+  }
+
+  return str.substring(0, cutoffLength) + ellipsis;
+}

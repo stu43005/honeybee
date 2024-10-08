@@ -8,6 +8,7 @@ import type { DocumentType } from "@typegoose/typegoose";
 import axios, { AxiosError } from "axios";
 import https from "https";
 import jsonTemplates, { type JsonTemplate } from "json-templates";
+import { isEqual } from "lodash";
 import mongoose, { mongo } from "mongoose";
 import { setInterval } from "node:timers/promises";
 import pProps from "p-props";
@@ -265,6 +266,7 @@ async function handleChange(
   const previousResult = webhook.followUpdate
     ? getWebhookResult(resultKey, data)
     : null;
+  const previousBody = previousResult?.then((result) => result?.body);
   const previousResponse = previousResult?.then((result) => result?.response);
 
   const getJsonTemplate = getWebhookTemplateCache(webhook);
@@ -281,6 +283,7 @@ async function handleChange(
     authorChannel: doc2Json(authorChannel),
     sourceVideo: doc2Json(sourceVideo),
     sourceChannel: doc2Json(sourceChannel),
+    previousBody: previousBody,
     previousResponse: previousResponse,
   });
   const hasPreviousResponse = !!parameters.previousResponse;
@@ -312,6 +315,20 @@ async function handleChange(
       : webhook.template
       ? getJsonTemplate("template", webhook.template)(parameters)
       : data.fullDocument;
+
+  if (!body) {
+    // no message to send
+    return;
+  }
+
+  if (
+    hasPreviousResponse &&
+    parameters.previousBody &&
+    isEqual(parameters.previousBody, body)
+  ) {
+    // no need update
+    return;
+  }
 
   await WebhookResultModel.updateOne(
     resultKey,

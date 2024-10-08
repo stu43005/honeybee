@@ -80,6 +80,18 @@ export class Video extends TimeStamps {
   public duration!: number;
 
   @prop()
+  public uploadedVideo?: boolean;
+
+  @prop()
+  public premiere?: boolean;
+
+  @prop()
+  public memberLimited?: boolean;
+
+  @prop()
+  public deleted?: boolean;
+
+  @prop()
   public likes?: number;
 
   @prop()

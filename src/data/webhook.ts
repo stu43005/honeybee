@@ -1,9 +1,12 @@
+import { time } from "@discordjs/formatters";
 import type { DocumentType } from "@typegoose/typegoose";
+import { VideoStatus } from "holodex.js";
 import jsonTemplates from "json-templates";
+import moment from "moment";
 import path from "node:path";
 import ChannelModel from "../models/Channel";
 import type { Webhook } from "../models/Webhook";
-import { setIfDefine } from "../util";
+import { abbreviate, secondsToHms, setIfDefine } from "../util";
 
 export const defaultUpdateUrl = (parameters: Record<string, any>): string => {
   const url = new URL(parameters.insertUrl);
@@ -18,13 +21,15 @@ export const defaultUpdateUrl = (parameters: Record<string, any>): string => {
 export const defaultInsertMethod = "POST";
 export const defaultUpdateMethod = "PATCH";
 
+const MAX_EMBED_TITLE = 256;
+
 export const templatePreset: Readonly<
   Record<string, (parameters: Record<string, any>) => any>
 > = Object.freeze({
   "discord-simple-text": jsonTemplates({
     username: "{{authorName}}",
     avatar_url: "{{authorPhoto}}",
-    content: "{{authorName}}：{{message:(wordless)}}",
+    content: "{{authorName}}：{{message:(wordless message)}}",
   }),
   "discord-embed-chats": (parameters) => {
     return {
@@ -226,26 +231,150 @@ export const templatePreset: Readonly<
     };
   },
   "discord-embed-video": (parameters) => {
-    return {
-      embeds: [
-        {
-          author: {
-            name: parameters.channel.name,
-            url: `https://www.youtube.com/channel/${parameters.channel.id}`,
-            icon_url: parameters.channel.avatarUrl,
+    const liveColor = 0xff0000;
+    const inactiveColor = 0x870000;
+    const uploadColor = 0xff9100;
+    const creationColor = 0xff9500;
+
+    const shortTitle = abbreviate(parameters.title, MAX_EMBED_TITLE);
+    const shortDescription = abbreviate(parameters.description, 150);
+    const memberNotice: string = parameters.memberLimited
+      ? "Members-only content.\n"
+      : "";
+
+    if (parameters.uploadedVideo) {
+      // uploaded video
+
+      if (moment.tz().diff(parameters.publishedAt, "hours", true) > 3) {
+        // do not post old video
+        return;
+      }
+
+      const videoLength: string = parameters.duration
+        ? secondsToHms(parameters.duration)
+        : "unknown";
+      const short: string =
+        parameters.duration && parameters.duration < 60 ? " (short)" : "";
+
+      return {
+        embeds: [
+          {
+            author: {
+              name: `${parameters.channel.name} posted a new video on YouTube!`,
+              url: `https://www.youtube.com/channel/${parameters.channel.id}`,
+              icon_url: parameters.channel.avatarUrl,
+            },
+            title: shortTitle,
+            url: `https://youtu.be/${parameters.id}`,
+            description:
+              memberNotice + `Video description: ${shortDescription}`,
+            footer: {
+              text: `YouTube Upload: ${videoLength}${short}`,
+            },
+            image: {
+              url: `https://i.ytimg.com/vi/${parameters.id}/maxresdefault.jpg`,
+            },
+            color: uploadColor,
+            timestamp: parameters.availableAt,
           },
-          title:
-            parameters.title.length > 70
-              ? `${parameters.title.substring(0, 67)}...`
-              : parameters.title,
-          url: `https://youtu.be/${parameters.id}`,
-          image: {
-            url: `https://i.ytimg.com/vi/${parameters.id}/maxresdefault.jpg`,
-          },
-          timestamp: parameters.availableAt?.toISOString(),
-        },
-      ],
-    };
+        ],
+      };
+    }
+
+    // stream or premiere
+    const premiere: boolean = parameters.premiere ?? false;
+
+    switch (parameters.status) {
+      case VideoStatus.Upcoming: {
+        const eta = time(parameters.scheduledStart, "R");
+        return {
+          embeds: [
+            {
+              author: {
+                name: `${parameters.channel.name} scheduled a new stream!`,
+                url: `https://www.youtube.com/channel/${parameters.channel.id}`,
+                icon_url: parameters.channel.avatarUrl,
+              },
+              title: shortTitle,
+              url: `https://youtu.be/${parameters.id}`,
+              thumbnail: {
+                url: `https://i.ytimg.com/vi/${parameters.id}/mqdefault.jpg`,
+              },
+              description: `Stream scheduled to start: ${eta}\n\nVideo description: ${shortDescription}`,
+              footer: {
+                text: "Scheduled start time ",
+              },
+              color: creationColor,
+              timestamp: parameters.scheduledStart,
+            },
+          ],
+        };
+      }
+      case VideoStatus.Live: {
+        const sinceStr: string = parameters.actualStart ? " since " : " ";
+        const liveMessage: string = premiere
+          ? " is premiering a new video!"
+          : parameters.actualStart
+          ? " is live."
+          : " went live!";
+        return {
+          embeds: [
+            {
+              author: {
+                name: `${parameters.channel.name}${liveMessage} 🔴`,
+                url: `https://www.youtube.com/channel/${parameters.channel.id}`,
+                icon_url: parameters.channel.avatarUrl,
+              },
+              title: shortTitle,
+              url: `https://youtu.be/${parameters.id}`,
+              description:
+                memberNotice + `Video description: ${shortDescription}`,
+              footer: {
+                text: `Live on YouTube${sinceStr}`,
+              },
+              image: {
+                url: `https://i.ytimg.com/vi/${parameters.id}/maxresdefault.jpg`,
+              },
+              color: premiere ? uploadColor : liveColor,
+              timestamp: parameters.actualStart,
+            },
+          ],
+        };
+      }
+      case VideoStatus.Past:
+      case VideoStatus.Missing: {
+        const vodMessage: string = premiere
+          ? " premiered a new video on YouTube!"
+          : " was live.";
+        const durationStr: string = premiere
+          ? "premiere"
+          : secondsToHms(parameters.duration);
+        return {
+          embeds: [
+            {
+              author: {
+                name: `${parameters.channel.name}${vodMessage}`,
+                url: `https://www.youtube.com/channel/${parameters.channel.id}`,
+                icon_url: parameters.channel.avatarUrl,
+              },
+              title: shortTitle,
+              url: `https://youtu.be/${parameters.id}`,
+              thumbnail: {
+                url: `https://i.ytimg.com/vi/${parameters.id}/mqdefault.jpg`,
+              },
+              description: parameters.deleted
+                ? "No VOD is available."
+                : memberNotice + `Video available: [${durationStr}]`,
+              footer: {
+                text: "Stream ended",
+              },
+              color: premiere ? uploadColor : inactiveColor,
+              timestamp: parameters.actualEnd ?? parameters.timestamp,
+            },
+          ],
+        };
+      }
+    }
   },
 });
 

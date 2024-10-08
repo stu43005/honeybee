@@ -51,7 +51,7 @@ export class Channel extends TimeStamps {
   @prop()
   public videoCount?: number;
 
-  @prop()
+  @prop({ index: true })
   public isInactive?: Boolean;
 
   @prop()
