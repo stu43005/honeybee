@@ -104,7 +104,7 @@ export class Video extends TimeStamps {
   public publishedAt?: Date;
 
   @prop({ required: true })
-  public availableAt?: Date;
+  public availableAt!: Date;
 
   @prop()
   public scheduledStart?: Date;

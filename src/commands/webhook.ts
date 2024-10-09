@@ -224,7 +224,7 @@ function doc2Json(doc: Promise<DocumentType<any> | null> | null) {
 }
 
 async function handleChange(
-  webhook: Webhook,
+  webhook: DocumentType<Webhook>,
   data: mongo.ChangeStreamDocument
 ) {
   if (!("documentKey" in data)) return;
@@ -271,8 +271,9 @@ async function handleChange(
 
   const getJsonTemplate = getWebhookTemplateCache(webhook);
   const parameters: Record<string, any> = await pProps({
-    collection: data.ns.coll,
+    webhook: webhook.toJSON(),
     insertUrl: webhook.insertUrl,
+    collection: data.ns.coll,
     ...data.fullDocument,
     timestamp: timestamp.toISOString(),
     timeSecond: timeSecond,

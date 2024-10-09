@@ -3,9 +3,8 @@ import {
   getModelForClass,
   modelOptions,
   prop,
-  type mongoose,
 } from "@typegoose/typegoose";
-import { Base } from "@typegoose/typegoose/lib/defaultClasses";
+import { Base, TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
 
 export interface Webhook extends Base {}
 
@@ -13,7 +12,7 @@ export interface Webhook extends Base {}
   options: { allowMixed: Severity.ALLOW },
   schemaOptions: { collection: "webhooks" },
 })
-export class Webhook {
+export class Webhook extends TimeStamps {
   /**
    * default `true`
    */
@@ -28,7 +27,7 @@ export class Webhook {
 
   /**
    * Used in the matching stage of change stream.
-   * 
+   *
    * {@link match} should be used preferentially over {@link filter}.
    */
   @prop()

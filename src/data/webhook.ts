@@ -242,9 +242,18 @@ export const templatePreset: Readonly<
       ? "Members-only content.\n"
       : "";
 
+    if (
+      (parameters.uploadedVideo ||
+        parameters.status === VideoStatus.Upcoming) &&
+      parameters.webhook?.createdAt &&
+      moment(parameters.webhook.createdAt).isAfter(parameters.createdAt)
+    ) {
+      // do not post video from before webhook was created
+      return;
+    }
+
     if (parameters.uploadedVideo) {
       // uploaded video
-
       if (moment.tz().diff(parameters.publishedAt, "hours", true) > 3) {
         // do not post old video
         return;
@@ -336,7 +345,7 @@ export const templatePreset: Readonly<
                 url: `https://i.ytimg.com/vi/${parameters.id}/maxresdefault.jpg`,
               },
               color: premiere ? uploadColor : liveColor,
-              timestamp: parameters.actualStart,
+              timestamp: parameters.actualStart ?? parameters.scheduledStart,
             },
           ],
         };
