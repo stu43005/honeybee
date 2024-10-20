@@ -3,7 +3,7 @@ import {
   REST,
   type RequestMethod,
   type RouteLike,
-} from "@discordjs/rest";
+} from "discord.js";
 import type { DocumentType } from "@typegoose/typegoose";
 import axios, { AxiosError } from "axios";
 import https from "https";

@@ -3,13 +3,14 @@ kind: Kustomization
 buildMetadata: [managedByLabel]
 
 resources:
+  - cleanup.yaml
+  - crawler.yaml
   # - db.yaml
+  - discord-bot.yaml
+  - ingress.yaml
+  - metrics.yaml
   # - redis.yaml
   - scheduler.yaml
-  - worker.yaml
-  - cleanup.yaml
-  - metrics.yaml
   - servicemonitor.yaml
   - webhook.yaml
-  - crawler.yaml
-  - ingress.yaml
+  - worker.yaml

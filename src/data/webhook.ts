@@ -1,4 +1,4 @@
-import { time } from "@discordjs/formatters";
+import { time } from "discord.js";
 import type { DocumentType } from "@typegoose/typegoose";
 import { VideoStatus } from "holodex.js";
 import jsonTemplates from "json-templates";

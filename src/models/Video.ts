@@ -177,6 +177,12 @@ export class Video extends TimeStamps {
     );
   }
 
+  public getUrl(this: DocumentType<Video>, timeSecond?: number): string {
+    return (
+      `https://youtu.be/${this.id}` + (timeSecond ? `?t=${timeSecond}` : "")
+    );
+  }
+
   //#region find methods
 
   public static findByVideoId(

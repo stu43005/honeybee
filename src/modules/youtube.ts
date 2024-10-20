@@ -1,11 +1,12 @@
+import type { DocumentType } from "@typegoose/typegoose";
 import { google, type youtube_v3 } from "googleapis";
 import { VideoStatus } from "holodex.js";
 import moment from "moment-timezone";
 import assert from "node:assert";
 import { GOOGLE_API_KEY } from "../constants";
 import { HoneybeeStatus } from "../interfaces";
-import ChannelModel from "../models/Channel";
-import VideoModel from "../models/Video";
+import ChannelModel, { type Channel } from "../models/Channel";
+import VideoModel, { type Video } from "../models/Video";
 
 let youtubeApi: youtube_v3.Youtube | undefined;
 
@@ -22,9 +23,9 @@ export function getYoutubeApi() {
   return youtubeApi;
 }
 
-export async function updateVideoFromYoutube(targetVideos: string[]) {
+export async function updateVideoFromYoutube(targetVideos: string[]): Promise<DocumentType<Video>[]> {
   const utcDate = moment.tz("UTC");
-  if (!targetVideos.length) return;
+  if (!targetVideos.length) return [];
 
   const youtube = getYoutubeApi();
   const response = await youtube.videos.list({
@@ -42,8 +43,9 @@ export async function updateVideoFromYoutube(targetVideos: string[]) {
     maxResults: 50,
   });
   const ytVideoItems = response?.data?.items;
-  if (!ytVideoItems?.length) return;
+  if (!ytVideoItems?.length) return [];
 
+  const result: DocumentType<Video>[] = [];
   const needUpdateChannels: string[] = [];
   for (const targetVideo of targetVideos) {
     const video =
@@ -164,13 +166,15 @@ export async function updateVideoFromYoutube(targetVideos: string[]) {
     video.crawledAt = new Date();
     video.hbStatus ??= HoneybeeStatus.Created;
     await video.save();
+    result.push(video);
   }
 
   await updateChannelFromYoutube(needUpdateChannels);
+  return result;
 }
 
-export async function updateChannelFromYoutube(targetChannels: string[]) {
-  if (!targetChannels.length) return;
+export async function updateChannelFromYoutube(targetChannels: string[]): Promise<DocumentType<Channel>[]> {
+  if (!targetChannels.length) return [];
 
   const youtube = getYoutubeApi();
   const response = await youtube.channels.list({
@@ -180,8 +184,9 @@ export async function updateChannelFromYoutube(targetChannels: string[]) {
     maxResults: 50,
   });
   const ytChannelItems = response?.data?.items;
-  if (!ytChannelItems?.length) return;
+  if (!ytChannelItems?.length) return [];
 
+  const result: DocumentType<Channel>[] = [];
   for (const targetChannel of targetChannels) {
     const channel =
       (await ChannelModel.findByChannelId(targetChannel)) ??
@@ -208,5 +213,8 @@ export async function updateChannelFromYoutube(targetChannels: string[]) {
     }
     channel.crawledAt = new Date();
     await channel.save();
+    result.push(channel);
   }
+
+  return result;
 }

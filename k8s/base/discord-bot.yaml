@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: discord-bot
+  labels:
+    app: discord-bot
+    app.kubernetes.io/component: discord-bot
+    app.kubernetes.io/name: honeybee
+    app.kubernetes.io/version: dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: discord-bot
+  template:
+    metadata:
+      labels:
+        app: discord-bot
+        app.kubernetes.io/component: discord-bot
+        app.kubernetes.io/name: honeybee
+        app.kubernetes.io/version: dev
+    spec:
+      containers:
+        - name: discord-bot
+          image: ghcr.io/stu43005/honeybee/honeybee
+          imagePullPolicy: Always
+          args:
+            - "discord-bot"
+          env:
+            - name: HOLODEX_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: holodex-api-key
+                  key: key
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: honeybee-mongodb
+                  key: MONGO_URI
+            - name: DISCORD-bot_ID
+              valueFrom:
+                secretKeyRef:
+                  name: discord-token
+                  key: DISCORD_ID
+            - name: DISCORD_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: discord-token
+                  key: DISCORD_TOKEN
+            - name: GOOGLE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: google-api-key
+                  key: key
+          resources: {}
