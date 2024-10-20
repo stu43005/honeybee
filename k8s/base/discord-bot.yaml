@@ -37,7 +37,7 @@ spec:
                 secretKeyRef:
                   name: honeybee-mongodb
                   key: MONGO_URI
-            - name: DISCORD-bot_ID
+            - name: DISCORD_ID
               valueFrom:
                 secretKeyRef:
                   name: discord-token
