@@ -102,16 +102,17 @@ export class Channel extends TimeStamps {
       {
         $setOnInsert: {
           id: channel.channelId,
+          ...setIfDefine("name", channel.name),
+          ...setIfDefine("description", channel.description),
+          ...setIfDefine("avatarUrl", channel.avatarUrl),
+          ...setIfDefine("bannerUrl", channel.bannerUrl),
+          ...setIfDefine("publishedAt", channel.createdAt),
         },
         $set: {
-          ...setIfDefine("name", channel.name),
           ...setIfDefine("englishName", channel.englishName),
           ...setIfDefine("organization", channel.organization),
           ...setIfDefine("group", channel.group),
-          ...setIfDefine("avatarUrl", channel.avatarUrl),
-          ...setIfDefine("bannerUrl", channel.bannerUrl),
           ...setIfDefine("isInactive", channel.isInactive),
-          ...setIfDefine("publishedAt", channel.createdAt),
           holodexCrawledAt: new Date(),
         },
         $max: {

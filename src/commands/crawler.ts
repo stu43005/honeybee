@@ -151,6 +151,8 @@ export async function runCrawler() {
           await VideoModel.updateFromHolodex(stream);
         }
       } catch (error) {
+        needUpdate[0].holodexCrawledAt = new Date();
+        await needUpdate[0].save();
         throw new Error(
           `[ERROR] An error occurred while updating the past video (${needUpdate[0].id}): ${error}`
         );
@@ -213,6 +215,8 @@ export async function runCrawler() {
             await ChannelModel.updateFromHolodex(channel);
           }
         } catch (error) {
+          needUpdate[0].holodexCrawledAt = new Date();
+          await needUpdate[0].save();
           throw new Error(
             `[ERROR] An error occurred while updating the channel (${needUpdate[0].id}): ${error}`
           );
