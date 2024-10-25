@@ -2,7 +2,7 @@ import { time } from "discord.js";
 import type { DocumentType } from "@typegoose/typegoose";
 import { VideoStatus } from "holodex.js";
 import jsonTemplates from "json-templates";
-import moment from "moment";
+import moment from "moment-timezone";
 import path from "node:path";
 import ChannelModel from "../models/Channel";
 import type { Webhook } from "../models/Webhook";

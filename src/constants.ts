@@ -13,3 +13,5 @@ export const HOLODEX_MAX_UPCOMING_HOURS = Number(
 export const CRAWLER_ROOT_URL = process.env.CRAWLER_ROOT_URL;
 export const YOUTUBE_PUBSUB_SECRET = process.env.YOUTUBE_PUBSUB_SECRET;
 export const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
+
+export const REDIS_URI = process.env.REDIS_URI;

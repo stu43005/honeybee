@@ -1,11 +1,11 @@
+import type { DocumentType } from "@typegoose/typegoose";
+import axios, { AxiosError } from "axios";
 import {
   HTTPError,
   REST,
   type RequestMethod,
   type RouteLike,
 } from "discord.js";
-import type { DocumentType } from "@typegoose/typegoose";
-import axios, { AxiosError } from "axios";
 import https from "https";
 import jsonTemplates, { type JsonTemplate } from "json-templates";
 import { isEqual } from "lodash";
@@ -23,7 +23,7 @@ import ChannelModel from "../models/Channel";
 import VideoModel from "../models/Video";
 import WebhookModel, { type Webhook } from "../models/Webhook";
 import WebhookResultModel from "../models/WebhookResult";
-import { HoneybeeCache } from "../modules/cache";
+import { getCacheInstance } from "../modules/cache";
 import { initMongo } from "../modules/db";
 import { isMatching } from "../modules/matching";
 import { flatObjectKey, secondsToHms, setIfDefine } from "../util";
@@ -38,10 +38,10 @@ const axiosInstance = axios.create({
 });
 const discordRest = new REST();
 
-const cache = new HoneybeeCache({
-  useClones: false,
-  timeToLiveSeconds: 300,
-  timeToFetchSeconds: 30,
+const cache = getCacheInstance({
+  ttl: 300_000,
+  refreshThreshold: 30_000,
+  useClone: false,
 });
 
 function webhookLog(
@@ -177,12 +177,12 @@ function getWebhookTemplateCache(webhook: Webhook) {
 
 function getVideo(videoId?: string) {
   return videoId
-    ? cache.getOrFetch(videoId, () => VideoModel.findByVideoId(videoId).exec())
+    ? cache.wrap(videoId, () => VideoModel.findByVideoId(videoId).exec())
     : null;
 }
 function getChannel(channelId?: string) {
   return channelId
-    ? cache.getOrFetch(channelId, () =>
+    ? cache.wrap(channelId, () =>
         ChannelModel.findByChannelId(channelId).exec()
       )
     : null;
@@ -193,7 +193,7 @@ async function getWebhookResult(
 ) {
   const cacheKey = `WebhookResult-${JSON.stringify(resultKey)}`;
   {
-    const result = await cache.getOrFetch(cacheKey, () =>
+    const result = await cache.wrap(cacheKey, () =>
       WebhookResultModel.findOne(resultKey).exec()
     );
     if (result?.response || data.operationType === "insert") {
@@ -203,7 +203,7 @@ async function getWebhookResult(
   }
   const timeout = AbortSignal.timeout(3000);
   for await (const _ of setInterval(300)) {
-    const result = await cache.getOrFetch(cacheKey, () =>
+    const result = await cache.wrap(cacheKey, () =>
       WebhookResultModel.findOne(resultKey).exec()
     );
     if (result?.response) {

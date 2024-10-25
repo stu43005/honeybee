@@ -1,98 +1,51 @@
-import NodeCache from "node-cache";
+import KeyvRedis from "@keyv/redis";
+import { createCache } from "cache-manager";
+import { CacheableMemory } from "cacheable";
+import { Keyv } from "keyv";
+import { REDIS_URI } from "../constants";
 
-interface CacheItem<T = unknown> {
-  timestamp: number;
-  promise?: Promise<T>;
-  data?: T;
-}
+type CacheOptions = {
+  // cache-manager
+  ttl?: number;
+  refreshThreshold?: number;
+  nonBlocking?: boolean;
 
-export namespace HoneybeeCache {
-  export interface Options extends NodeCache.Options {
-    timeToLiveSeconds?: number;
-    timeToFetchSeconds?: number;
-  }
-}
+  // memory
+  memoryTtl?: number | string;
+  useClone?: boolean;
+  lruSize?: number;
+  checkInterval?: number;
+};
 
-export class HoneybeeCache {
-  private cache: NodeCache;
-
-  private useClones: boolean;
-  private timeToLiveSeconds: number;
-  private timeToFetchSeconds: number;
-
-  constructor(options?: HoneybeeCache.Options) {
-    this.useClones = options?.useClones ?? true;
-    this.timeToLiveSeconds = options?.timeToLiveSeconds ?? 600;
-    this.timeToFetchSeconds = options?.timeToFetchSeconds ?? 60;
-
-    this.cache = new NodeCache({
-      ...options,
-      stdTTL: Math.max(options?.stdTTL ?? 0, this.timeToLiveSeconds),
-      useClones: false,
-      deleteOnExpire: true,
-    });
-  }
-
-  public async getOrFetch<T>(
-    key: string,
-    fetcher: () => Promise<T>
-  ): Promise<T> {
-    const fetchData = async () => {
-      const item = this.cache.get<CacheItem<T>>(key) ?? {
-        timestamp: 0,
-      };
-      if (item.promise !== undefined) {
-        const data = await item.promise;
-        return this.useClones ? structuredClone(data) : data;
-      }
-      try {
-        item.promise = fetcher();
-        this.cache.set(key, item);
-
-        const data = await item.promise;
-        item.timestamp = Date.now();
-        item.promise = undefined;
-        item.data = data;
-        this.cache.set(key, item);
-        return this.useClones ? structuredClone(data) : data;
-      } catch (error) {
-        item.promise = undefined;
-        this.cache.set(key, item);
-        throw error;
-      }
-    };
-
-    const item = this.cache.get<CacheItem<T>>(key);
-    if (item === undefined) {
-      return fetchData();
-    }
-    if (item.data === undefined) {
-      return fetchData();
-    }
-    if (item.timestamp + this.timeToLiveSeconds * 1000 < Date.now()) {
-      return fetchData();
-    }
-    if (
-      item.promise === undefined &&
-      item.timestamp + this.timeToFetchSeconds * 1000 < Date.now()
-    ) {
-      fetchData().catch(() => void 0);
-    }
-    return this.useClones ? structuredClone(item.data) : item.data;
+export function getCacheInstance(
+  options?: CacheOptions
+): ReturnType<typeof createCache> {
+  const stores: Keyv[] = [
+    //  High performance in-memory cache with LRU and TTL
+    new Keyv({
+      store: new CacheableMemory({
+        ttl: options?.memoryTtl ?? options?.ttl ?? 60_000,
+        lruSize: options?.lruSize,
+        useClone: options?.useClone,
+        checkInterval: options?.checkInterval ?? 60_000,
+      }),
+    }),
+  ];
+  if (REDIS_URI && options?.useClone !== false) {
+    stores.push(
+      //  Redis Store
+      new Keyv({
+        store: new KeyvRedis(REDIS_URI),
+      })
+    );
   }
 
-  public set<T>(key: string, data: T): T {
-    const item = this.cache.get<CacheItem<T>>(key) ?? {
-      timestamp: 0,
-    };
-    item.timestamp = Date.now();
-    item.promise = undefined;
-    item.data = data;
-    this.cache.set(key, item);
-    return this.useClones ? structuredClone(data) : data;
-  }
-
-  public del(key: string): number {
-    return this.cache.del(key);
-  }
+  // Multiple stores
+  const cache = createCache({
+    ttl: options?.ttl,
+    refreshThreshold: options?.refreshThreshold,
+    nonBlocking: options?.nonBlocking ?? true,
+    stores: stores,
+  });
+  return cache;
 }

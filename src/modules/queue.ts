@@ -1,8 +1,7 @@
 import assert from "assert";
 import Queue from "bee-queue";
+import { REDIS_URI } from "../constants";
 import type { HoneybeeJob } from "../interfaces";
-
-const REDIS_URI = process.env.REDIS_URI;
 
 type QueueTypes = {
   "honeybee": HoneybeeJob;
