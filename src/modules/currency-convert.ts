@@ -1,10 +1,13 @@
 import axios from "axios";
-import NodeCache from "node-cache";
+import moment from "moment-timezone";
 import { currencyMap } from "../data/currency";
 import CurrencyExchange from "../models/CurrencyExchange";
+import { getCacheInstance } from "./cache";
 
-const exchangeToJpyCache = new NodeCache({
-  stdTTL: 3600,
+const exchangeToJpyCache = getCacheInstance({
+  ttl: moment.duration(1, "day").asMilliseconds(),
+  refreshThreshold: moment.duration(1, "hour").asMilliseconds(),
+  useClone: true,
 });
 
 // https://github.com/fawazahmed0/exchange-api
@@ -15,73 +18,91 @@ const exchangeApiUrls = Object.freeze([
   "https://latest.currency-api.pages.dev/v1/currencies/{currencyCode}.json",
 ]);
 
-async function convert(
-  value: number,
+// https://www.exchangerate-api.com/docs/free
+const exchangeRateApi = `https://open.er-api.com/v6/latest/{currencyCode}`;
+
+async function getExchange(
   fromCurrency: string,
   toCurrency: string
-): Promise<{ value: number; date: string }> {
-  if (
-    typeof value !== "number" ||
-    typeof fromCurrency !== "string" ||
-    typeof toCurrency !== "string"
-  ) {
+): Promise<{ value: number; date: Date }> {
+  if (typeof fromCurrency !== "string" || typeof toCurrency !== "string") {
     throw new Error("Please input the right types of arguments.");
   }
 
-  fromCurrency = fromCurrency.trim().toLowerCase();
-  toCurrency = toCurrency.trim().toLowerCase();
+  const fromCurrencyLc = fromCurrency.trim().toLowerCase();
+  const toCurrencyLc = toCurrency.trim().toLowerCase();
 
   for (const urlTemplate of exchangeApiUrls) {
     try {
       const res = await axios.get(
-        urlTemplate.replaceAll("{currencyCode}", fromCurrency)
+        urlTemplate.replaceAll("{currencyCode}", fromCurrencyLc)
       );
-      return {
-        value: value * res.data[fromCurrency][toCurrency],
-        date: res.data.date,
-      };
+      if (
+        fromCurrencyLc in res.data &&
+        res.data[fromCurrencyLc] &&
+        toCurrencyLc in res.data[fromCurrencyLc] &&
+        res.data[fromCurrencyLc][toCurrencyLc]
+      ) {
+        const exchange = res.data[fromCurrencyLc][toCurrencyLc];
+        const date = moment.tz(res.data.date, "UTC").toDate();
+
+        if (moment.tz("UTC").diff(date, "days", true) > 2) {
+          // outdated
+          continue;
+        }
+
+        // update db
+        CurrencyExchange.updateExchange(
+          fromCurrency,
+          toCurrency,
+          exchange,
+          date
+        ).catch((err) => console.error(err));
+
+        return {
+          value: exchange,
+          date: date,
+        };
+      }
     } catch (error) {
       // throw new Error("There was a problem fetching data");
     }
   }
 
-  throw new Error("There was a problem fetching data");
-}
-
-async function getJpyExchange(fromCurrency: string) {
-  const toCurrency = "JPY";
-  const key = {
-    fromCurrency: fromCurrency,
-    toCurrency: toCurrency,
-  };
-
-  let jpyExchange = exchangeToJpyCache.get<number>(fromCurrency);
-  if (jpyExchange) return jpyExchange;
-
   try {
-    const { value, date } = await convert(1, fromCurrency, toCurrency);
-    exchangeToJpyCache.set(fromCurrency, value);
-    CurrencyExchange.updateOne(
-      key,
-      {
-        $setOnInsert: key,
-        $set: {
-          value: value,
-          timestamp: new Date(date),
-        },
-      },
-      {
-        upsert: true,
-      }
-    ).catch((err) => console.error(err));
-    return value;
-  } catch (error) {
-    const doc = await CurrencyExchange.findOne(key);
-    if (doc) {
-      exchangeToJpyCache.set(fromCurrency, doc.value);
-      return doc.value;
+    const res = await axios.get(
+      exchangeRateApi.replaceAll("{currencyCode}", fromCurrency)
+    );
+    if (toCurrency in res.data.rates && res.data.rates[toCurrency]) {
+      const exchange = res.data.rates[toCurrency];
+      const date = new Date(res.data.time_last_update_unix);
+
+      // update db
+      CurrencyExchange.updateExchange(
+        fromCurrency,
+        toCurrency,
+        exchange,
+        date
+      ).catch((err) => console.error(err));
+
+      return {
+        value: exchange,
+        date: date,
+      };
     }
+  } catch (error) {
+    // throw new Error("There was a problem fetching data");
   }
+
+  // fallback to db
+  const doc = await CurrencyExchange.findExchange(fromCurrency, toCurrency);
+  if (doc) {
+    return {
+      value: doc.value,
+      date: doc.timestamp,
+    };
+  }
+
   throw new Error("There was a problem fetching data");
 }
 
@@ -114,8 +135,11 @@ export async function currencyToJpyAmount(amount: number, currency: string) {
   }
 
   try {
-    const jpyExchange = await getJpyExchange(currencymapEntry.code);
-    const jpyAmount = amount * jpyExchange;
+    const jpyExchange = await exchangeToJpyCache.wrap(
+      currencymapEntry.code,
+      () => getExchange(currencymapEntry.code, "JPY")
+    );
+    const jpyAmount = amount * jpyExchange.value;
     return {
       amount: jpyAmount,
       currency: "JPY",
