@@ -4,7 +4,6 @@ import yargs from "yargs";
 import {
   cleanup,
   cleanupBuilder,
-  removeDuplicatedActions,
 } from "./commands/cleanup";
 import { runCrawler } from "./commands/crawler";
 import { health } from "./commands/health";
@@ -41,7 +40,6 @@ yargs(process.argv.slice(2))
   .command("health", "show real-time cluster status", health)
   .command("metrics", "Prometheus metrics endpoint", metrics)
   .command("cleanup", "cleanup ended streams", cleanupBuilder, cleanup)
-  .command("cleanupDupes", "remove duplicated actions", removeDuplicatedActions)
   .command("migrate", "migrate datetime format", migrate)
   .command("inspect", "migrate datetime format", inspect)
   .demandCommand(1).argv;

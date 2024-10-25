@@ -1,7 +1,7 @@
 import { VideoStatus } from "holodex.js";
 import moment from "moment-timezone";
+import mongoose, { mongo } from "mongoose";
 import type { Arguments, Argv } from "yargs";
-import BanAction from "../models/BanAction";
 import Chat from "../models/Chat";
 import Membership from "../models/Membership";
 import MembershipGift from "../models/MembershipGift";
@@ -12,39 +12,9 @@ import RemoveChatAction from "../models/RemoveChatAction";
 import SuperChat from "../models/SuperChat";
 import SuperSticker from "../models/SuperSticker";
 import Video from "../models/Video";
+import WebhookResult from "../models/WebhookResult";
 import { initMongo } from "../modules/db";
 import { getAgenda } from "../modules/schedule";
-
-export async function removeDuplicatedActions(argv: any) {
-  const disconnect = await initMongo();
-
-  const aggregate = await BanAction.aggregate([
-    {
-      $group: {
-        _id: { channelId: "$channelId", originVideoId: "$originVideoId" },
-        uniqueIds: { $addToSet: "$_id" },
-        count: { $sum: 1 },
-      },
-    },
-    { $match: { count: { $gt: 1 } } },
-    { $sort: { count: -1 } },
-  ]);
-
-  let nbRemoved = 0;
-  for (const res of aggregate) {
-    const records = await BanAction.where("_id")
-      .in(res.uniqueIds)
-      .select(["_id"]);
-
-    const toRemove = records.slice(1);
-    nbRemoved += toRemove.length;
-    // await BanAction.deleteMany(records.slice(1));
-  }
-
-  console.log(`removed`, nbRemoved);
-
-  await disconnect();
-}
 
 async function cleanVideos(videoIds: string[]) {
   await Placeholder.deleteMany({ originVideoId: { $in: videoIds } });
@@ -63,6 +33,113 @@ async function cleanVideos(videoIds: string[]) {
   console.log(`cleanup ${videoIds.length} streams.`);
 }
 
+async function cleanEndedStreams() {
+  const chats = await Chat.aggregate<{
+    _id: { videoId: string };
+    lastTime: Date;
+  }>([
+    {
+      $group: {
+        _id: { videoId: "$originVideoId" },
+        lastTime: { $last: "$timestamp" },
+      },
+    },
+  ]);
+  const videoIds = Array.from(new Set([...chats.map((r) => r._id.videoId)]));
+
+  const videos = await Video.find(
+    {
+      id: { $in: videoIds },
+    },
+    {
+      id: 1,
+      status: 1,
+      actualEnd: 1,
+      hbStatus: 1,
+      hbEnd: 1,
+      hbCleanedAt: 1,
+    }
+  );
+
+  const oneHourAgo = moment.tz("UTC").subtract(1, "hour");
+  const toRemoveVideoIds = new Set<string>([
+    // The status of the video is already past or missing, and the last chat have exceeded 1 hour ago
+    ...videos
+      .filter((video) => {
+        const videoChat = chats.find((chat) => chat._id.videoId === video.id);
+        return (
+          [VideoStatus.Past, VideoStatus.Missing].includes(video.status) &&
+          (!video.availableAt ||
+            moment(video.availableAt).isBefore(oneHourAgo)) &&
+          (!video.publishedAt ||
+            moment(video.publishedAt).isBefore(oneHourAgo)) &&
+          (!video.actualEnd || moment(video.actualEnd).isBefore(oneHourAgo)) &&
+          (!video.hbEnd || moment(video.hbEnd).isBefore(oneHourAgo)) &&
+          (!videoChat || moment(videoChat.lastTime).isBefore(oneHourAgo))
+        );
+      })
+      .map((video) => video.id),
+    // video does not exist (may have been cleaned)
+    ...videoIds.filter((id) => !videos.find((video) => video.id === id)),
+  ]);
+
+  if (toRemoveVideoIds.size) {
+    await cleanVideos(Array.from(toRemoveVideoIds));
+  }
+}
+
+async function cleanWebhookResults() {
+  const conn = mongoose.connection;
+
+  async function cleanByCollection(coll: string, ids: Set<string>) {
+    const findCursor = conn
+      .collection(coll)
+      .find({
+        _id: {
+          $in: Array.from(ids).map((id) => new mongo.BSON.ObjectId(id)),
+        },
+      })
+      .project({ _id: 1 });
+    for await (const { _id } of findCursor) {
+      ids.delete((_id as mongo.BSON.ObjectId).toString());
+    }
+
+    await WebhookResult.deleteMany({
+      coll: coll,
+      docId: {
+        $in: Array.from(ids),
+      },
+    });
+
+    if (coll === "webhooks") {
+      await WebhookResult.deleteMany({
+        webhookId: {
+          $in: Array.from(ids),
+        },
+      });
+    }
+  }
+
+  const docIds: Record<string, Set<string>> = {
+    webhooks: new Set(),
+  };
+
+  for await (const item of WebhookResult.find().cursor()) {
+    docIds["webhooks"].add(item.webhookId);
+    docIds[item.coll] ??= new Set();
+    docIds[item.coll].add(item.docId);
+    if (docIds[item.coll].size >= 50) {
+      await cleanByCollection(item.coll, docIds[item.coll]);
+      docIds[item.coll].clear();
+    }
+  }
+
+  for (const [coll, ids] of Object.entries(docIds)) {
+    await cleanByCollection(coll, ids);
+    ids.clear();
+  }
+}
+
 interface CleanupOptions {
   daemon: boolean;
 }
@@ -78,62 +155,6 @@ export function cleanupBuilder(yargs: Argv): Argv<CleanupOptions> {
 
 export async function cleanup(argv: Arguments<CleanupOptions>) {
   const disconnectFromMongo = await initMongo();
-
-  async function cleanEndedStreams() {
-    const chats = await Chat.aggregate<{
-      _id: { videoId: string };
-      lastTime: Date;
-    }>([
-      {
-        $group: {
-          _id: { videoId: "$originVideoId" },
-          lastTime: { $last: "$timestamp" },
-        },
-      },
-    ]);
-    const videoIds = Array.from(new Set([...chats.map((r) => r._id.videoId)]));
-
-    const videos = await Video.find(
-      {
-        id: { $in: videoIds },
-      },
-      {
-        id: 1,
-        status: 1,
-        actualEnd: 1,
-        hbStatus: 1,
-        hbEnd: 1,
-        hbCleanedAt: 1,
-      }
-    );
-
-    const oneHourAgo = moment.tz("UTC").subtract(1, "hour");
-    const toRemoveVideoIds = new Set<string>([
-      // The status of the video is already past or missing, and the last chat have exceeded 1 hour ago
-      ...videos
-        .filter((video) => {
-          const videoChat = chats.find((chat) => chat._id.videoId === video.id);
-          return (
-            [VideoStatus.Past, VideoStatus.Missing].includes(video.status) &&
-            (!video.availableAt ||
-              moment(video.availableAt).isBefore(oneHourAgo)) &&
-            (!video.publishedAt ||
-              moment(video.publishedAt).isBefore(oneHourAgo)) &&
-            (!video.actualEnd ||
-              moment(video.actualEnd).isBefore(oneHourAgo)) &&
-            (!video.hbEnd || moment(video.hbEnd).isBefore(oneHourAgo)) &&
-            (!videoChat || moment(videoChat.lastTime).isBefore(oneHourAgo))
-          );
-        })
-        .map((video) => video.id),
-      // video does not exist (may have been cleaned)
-      ...videoIds.filter((id) => !videos.find((video) => video.id === id)),
-    ]);
-
-    if (toRemoveVideoIds.size) {
-      await cleanVideos(Array.from(toRemoveVideoIds));
-    }
-  }
 
   if (argv.daemon) {
     const agenda = getAgenda();
@@ -151,11 +172,14 @@ export async function cleanup(argv: Arguments<CleanupOptions>) {
     });
 
     agenda.define("cleanup ended streams", cleanEndedStreams);
+    agenda.define("cleanup webhookresults", cleanWebhookResults);
 
     await agenda.start();
     agenda.every("5 minutes", "cleanup ended streams");
+    agenda.every("1 hour", "cleanup webhookresults");
   } else {
     await cleanEndedStreams();
+    await cleanWebhookResults();
 
     await disconnectFromMongo();
   }

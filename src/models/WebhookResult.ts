@@ -12,8 +12,9 @@ import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
   schemaOptions: { collection: "webhookresults" },
 })
 @index({ webhookId: 1, coll: 1, docId: 1 }, { unique: true })
+@index({ coll: 1, docId: 1 })
 export class WebhookResult extends TimeStamps {
-  @prop({ required: true })
+  @prop({ required: true, index: true })
   public webhookId!: string;
 
   @prop({ required: true })
