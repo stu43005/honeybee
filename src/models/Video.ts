@@ -29,6 +29,11 @@ export const LiveStatus = Object.freeze([
   VideoStatus.Live,
 ]);
 
+export const EndedStatus = Object.freeze([
+  VideoStatus.Past,
+  VideoStatus.Missing,
+]);
+
 @modelOptions({ schemaOptions: { collection: "videos" } })
 @index(
   { availableAt: 1 },

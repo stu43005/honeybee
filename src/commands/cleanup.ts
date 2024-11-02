@@ -11,7 +11,7 @@ import Placeholder from "../models/Placeholder";
 import RemoveChatAction from "../models/RemoveChatAction";
 import SuperChat from "../models/SuperChat";
 import SuperSticker from "../models/SuperSticker";
-import Video from "../models/Video";
+import Video, { EndedStatus } from "../models/Video";
 import WebhookResult from "../models/WebhookResult";
 import { initMongo } from "../modules/db";
 import { getAgenda } from "../modules/schedule";
@@ -92,31 +92,56 @@ async function cleanWebhookResults() {
   const conn = mongoose.connection;
 
   async function cleanByCollection(coll: string, ids: Set<string>) {
-    const findCursor = conn
-      .collection(coll)
-      .find({
-        _id: {
-          $in: Array.from(ids).map((id) => new mongo.BSON.ObjectId(id)),
-        },
-      })
-      .project({ _id: 1 });
-    for await (const { _id } of findCursor) {
-      ids.delete((_id as mongo.BSON.ObjectId).toString());
+    const findCursor = conn.collection(coll).find({
+      _id: {
+        $in: Array.from(ids).map((id) => new mongo.BSON.ObjectId(id)),
+      },
+    });
+    for await (const doc of findCursor) {
+      switch (coll) {
+        case "polls":
+          if (doc.finished) continue;
+          break;
+        case "raids":
+          if (
+            !doc.updatedAt ||
+            moment.tz().diff(doc.updatedAt, "hour", true) >= 1
+          ) {
+            continue;
+          }
+          break;
+        case "videos":
+          if (
+            EndedStatus.includes(doc.status) &&
+            moment.tz().diff(doc.updatedAt, "hour", true) >= 1
+          ) {
+            continue;
+          }
+          break;
+      }
+      // Not delete
+      ids.delete((doc._id as mongo.BSON.ObjectId).toString());
     }
 
-    await WebhookResult.deleteMany({
+    const result = await WebhookResult.deleteMany({
       coll: coll,
       docId: {
         $in: Array.from(ids),
       },
     });
+    if (result.deletedCount > 0) {
+      console.log(`cleanup ${result.deletedCount} webhookResult.`);
+    }
 
     if (coll === "webhooks") {
-      await WebhookResult.deleteMany({
+      const result2 = await WebhookResult.deleteMany({
         webhookId: {
           $in: Array.from(ids),
         },
       });
+      if (result2.deletedCount > 0) {
+        console.log(`cleanup ${result2.deletedCount} webhookResult.`);
+      }
     }
   }
 
@@ -135,6 +160,7 @@ async function cleanWebhookResults() {
   }
 
   for (const [coll, ids] of Object.entries(docIds)) {
+    if (!ids.size) continue;
     await cleanByCollection(coll, ids);
     ids.clear();
   }
