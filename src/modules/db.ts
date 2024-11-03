@@ -38,7 +38,7 @@ export async function changeStreamCloseSignal(
 export async function importAllModels(): Promise<void> {
   const modelsDir = path.join(__dirname, "../models");
   for (const file of await fsp.readdir(modelsDir, { withFileTypes: true })) {
-    if (file.isFile()) {
+    if (file.isFile() && !file.name.endsWith(".d.ts")) {
       const importPath = path.join(
         modelsDir,
         path.basename(file.name, path.extname(file.name))
