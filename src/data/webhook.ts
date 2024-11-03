@@ -135,7 +135,7 @@ export const templatePreset: Readonly<
         {
           author: {
             name: parameters.channel.name,
-            url: Channel.getUrl(parameters.channel.channelId),
+            url: Channel.getUrl(parameters.channel.id),
             icon_url: parameters.channel.avatarUrl,
           },
           title:
