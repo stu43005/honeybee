@@ -6,6 +6,7 @@ import {
   unorderedList,
   type ChatInputCommandInteraction,
 } from "discord.js";
+import { Video } from "../../../models/Video";
 import { updateVideoFromYoutube } from "../../../modules/youtube";
 import type { Command } from "../command";
 
@@ -47,7 +48,7 @@ export class CrawlCommand implements Command {
               (video) =>
                 `${inlineCode(video.id)} - ${hyperlink(
                   video.title,
-                  video.getUrl()
+                  Video.getUrl(video)
                 )}`
             )
           ),

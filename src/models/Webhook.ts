@@ -1,8 +1,11 @@
 import {
   Severity,
   getModelForClass,
+  index,
   modelOptions,
   prop,
+  type DocumentType,
+  type ReturnModelType,
 } from "@typegoose/typegoose";
 import { Base, TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
 
@@ -12,6 +15,7 @@ export interface Webhook extends Base {}
   options: { allowMixed: Severity.ALLOW },
   schemaOptions: { collection: "webhooks" },
 })
+@index({ updatedAt: 1 })
 export class Webhook extends TimeStamps {
   /**
    * default `true`
@@ -58,13 +62,6 @@ export class Webhook extends TimeStamps {
   public updateUrl?: string;
 
   /**
-   * Only need to specify when {@link followUpdate} is set to `true`.
-   * @defaultValue some as {@link updateUrl}
-   */
-  @prop()
-  public replaceUrl?: string;
-
-  /**
    * @defaultValue `POST`
    */
   @prop()
@@ -77,18 +74,34 @@ export class Webhook extends TimeStamps {
   @prop()
   public updateMethod?: string;
 
-  /**
-   * Only need to specify when {@link followUpdate} is set to `true`.
-   * @defaultValue some as {@link updateMethod}
-   */
-  @prop()
-  public replaceMethod?: string;
-
   @prop()
   public templatePreset?: string;
 
   @prop()
   public template?: any;
+
+  //#region find methods
+
+  public static async findEnabled(
+    this: ReturnModelType<typeof Webhook>,
+    enabled = true
+  ): Promise<DocumentType<Webhook>[]> {
+    const result: DocumentType<Webhook>[] = [];
+    let i = 0;
+    for await (const webhook of this.find({ enabled: { $ne: !enabled } })) {
+      if (i > Number.MAX_SAFE_INTEGER) {
+        throw TypeError(
+          "Input is too long and exceeded Number.MAX_SAFE_INTEGER times."
+        );
+      }
+      result[i] = webhook;
+      i++;
+    }
+    result.length = i;
+    return result;
+  }
+
+  //#endregion find methods
 }
 
 export default getModelForClass(Webhook);

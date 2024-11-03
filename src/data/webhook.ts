@@ -1,21 +1,28 @@
-import { time } from "discord.js";
 import type { DocumentType } from "@typegoose/typegoose";
+import { time } from "discord.js";
 import { VideoStatus } from "holodex.js";
-import jsonTemplates from "json-templates";
 import moment from "moment-timezone";
 import path from "node:path";
-import ChannelModel from "../models/Channel";
+import ChannelModel, { Channel } from "../models/Channel";
+import { Video } from "../models/Video";
 import type { Webhook } from "../models/Webhook";
 import { abbreviate, secondsToHms, setIfDefine } from "../util";
 
+export function checkIsDiscordWebhookUrl(url: string): boolean {
+  return url.startsWith("https://discord.com/api/webhooks/");
+}
+
 export const defaultUpdateUrl = (parameters: Record<string, any>): string => {
-  const url = new URL(parameters.insertUrl);
-  url.pathname = path.posix.join(
-    url.pathname,
-    `./messages/${parameters.previousResponse.id}`
-  );
-  url.searchParams.delete("wait");
-  return url.toString();
+  if (parameters.insertUrl && checkIsDiscordWebhookUrl(parameters.insertUrl)) {
+    const url = new URL(parameters.insertUrl);
+    url.pathname = path.posix.join(
+      url.pathname,
+      `./messages/${parameters.previousResponse.id}`
+    );
+    url.searchParams.delete("wait");
+    return url.toString();
+  }
+  return parameters.insertUrl;
 };
 
 export const defaultInsertMethod = "POST";
@@ -26,11 +33,13 @@ const MAX_EMBED_TITLE = 256;
 export const templatePreset: Readonly<
   Record<string, (parameters: Record<string, any>) => any>
 > = Object.freeze({
-  "discord-simple-text": jsonTemplates({
-    username: "{{authorName}}",
-    avatar_url: "{{authorPhoto}}",
-    content: "{{authorName}}：{{message:(wordless message)}}",
-  }),
+  "discord-simple-text": (parameters) => {
+    return {
+      username: parameters.authorName,
+      avatar_url: parameters.authorPhoto,
+      content: `${parameters.authorName}：${getMessage(parameters)}`,
+    };
+  },
   "discord-embed-chats": (parameters) => {
     return {
       embeds: [
@@ -39,15 +48,15 @@ export const templatePreset: Readonly<
             ? {
                 author: {
                   name: parameters.authorName,
-                  url: `https://www.youtube.com/channel/${parameters.authorChannelId}`,
+                  url: Channel.getUrl(parameters.authorChannelId),
                   icon_url: parameters.authorPhoto,
                 },
               }
             : {}),
           title: `To ${parameters.channel.name} • At ${parameters.timeCode}`,
-          url: `https://youtu.be/${parameters.originVideoId}?t=${parameters.timeSecond}`,
+          url: Video.getUrl(parameters.originVideoId, parameters.timeSecond),
           thumbnail: {
-            url: `https://i.ytimg.com/vi/${parameters.originVideoId}/mqdefault.jpg`,
+            url: Video.getVideoThumbnails(parameters.originVideoId).medium,
           },
           description: getMessage(parameters),
           ...(["superchats", "superstickers"].includes(parameters.collection)
@@ -101,7 +110,7 @@ export const templatePreset: Readonly<
             ? {
                 author: {
                   name: parameters.authorName,
-                  url: `https://www.youtube.com/channel/${parameters.authorChannelId}`,
+                  url: Channel.getUrl(parameters.authorChannelId),
                   icon_url: parameters.authorPhoto,
                 },
               }
@@ -126,16 +135,16 @@ export const templatePreset: Readonly<
         {
           author: {
             name: parameters.channel.name,
-            url: `https://www.youtube.com/channel/${parameters.channel.channelId}`,
+            url: Channel.getUrl(parameters.channel.channelId),
             icon_url: parameters.channel.avatarUrl,
           },
           title:
             `Poll • At ${parameters.createdAtTimeCode} ~ ${parameters.timeCode}` +
             (parameters.voteCount ? ` • ${parameters.voteCount} votes` : "") +
             (parameters.finished ? ` • Completed` : ""),
-          url: `https://youtu.be/${parameters.originVideoId}?t=${parameters.timeSecond}`,
+          url: Video.getUrl(parameters.originVideoId, parameters.timeSecond),
           thumbnail: {
-            url: `https://i.ytimg.com/vi/${parameters.originVideoId}/mqdefault.jpg`,
+            url: Video.getVideoThumbnails(parameters.originVideoId).medium,
           },
           description: `${
             parameters.question ?? "(empty question)"
@@ -157,40 +166,42 @@ export const templatePreset: Readonly<
       ],
     };
   },
-  "discord-embed-modechanges": jsonTemplates({
-    embeds: [
-      {
-        author: {
-          name: "{{channel.name}}",
-          url: "https://www.youtube.com/channel/{{channel.channelId}}",
-          icon_url: "{{channel.avatarUrl}}",
-        },
-        title: "Mode changed • At {{timeCode}}",
-        url: "https://youtu.be/{{originVideoId}}?t={{timeSecond}}",
-        thumbnail: {
-          url: "https://i.ytimg.com/vi/{{originVideoId}}/mqdefault.jpg",
-        },
-        description: "{{description:unknow}}",
-        fields: [
-          {
-            name: "Enabled",
-            value: "{{enabled}}",
-            inline: true,
+  "discord-embed-modechanges": (parameters) => {
+    return {
+      embeds: [
+        {
+          author: {
+            name: parameters.channel.name,
+            url: Channel.getUrl(parameters.channel.channelId),
+            icon_url: parameters.channel.avatarUrl,
           },
-          {
-            name: "Mode",
-            value: "{{mode}}",
-            inline: true,
+          title: `Mode changed • At ${parameters.timeCode}`,
+          url: Video.getUrl(parameters.originVideoId, parameters.timeSecond),
+          thumbnail: {
+            url: Video.getVideoThumbnails(parameters.originVideoId).medium,
           },
-        ],
-        footer: {
-          text: "{{video.title}}",
-          icon_url: "{{channel.avatarUrl}}",
+          description: parameters.description ?? "unknow",
+          fields: [
+            {
+              name: "Enabled",
+              value: parameters.enabled,
+              inline: true,
+            },
+            {
+              name: "Mode",
+              value: parameters.mode,
+              inline: true,
+            },
+          ],
+          footer: {
+            text: parameters.video.title,
+            icon_url: parameters.channel.avatarUrl,
+          },
+          timestamp: parameters.timestamp,
         },
-        timestamp: "{{timestamp}}",
-      },
-    ],
-  }),
+      ],
+    };
+  },
   "discord-embed-raids": (parameters) => {
     return {
       embeds: [
@@ -199,15 +210,15 @@ export const templatePreset: Readonly<
             name: parameters.sourceName,
             ...(parameters.sourceChannelId
               ? {
-                  url: `https://www.youtube.com/channel/${parameters.sourceChannelId}`,
+                  url: Channel.getUrl(parameters.sourceChannelId),
                 }
               : {}),
             icon_url: parameters.sourcePhoto,
           },
           title: `Raid Event • At ${parameters.timeCode}`,
-          url: `https://youtu.be/${parameters.originVideoId}?t=${parameters.timeSecond}`,
+          url: Video.getUrl(parameters.originVideoId, parameters.timeSecond),
           thumbnail: {
-            url: `https://i.ytimg.com/vi/${parameters.originVideoId}/mqdefault.jpg`,
+            url: Video.getVideoThumbnails(parameters.originVideoId).medium,
           },
           description: `${parameters.sourceName} and their viewers just joined. Say hello!`,
           ...(parameters.sourceVideoId
@@ -236,8 +247,8 @@ export const templatePreset: Readonly<
     const uploadColor = 0xff9100;
     const creationColor = 0xff9500;
 
-    const shortTitle = abbreviate(parameters.title, MAX_EMBED_TITLE);
-    const shortDescription = abbreviate(parameters.description, 150);
+    const shortTitle = abbreviate(parameters.title ?? "", MAX_EMBED_TITLE);
+    const shortDescription = abbreviate(parameters.description ?? "", 150);
     const memberNotice: string = parameters.memberLimited
       ? "Members-only content.\n"
       : "";
@@ -270,21 +281,21 @@ export const templatePreset: Readonly<
           {
             author: {
               name: `${parameters.channel.name} posted a new video on YouTube!`,
-              url: `https://www.youtube.com/channel/${parameters.channel.id}`,
+              url: Channel.getUrl(parameters.channel.id),
               icon_url: parameters.channel.avatarUrl,
             },
             title: shortTitle,
-            url: `https://youtu.be/${parameters.id}`,
+            url: Video.getUrl(parameters.id),
             description:
               memberNotice + `Video description: ${shortDescription}`,
             footer: {
               text: `YouTube Upload: ${videoLength}${short}`,
             },
             image: {
-              url: `https://i.ytimg.com/vi/${parameters.id}/maxresdefault.jpg`,
+              url: Video.getVideoThumbnails(parameters.id).maxres,
             },
             color: uploadColor,
-            timestamp: parameters.availableAt,
+            timestamp: toTimestamp(parameters.availableAt),
           },
         ],
       };
@@ -295,26 +306,27 @@ export const templatePreset: Readonly<
 
     switch (parameters.status) {
       case VideoStatus.Upcoming: {
-        const eta = time(parameters.scheduledStart, "R");
+        const timestamp = parameters.scheduledStart ?? parameters.publishedAt;
+        const eta = time(timestamp, "R");
         return {
           embeds: [
             {
               author: {
                 name: `${parameters.channel.name} scheduled a new stream!`,
-                url: `https://www.youtube.com/channel/${parameters.channel.id}`,
+                url: Channel.getUrl(parameters.channel.id),
                 icon_url: parameters.channel.avatarUrl,
               },
               title: shortTitle,
-              url: `https://youtu.be/${parameters.id}`,
+              url: Video.getUrl(parameters.id),
               thumbnail: {
-                url: `https://i.ytimg.com/vi/${parameters.id}/mqdefault.jpg`,
+                url: Video.getVideoThumbnails(parameters.id).medium,
               },
               description: `Stream scheduled to start: ${eta}\n\nVideo description: ${shortDescription}`,
               footer: {
                 text: "Scheduled start time ",
               },
               color: creationColor,
-              timestamp: parameters.scheduledStart,
+              timestamp: toTimestamp(timestamp),
             },
           ],
         };
@@ -326,26 +338,27 @@ export const templatePreset: Readonly<
           : parameters.actualStart
           ? " is live."
           : " went live!";
+        const timestamp = parameters.actualStart ?? parameters.scheduledStart;
         return {
           embeds: [
             {
               author: {
                 name: `${parameters.channel.name}${liveMessage} 🔴`,
-                url: `https://www.youtube.com/channel/${parameters.channel.id}`,
+                url: Channel.getUrl(parameters.channel.id),
                 icon_url: parameters.channel.avatarUrl,
               },
               title: shortTitle,
-              url: `https://youtu.be/${parameters.id}`,
+              url: Video.getUrl(parameters.id),
               description:
                 memberNotice + `Video description: ${shortDescription}`,
               footer: {
                 text: `Live on YouTube${sinceStr}`,
               },
               image: {
-                url: `https://i.ytimg.com/vi/${parameters.id}/maxresdefault.jpg`,
+                url: Video.getVideoThumbnails(parameters.id).maxres,
               },
               color: premiere ? uploadColor : liveColor,
-              timestamp: parameters.actualStart ?? parameters.scheduledStart,
+              timestamp: toTimestamp(timestamp),
             },
           ],
         };
@@ -358,18 +371,19 @@ export const templatePreset: Readonly<
         const durationStr: string = premiere
           ? "premiere"
           : secondsToHms(parameters.duration);
+        const timestamp = parameters.actualEnd ?? parameters.timestamp;
         return {
           embeds: [
             {
               author: {
                 name: `${parameters.channel.name}${vodMessage}`,
-                url: `https://www.youtube.com/channel/${parameters.channel.id}`,
+                url: Channel.getUrl(parameters.channel.id),
                 icon_url: parameters.channel.avatarUrl,
               },
               title: shortTitle,
-              url: `https://youtu.be/${parameters.id}`,
+              url: Video.getUrl(parameters.id),
               thumbnail: {
-                url: `https://i.ytimg.com/vi/${parameters.id}/mqdefault.jpg`,
+                url: Video.getVideoThumbnails(parameters.id).medium,
               },
               description: parameters.deleted
                 ? "No VOD is available."
@@ -378,7 +392,7 @@ export const templatePreset: Readonly<
                 text: "Stream ended",
               },
               color: premiere ? uploadColor : inactiveColor,
-              timestamp: parameters.actualEnd ?? parameters.timestamp,
+              timestamp: toTimestamp(timestamp),
             },
           ],
         };
@@ -386,6 +400,11 @@ export const templatePreset: Readonly<
     }
   },
 });
+
+function toTimestamp(date: Date | string): string {
+  if (date instanceof Date) return date.toISOString();
+  return date;
+}
 
 function getMessage(parameters: Record<string, any>) {
   if (parameters.message)

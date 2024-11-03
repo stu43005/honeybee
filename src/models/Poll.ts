@@ -1,6 +1,7 @@
 import {
   Severity,
   getModelForClass,
+  index,
   modelOptions,
   prop,
 } from "@typegoose/typegoose";
@@ -18,6 +19,7 @@ export class PollChoice {
   options: { allowMixed: Severity.ALLOW },
   schemaOptions: { collection: "polls" },
 })
+@index({ updatedAt: 1 })
 export class Poll extends TimeStamps {
   @prop({ required: true, unique: true })
   public id!: string;

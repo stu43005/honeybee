@@ -3,17 +3,19 @@ import {
   index,
   modelOptions,
   prop,
+  type DocumentType,
   type ReturnModelType,
 } from "@typegoose/typegoose";
 import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
 import { Channel as HolodexChannel } from "holodex.js";
-import type { FilterQuery } from "mongoose";
+import type { FilterQuery, FlattenMaps } from "mongoose";
 import { HOLODEX_ALL_VTUBERS, HOLODEX_FETCH_ORG } from "../constants";
 import { setIfDefine } from "../util";
 
 @modelOptions({ schemaOptions: { collection: "channels" } })
 @index({ organization: 1, isInactive: 1 })
 @index({ extraCrawl: 1, isInactive: 1 })
+@index({ updatedAt: 1 })
 export class Channel extends TimeStamps {
   @prop({ required: true, unique: true })
   public id!: string;
@@ -63,6 +65,16 @@ export class Channel extends TimeStamps {
   @prop({ index: true })
   public holodexCrawledAt?: Date;
 
+  public static getUrl(
+    channelOrId: DocumentType<Channel> | FlattenMaps<Channel> | string
+  ): string {
+    const channelId =
+      typeof channelOrId === "string" ? channelOrId : channelOrId.id;
+    return `https://www.youtube.com/channel/${channelId}`;
+  }
+
+  //#region find methods
+
   public static findByChannelId(
     this: ReturnModelType<typeof Channel>,
     channelId: string
@@ -90,6 +102,10 @@ export class Channel extends TimeStamps {
   public static findSubscribed(this: ReturnModelType<typeof Channel>) {
     return this.find(this.SubscribedQuery);
   }
+
+  //#endregion find methods
+
+  //#region update methods
 
   public static async updateFromHolodex(
     this: ReturnModelType<typeof Channel>,
@@ -127,6 +143,8 @@ export class Channel extends TimeStamps {
       }
     );
   }
+
+  //#endregion update methods
 }
 
 export default getModelForClass(Channel);

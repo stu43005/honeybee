@@ -29,11 +29,11 @@ spec:
           args:
             - "webhook"
           env:
-            - name: HOLODEX_FETCH_ORG
+            - name: REDIS_URI
               valueFrom:
                 secretKeyRef:
-                  name: honeybee-secrets
-                  key: HOLODEX_FETCH_ORG
+                  name: honeybee-redis
+                  key: REDIS_URI
             - name: MONGO_URI
               valueFrom:
                 secretKeyRef:

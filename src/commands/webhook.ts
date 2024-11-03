@@ -8,11 +8,13 @@ import {
 } from "discord.js";
 import https from "https";
 import jsonTemplates, { type JsonTemplate } from "json-templates";
-import { isEqual } from "lodash";
-import mongoose, { mongo } from "mongoose";
+import { groupBy, isEqual } from "lodash";
+import { mongo } from "mongoose";
 import { setInterval } from "node:timers/promises";
 import pProps from "p-props";
+import PQueue from "p-queue";
 import {
+  checkIsDiscordWebhookUrl,
   defaultInsertMethod,
   defaultUpdateMethod,
   defaultUpdateUrl,
@@ -20,13 +22,22 @@ import {
   templatePreset,
 } from "../data/webhook";
 import ChannelModel from "../models/Channel";
-import VideoModel from "../models/Video";
+import VideoModel, { Video } from "../models/Video";
 import WebhookModel, { type Webhook } from "../models/Webhook";
 import WebhookResultModel from "../models/WebhookResult";
 import { getCacheInstance } from "../modules/cache";
-import { initMongo } from "../modules/db";
+import {
+  CollectionWatcher,
+  type WatcherResultDocument,
+} from "../modules/collection-watcher";
+import {
+  getModelByCollectionName,
+  importAllModels,
+  initMongo,
+} from "../modules/db";
 import { isMatching } from "../modules/matching";
-import { flatObjectKey, secondsToHms, setIfDefine } from "../util";
+import { getAgenda } from "../modules/schedule";
+import { secondsToHms } from "../util";
 
 const debug = false;
 
@@ -41,7 +52,6 @@ const discordRest = new REST();
 const cache = getCacheInstance({
   ttl: 300_000,
   refreshThreshold: 30_000,
-  useClone: false,
 });
 
 function webhookLog(
@@ -70,7 +80,7 @@ async function sendDiscordWebhook(
   url: string,
   body: any,
   webhook: Webhook,
-  resultKey: { webhookId: string; coll: string; docId: string }
+  resultKey: WebhookResultKey
 ) {
   const uri = new URL(url);
   uri.searchParams.set("wait", "true");
@@ -111,6 +121,8 @@ async function sendDiscordWebhook(
         },
       });
     }
+  } finally {
+    cache.del(getWebhookResultCacheKey(resultKey));
   }
 }
 
@@ -119,7 +131,7 @@ async function sendWebhook(
   url: string,
   body: any,
   webhook: Webhook,
-  resultKey: { webhookId: string; coll: string; docId: string }
+  resultKey: WebhookResultKey
 ) {
   try {
     const timeout = AbortSignal.timeout(10000);
@@ -157,6 +169,8 @@ async function sendWebhook(
         },
       });
     }
+  } finally {
+    cache.del(getWebhookResultCacheKey(resultKey));
   }
 }
 
@@ -176,25 +190,40 @@ function getWebhookTemplateCache(webhook: Webhook) {
 }
 
 function getVideo(videoId?: string) {
-  return videoId
-    ? cache.wrap(videoId, () => VideoModel.findByVideoId(videoId).exec())
-    : null;
+  if (!videoId) return null;
+  return cache.wrap(videoId, () =>
+    VideoModel.findByVideoId(videoId)
+      .exec()
+      .then((doc) => doc?.toJSON() ?? null)
+  );
 }
 function getChannel(channelId?: string) {
-  return channelId
-    ? cache.wrap(channelId, () =>
-        ChannelModel.findByChannelId(channelId).exec()
-      )
-    : null;
+  if (!channelId) return null;
+  return cache.wrap(channelId, () =>
+    ChannelModel.findByChannelId(channelId)
+      .exec()
+      .then((doc) => doc?.toJSON() ?? null)
+  );
+}
+
+type WebhookResultKey = {
+  webhookId: string;
+  coll: string;
+  docId: string;
+};
+function getWebhookResultCacheKey(resultKey: WebhookResultKey) {
+  return `WebhookResult-${JSON.stringify(resultKey)}`;
 }
 async function getWebhookResult(
-  resultKey: Record<string, any>,
-  data: mongo.ChangeStreamDocument
+  resultKey: WebhookResultKey,
+  data: WatcherResultDocument
 ) {
-  const cacheKey = `WebhookResult-${JSON.stringify(resultKey)}`;
+  const cacheKey = getWebhookResultCacheKey(resultKey);
   {
     const result = await cache.wrap(cacheKey, () =>
-      WebhookResultModel.findOne(resultKey).exec()
+      WebhookResultModel.findOne(resultKey)
+        .exec()
+        .then((doc) => doc?.toJSON() ?? null)
     );
     if (result?.response || data.operationType === "insert") {
       return result;
@@ -204,7 +233,9 @@ async function getWebhookResult(
   const timeout = AbortSignal.timeout(3000);
   for await (const _ of setInterval(300)) {
     const result = await cache.wrap(cacheKey, () =>
-      WebhookResultModel.findOne(resultKey).exec()
+      WebhookResultModel.findOne(resultKey)
+        .exec()
+        .then((doc) => doc?.toJSON() ?? null)
     );
     if (result?.response) {
       return result;
@@ -219,13 +250,10 @@ async function getWebhookResult(
   }
   return null;
 }
-function doc2Json(doc: Promise<DocumentType<any> | null> | null) {
-  return doc?.then((doc) => doc?.toJSON());
-}
 
 async function handleChange(
   webhook: DocumentType<Webhook>,
-  data: mongo.ChangeStreamDocument
+  data: WatcherResultDocument
 ) {
   if (!("documentKey" in data)) return;
   if (!("fullDocument" in data) || !data.fullDocument) {
@@ -247,17 +275,19 @@ async function handleChange(
 
   const timestamp: Date =
     data.fullDocument.timestamp ?? data.fullDocument.updatedAt ?? new Date();
-  const timeSecond = video?.then(
-    (video) => video?.getTimeSeconds(timestamp) ?? 0
+  const timeSecond = video?.then((video) =>
+    video ? Video.getTimeSeconds(video, timestamp) : 0
   );
   const timeCode = timeSecond?.then((timeSecond) => secondsToHms(timeSecond));
 
   const createdAt: Date | undefined = data.fullDocument.createdAt;
   const createdAtTimeCode =
     createdAt &&
-    video?.then((video) => secondsToHms(video?.getTimeSeconds(createdAt) ?? 0));
+    video?.then((video) =>
+      secondsToHms(video ? Video.getTimeSeconds(video, createdAt) : 0)
+    );
 
-  const resultKey = {
+  const resultKey: WebhookResultKey = {
     webhookId: webhook._id.toHexString(),
     coll: data.ns.coll,
     docId: data.documentKey._id.toHexString(),
@@ -274,16 +304,16 @@ async function handleChange(
     webhook: webhook.toJSON(),
     insertUrl: webhook.insertUrl,
     collection: data.ns.coll,
-    ...data.fullDocument,
+    ...data.fullDocument.toJSON(),
     timestamp: timestamp.toISOString(),
     timeSecond: timeSecond,
     timeCode: timeCode,
     createdAtTimeCode: createdAtTimeCode,
-    video: doc2Json(video),
-    channel: doc2Json(channel),
-    authorChannel: doc2Json(authorChannel),
-    sourceVideo: doc2Json(sourceVideo),
-    sourceChannel: doc2Json(sourceChannel),
+    video: video,
+    channel: channel,
+    authorChannel: authorChannel,
+    sourceVideo: sourceVideo,
+    sourceChannel: sourceChannel,
     previousBody: previousBody,
     previousResponse: previousResponse,
   });
@@ -295,11 +325,6 @@ async function handleChange(
 
   let method: string | null = null;
   let url: string | null = null;
-  if (data.operationType === "replace" && hasPreviousResponse) {
-    if (webhook.replaceMethod) method ??= webhook.replaceMethod;
-    if (webhook.replaceUrl)
-      url ??= getJsonTemplate("replaceUrl", webhook.replaceUrl)(parameters);
-  }
   if (data.operationType !== "insert" && hasPreviousResponse) {
     if (webhook.updateMethod) method ??= webhook.updateMethod;
     if (webhook.updateUrl)
@@ -315,18 +340,14 @@ async function handleChange(
       ? templatePreset[webhook.templatePreset](parameters)
       : webhook.template
       ? getJsonTemplate("template", webhook.template)(parameters)
-      : data.fullDocument;
+      : data.fullDocument.toJSON();
 
   if (!body) {
     // no message to send
     return;
   }
 
-  if (
-    hasPreviousResponse &&
-    parameters.previousBody &&
-    isEqual(parameters.previousBody, body)
-  ) {
+  if (parameters.previousBody && isEqual(parameters.previousBody, body)) {
     // no need update
     return;
   }
@@ -343,33 +364,12 @@ async function handleChange(
     },
     { upsert: true }
   );
+  cache.del(getWebhookResultCacheKey(resultKey));
 
-  if (url.startsWith("https://discord.com/api/webhooks/")) {
+  if (checkIsDiscordWebhookUrl(url)) {
     await sendDiscordWebhook(method, url, body, webhook, resultKey);
   } else {
     await sendWebhook(method, url, body, webhook, resultKey);
-  }
-}
-
-const changeStreams = new Map<string, mongo.ChangeStream>();
-
-async function removeWebhook(data: string | { _id: mongo.ObjectId }) {
-  const id = typeof data === "string" ? data : data._id.toHexString();
-  const previous = changeStreams.get(id);
-  if (previous) {
-    try {
-      await previous.close();
-      previous.removeAllListeners();
-      changeStreams.delete(id);
-      return previous.resumeToken;
-    } catch (error) {
-      webhookLog(
-        data,
-        "<!> [FATAL] Unable to close the previous change stream.",
-        error
-      );
-      process.exit(1);
-    }
   }
 }
 
@@ -384,86 +384,44 @@ async function prepareWebhook(webhook: DocumentType<Webhook>) {
   }
 }
 
-async function prepareAllWebhooks() {
-  for await (const webhook of WebhookModel.find({ enabled: { $ne: debug } })) {
-    try {
-      await prepareWebhook(webhook);
-    } catch (error) {
-      webhookLog(webhook, "<!> [ERROR] Unable to prepare webhook", error);
-    }
-  }
-}
-
-async function setupWebhook(webhook: DocumentType<Webhook>) {
+function validateWebhook(webhook: DocumentType<Webhook>) {
   // validation
-  {
-    const error = webhook.validateSync();
-    if (error) {
-      webhookLog(
-        webhook,
-        "<!> [ERROR] The format of the webhook is incorrect.",
-        error
-      );
-      return;
-    }
-  }
-  try {
-    const id = webhook._id.toHexString();
-
-    // close previous change stream
-    const resumeAfter = await removeWebhook(id);
-
-    if (webhook.enabled === debug) {
-      webhookLog(webhook, "webhook disabled, skip.");
-      return;
-    }
-
-    const conn = mongoose.connection;
-    const changeStream = conn.watch(
-      [
-        {
-          $match: flatObjectKey({
-            operationType: webhook.followUpdate
-              ? { $in: ["insert", "update", "replace"] }
-              : "insert",
-            ns: {
-              coll: { $in: webhook.colls },
-            },
-            ...setIfDefine("fullDocument", webhook.match),
-          }),
-        },
-      ],
-      {
-        resumeAfter,
-        fullDocument: "updateLookup",
-      }
+  const error = webhook.validateSync();
+  if (error) {
+    webhookLog(
+      webhook,
+      "<!> [ERROR] The format of the webhook is incorrect.",
+      error
     );
-    changeStream.on("change", async (data) => {
-      try {
-        await handleChange(webhook, data);
-      } catch (error) {
-        webhookLog(webhook, "<!> [ERROR]", error);
-      }
-    });
-    changeStreams.set(id, changeStream);
-  } catch (error) {
-    webhookLog(webhook, "<!> [FATAL] Unable to watch change stream.", error);
-    process.exit(1);
+    return false;
   }
-  try {
-    await prepareWebhook(webhook);
-  } catch (error) {
-    webhookLog(webhook, "<!> [ERROR] Unable to prepare webhook", error);
-  }
+  return true;
 }
 
 export async function runWebhook() {
+  await importAllModels();
   const disconnectFromMongo = await initMongo();
+  const agenda = getAgenda();
+  const pqueue = new PQueue({ concurrency: 1 });
+
+  const wathcers = new Map<string, CollectionWatcher>();
+  const webhooksByColl = new WeakMap<
+    CollectionWatcher,
+    DocumentType<Webhook>[]
+  >();
 
   process.on("SIGTERM", async (s) => {
     console.log("quitting webhook (SIGTERM) ...");
 
     try {
+      webhooksChangeStream?.close();
+      pqueue.pause();
+      pqueue.clear();
+      await pqueue.onIdle();
+      for (const watcher of wathcers.values()) {
+        await watcher.stop();
+      }
+      await agenda.drain();
       await disconnectFromMongo();
     } catch (err) {
       console.log("webhook failed to shut down gracefully", err);
@@ -472,47 +430,118 @@ export async function runWebhook() {
     process.exit(0);
   });
 
-  WebhookModel.watch(
-    [
-      {
-        $match: {
-          operationType: { $in: ["insert", "update", "replace", "delete"] },
-        },
-      },
-    ],
-    {
-      fullDocument: "updateLookup",
-    }
-  ).on("change", (data: mongo.ChangeStreamDocument<Webhook>) => {
-    webhookLog(data, data.operationType.toUpperCase());
-    switch (data.operationType) {
-      case "insert":
-      case "update":
-      case "replace": {
-        if (data.fullDocument) {
-          setupWebhook(new WebhookModel(data.fullDocument));
-        } else {
-          webhookLog(data, "<!> [FATAL] missing webhook's fullDocument");
-          process.exit(1);
-        }
-        break;
-      }
-      case "delete": {
-        removeWebhook(data.documentKey);
-        break;
+  const prepareAllWebhooks = "webhook prepare webhooks";
+  agenda.define(prepareAllWebhooks, async (): Promise<void> => {
+    const webhooks = await WebhookModel.findEnabled();
+    for (const webhook of webhooks) {
+      try {
+        await prepareWebhook(webhook);
+      } catch (error) {
+        webhookLog(webhook, "<!> [ERROR] Unable to prepare webhook", error);
       }
     }
   });
 
-  ChannelModel.watch([{ $match: { operationType: "insert" } }]).on(
-    "change",
-    () => prepareAllWebhooks()
-  );
+  await agenda.start();
+  agenda.every("1 hour", prepareAllWebhooks);
 
-  for await (const webhook of WebhookModel.find({ enabled: { $ne: debug } })) {
-    webhookLog(webhook, "START");
-    await setupWebhook(webhook);
+  async function watcherDataHandler(
+    data: WatcherResultDocument,
+    watcher: CollectionWatcher
+  ) {
+    const webhooks = webhooksByColl.get(watcher);
+    if (!webhooks) return;
+    for (const webhook of webhooks) {
+      try {
+        if (!webhook.followUpdate && data.operationType === "update") continue;
+        if (webhook.match && !isMatching(data.fullDocument, webhook.match))
+          continue;
+        await handleChange(webhook, data);
+      } catch (error) {
+        webhookLog(webhook, "<!> [ERROR]", error);
+      }
+    }
   }
 
+  async function setupWebhook(coll: string, webhooks: DocumentType<Webhook>[]) {
+    try {
+      let watcher = wathcers.get(coll);
+      if (watcher) {
+        await watcher.stop();
+      } else {
+        const model = getModelByCollectionName(coll);
+        if (!model) {
+          webhookLog(
+            coll,
+            `<!> [ERROR] Unable to get model (unknown collection "${coll}")`
+          );
+          return;
+        }
+        watcher = new CollectionWatcher(model);
+        watcher.on("data", watcherDataHandler);
+        wathcers.set(coll, watcher);
+      }
+
+      webhooksByColl.set(watcher, webhooks);
+      watcher.listen({
+        filter: webhooks.every((webhook) => !!webhook.match)
+          ? { $or: webhooks.map((webhook) => webhook.match) }
+          : undefined,
+        operationType: webhooks.some((webhook) => webhook.followUpdate)
+          ? ["insert", "update"]
+          : ["insert"],
+      });
+      webhookLog(coll, "start listening");
+    } catch (error) {
+      webhookLog(
+        coll,
+        "<!> [FATAL] Unable to create collection watcher.",
+        error
+      );
+      process.exit(1);
+    }
+  }
+
+  async function setupWebhooks() {
+    try {
+      const allWebhooks = await WebhookModel.findEnabled(!debug);
+      const groups = groupBy(
+        allWebhooks
+          .filter(validateWebhook)
+          .flatMap((webhook) =>
+            webhook.colls.map((coll) => ({ webhook, coll }))
+          ),
+        ({ coll }) => coll
+      );
+      for (const entry of Object.entries(groups)) {
+        const coll = entry[0];
+        const webhooks = entry[1].map(({ webhook }) => webhook);
+        await setupWebhook(coll, webhooks);
+      }
+      // Stop unnecessary watchers
+      for (const [coll, watcher] of wathcers.entries()) {
+        if (!(coll in groups)) {
+          wathcers.delete(coll);
+          await watcher.stop();
+        }
+      }
+    } catch (error) {
+      webhookLog("global", "<!> [FATAL] Unable to setup webhooks.", error);
+      process.exit(1);
+    }
+  }
+
+  const webhooksChangeStream = WebhookModel.watch([
+    {
+      $match: {
+        operationType: { $in: ["insert", "update", "replace", "delete"] },
+      },
+    },
+  ]).on("change", (data: mongo.ChangeStreamDocument<Webhook>) => {
+    webhookLog(data, data.operationType.toUpperCase());
+    if (pqueue.size < 2) pqueue.add(() => setupWebhooks());
+  });
+
+  await pqueue.add(() => setupWebhooks());
   console.log("webhook is ready");
 }

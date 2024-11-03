@@ -1,5 +1,8 @@
-import { mongoose } from "@typegoose/typegoose";
-import assert from "assert";
+import { mongoose, type ReturnModelType } from "@typegoose/typegoose";
+import type { AnyParamConstructor } from "@typegoose/typegoose/lib/types";
+import assert from "node:assert";
+import fsp from "node:fs/promises";
+import path from "node:path";
 
 export const MONGO_URI = process.env.MONGO_URI;
 
@@ -30,4 +33,27 @@ export async function changeStreamCloseSignal(
   signal.addEventListener("abort", async () => {
     await close();
   });
+}
+
+export async function importAllModels(): Promise<void> {
+  const modelsDir = path.join(__dirname, "../models");
+  for (const file of await fsp.readdir(modelsDir, { withFileTypes: true })) {
+    if (file.isFile()) {
+      const importPath = path.join(
+        modelsDir,
+        path.basename(file.name, path.extname(file.name))
+      );
+      require(importPath);
+    }
+  }
+}
+
+export function getModelByCollectionName(
+  collectionName: string
+): ReturnModelType<AnyParamConstructor<any>> | undefined {
+  for (const model of Object.values(mongoose.models)) {
+    if (model.collection.name === collectionName) {
+      return model;
+    }
+  }
 }

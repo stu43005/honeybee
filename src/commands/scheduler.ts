@@ -1,6 +1,5 @@
 import type { DocumentType } from "@typegoose/typegoose";
 import type { Job } from "agenda";
-import type { mongo } from "mongoose";
 import { IGNORE_FREE_CHAT, SHUTDOWN_TIMEOUT } from "../constants";
 import {
   ErrorCode,
@@ -9,12 +8,17 @@ import {
   HoneybeeStatus,
 } from "../interfaces";
 import VideoModel, { type Video } from "../models/Video";
+import { CollectionWatcher } from "../modules/collection-watcher";
 import { initMongo } from "../modules/db";
 import { getQueueInstance } from "../modules/queue";
 import { getAgenda } from "../modules/schedule";
 
 function schedulerLog(...obj: any) {
   console.log(...obj);
+}
+
+function getJobId(videoId: string, replica: number) {
+  return replica === 1 ? videoId : `${videoId}:${replica}`;
 }
 
 export async function runScheduler() {
@@ -62,7 +66,7 @@ export async function runScheduler() {
       Math.floor(startUntil / divisor),
       1000 * 60 * minimumWaits
     );
-    const jobId = replica === 1 ? videoId : `${videoId}:${replica}`;
+    const jobId = getJobId(videoId, replica);
     await queue
       .createJob({
         videoId,
@@ -159,9 +163,11 @@ Failed=${health.failed}`
   queue.on("stalled", async (jobId) => {
     schedulerLog("[stalled]:", jobId);
     const job = await queue.getJob(jobId);
-    const { videoId, replica } = job.data;
-    if (replica === 1) {
-      await VideoModel.updateStatus(videoId, HoneybeeStatus.Stalled);
+    if (job) {
+      const { videoId, replica } = job.data;
+      if (replica === 1) {
+        await VideoModel.updateStatus(videoId, HoneybeeStatus.Stalled);
+      }
     }
   });
 
@@ -173,11 +179,13 @@ Failed=${health.failed}`
 
   queue.on("job succeeded", async (jobId, result: HoneybeeResult) => {
     const job = await queue.getJob(jobId);
-    const { videoId, replica } = job.data;
-    await job.remove();
+    if (job) {
+      const { videoId, replica } = job.data;
+      await job.remove();
 
-    if (replica === 1) {
-      await VideoModel.updateResult(videoId, result);
+      if (replica === 1) {
+        await VideoModel.updateResult(videoId, result);
+      }
     }
 
     switch (result.error) {
@@ -210,24 +218,27 @@ Failed=${health.failed}`
 
   queue.on("job progress", async (jobId, progress: HoneybeeStats) => {
     const job = await queue.getJob(jobId);
-    const { videoId, replica } = job.data;
-    if (replica === 1) {
-      await VideoModel.updateStatus(videoId, HoneybeeStatus.Progress);
+    if (job) {
+      const { videoId, replica } = job.data;
+      if (replica === 1) {
+        await VideoModel.updateStatus(videoId, HoneybeeStatus.Progress);
+      }
     }
   });
 
   queue.on("job retrying", async (jobId, err) => {
     const job = await queue.getJob(jobId);
-    const { videoId, replica } = job.data;
+    if (job) {
+      const { videoId, replica } = job.data;
+      if (replica === 1) {
+        await VideoModel.updateStatus(videoId, HoneybeeStatus.Retrying, err);
+      }
+    }
+
     const retries = job.options.retries;
     const retryDelay = job.options.backoff.delay
       ? `${Math.ceil(job.options.backoff.delay / 1000)}s`
       : "immediate";
-
-    if (replica === 1) {
-      await VideoModel.updateStatus(videoId, HoneybeeStatus.Retrying, err);
-    }
-
     schedulerLog(
       "[job retrying]:",
       `will retry ${jobId} in ${retryDelay} (${retries}). reason: ${err.message}`
@@ -237,11 +248,13 @@ Failed=${health.failed}`
   queue.on("job failed", async (jobId, err) => {
     schedulerLog(`[job failed]: ${jobId}`, err.message);
     const job = await queue.getJob(jobId);
-    const { videoId, replica } = job.data;
-    await job.remove();
+    if (job) {
+      const { videoId, replica } = job.data;
+      await job.remove();
 
-    if (replica === 1) {
-      await VideoModel.updateStatusFailed(videoId, err);
+      if (replica === 1) {
+        await VideoModel.updateStatusFailed(videoId, err);
+      }
     }
 
     schedulerLog(
@@ -251,59 +264,34 @@ Failed=${health.failed}`
 
   await queue.ready();
   await agenda.start();
-  agenda.every("1 minute", rearrange);
+  agenda.every("30 seconds", rearrange);
   agenda.every("1 minute", checkStalledJobs);
 
-  VideoModel.watch(
-    [
-      {
-        $match: {
-          operationType: { $in: ["insert", "update", "replace"] },
-        },
-      },
-    ],
-    {
-      fullDocument: "updateLookup",
-      fullDocumentBeforeChange: "whenAvailable",
-    }
-  ).on("change", async (data: mongo.ChangeStreamDocument<Video>) => {
-    switch (data.operationType) {
-      case "insert":
-        try {
-          const video = new VideoModel(data.fullDocument);
-          if (video.isLive()) {
-            await handleStream(video, 1);
-          }
-        } catch (error) {
-          schedulerLog(
-            `Unable to schedule the stream: ${data.fullDocument.id},`,
-            error
-          );
+  const watcher = new CollectionWatcher(VideoModel);
+  watcher.on("data", async ({ fullDocument: video, operationType }) => {
+    try {
+      if (operationType === "insert") {
+        // insert
+        if (video.isLive()) {
+          await handleStream(video, 1);
         }
-        break;
-      case "update":
-      case "replace":
-        if (data.fullDocument) {
-          try {
-            if (data.fullDocumentBeforeChange && data.fullDocument) {
-              const before = new VideoModel(data.fullDocumentBeforeChange);
-              const after = new VideoModel(data.fullDocument);
-              if (
-                after.getReplicas() > 0 &&
-                before.getReplicas() < after.getReplicas()
-              ) {
-                await handleStream(after, after.getReplicas());
-              }
-            }
-          } catch (error) {
-            schedulerLog(
-              `Unable to schedule the stream: ${data.fullDocument.id},`,
-              error
-            );
+      } else {
+        // update
+        const replica = video.getReplicas();
+        if (video.isLive() && replica > 1) {
+          const jobId = getJobId(video.id, replica);
+          const job = await queue.getJob(jobId);
+          if (!job) {
+            await handleStream(video, replica);
           }
         }
-        break;
+      }
+    } catch (error) {
+      schedulerLog(`Unable to schedule the stream: ${video.id},`, error);
     }
+  });
+  watcher.listen({
+    operationType: ["insert", "update"],
   });
 
   schedulerLog(`scheduler is ready (ignoreFreeChat=${IGNORE_FREE_CHAT})`);

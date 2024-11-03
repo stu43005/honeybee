@@ -1,8 +1,15 @@
-import { getModelForClass, index, modelOptions, prop } from "@typegoose/typegoose";
+import {
+  getModelForClass,
+  index,
+  modelOptions,
+  prop,
+} from "@typegoose/typegoose";
+import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
 
 @modelOptions({ schemaOptions: { collection: "raids" } })
 @index({ originVideoId: 1, sourceName: 1 }, { unique: true })
-export class Raid {
+@index({ updatedAt: 1 })
+export class Raid extends TimeStamps {
   /**
    * incoming raid id
    */

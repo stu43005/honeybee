@@ -1,16 +1,17 @@
 import type { Masterchat } from "@stu43005/masterchat";
 import {
-  DocumentType,
   getModelForClass,
   index,
   isDocument,
   modelOptions,
   prop,
+  type DocumentType,
   type Ref,
   type ReturnModelType,
 } from "@typegoose/typegoose";
 import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
 import { Video as HolodexVideo, VideoStatus } from "holodex.js";
+import type { FlattenMaps } from "mongoose";
 import assert from "node:assert";
 import { HoneybeeStatus, type HoneybeeResult } from "../interfaces";
 import { setIfDefine } from "../util";
@@ -59,6 +60,7 @@ export const EndedStatus = Object.freeze([
     },
   }
 )
+@index({ updatedAt: 1 })
 export class Video extends TimeStamps {
   @prop({ required: true, unique: true })
   public id!: string;
@@ -175,17 +177,52 @@ export class Video extends TimeStamps {
     return LiveStatus.includes(this.status);
   }
 
-  public getTimeSeconds(this: DocumentType<Video>, timestamp: Date): number {
-    if (!this.actualStart || timestamp < this.actualStart) return 0;
+  public static getTimeSeconds(
+    video: DocumentType<Video> | FlattenMaps<Video>,
+    timestamp: Date
+  ): number {
+    if (!video.actualStart || timestamp < new Date(video.actualStart)) return 0;
     return Math.floor(
-      (timestamp.getTime() - this.actualStart.getTime()) / 1000
+      (timestamp.getTime() - new Date(video.actualStart).getTime()) / 1000
     );
   }
 
-  public getUrl(this: DocumentType<Video>, timeSecond?: number): string {
+  public static getUrl(
+    videoOrId: DocumentType<Video> | FlattenMaps<Video> | string,
+    timeSecond?: number
+  ): string {
+    const videoId = typeof videoOrId === "string" ? videoOrId : videoOrId.id;
     return (
-      `https://youtu.be/${this.id}` + (timeSecond ? `?t=${timeSecond}` : "")
+      `https://youtu.be/${videoId}` + (timeSecond ? `?t=${timeSecond}` : "")
     );
+  }
+
+  public static getVideoThumbnails(
+    videoOrId: DocumentType<Video> | FlattenMaps<Video> | string,
+    useWebP = false
+  ): {
+    /** 120w */
+    default: string;
+    /** 320w */
+    medium: string;
+    /** 640w */
+    standard: string;
+    /** 1280w */
+    maxres: string;
+    hq720: string;
+  } {
+    const videoId = typeof videoOrId === "string" ? videoOrId : videoOrId.id;
+    const base = useWebP
+      ? "https://i.ytimg.com/vi_webp"
+      : "https://i.ytimg.com/vi";
+    const ext = useWebP ? "webp" : "jpg";
+    return {
+      default: `${base}/${videoId}/default.${ext}`,
+      medium: `${base}/${videoId}/mqdefault.${ext}`,
+      standard: `${base}/${videoId}/sddefault.${ext}`,
+      maxres: `${base}/${videoId}/maxresdefault.${ext}`,
+      hq720: `${base}/${videoId}/hq720.${ext}`,
+    };
   }
 
   //#region find methods
