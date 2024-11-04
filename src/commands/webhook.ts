@@ -80,7 +80,7 @@ async function sendDiscordWebhook(
   url: string,
   body: any,
   webhook: Webhook,
-  resultKey: WebhookResultKey
+  resultIdentifier: WebhookResultIdentifier
 ) {
   const uri = new URL(url);
   uri.searchParams.set("wait", "true");
@@ -94,17 +94,17 @@ async function sendDiscordWebhook(
     });
 
     if (webhook.followUpdate) {
-      await WebhookResultModel.updateOne(resultKey, {
+      await WebhookResultModel.updateOne(resultIdentifier, {
         $set: {
           response: response,
         },
       });
     } else {
-      await WebhookResultModel.deleteOne(resultKey);
+      await WebhookResultModel.deleteOne(resultIdentifier);
     }
   } catch (error) {
     if (error instanceof HTTPError) {
-      await WebhookResultModel.updateOne(resultKey, {
+      await WebhookResultModel.updateOne(resultIdentifier, {
         $set: {
           statusCode: error.status,
           response: {
@@ -113,7 +113,7 @@ async function sendDiscordWebhook(
         },
       });
     } else {
-      await WebhookResultModel.updateOne(resultKey, {
+      await WebhookResultModel.updateOne(resultIdentifier, {
         $set: {
           response: {
             error: `${error}`,
@@ -122,7 +122,7 @@ async function sendDiscordWebhook(
       });
     }
   } finally {
-    cache.del(getWebhookResultCacheKey(resultKey));
+    cache.del(createWebhookResultCacheKey(resultIdentifier));
   }
 }
 
@@ -131,7 +131,7 @@ async function sendWebhook(
   url: string,
   body: any,
   webhook: Webhook,
-  resultKey: WebhookResultKey
+  resultIdentifier: WebhookResultIdentifier
 ) {
   try {
     const timeout = AbortSignal.timeout(10000);
@@ -143,25 +143,25 @@ async function sendWebhook(
     });
 
     if (webhook.followUpdate) {
-      await WebhookResultModel.updateOne(resultKey, {
+      await WebhookResultModel.updateOne(resultIdentifier, {
         $set: {
           statusCode: res.status,
           response: res.data,
         },
       });
     } else {
-      await WebhookResultModel.deleteOne(resultKey);
+      await WebhookResultModel.deleteOne(resultIdentifier);
     }
   } catch (error) {
     if (error instanceof AxiosError) {
-      await WebhookResultModel.updateOne(resultKey, {
+      await WebhookResultModel.updateOne(resultIdentifier, {
         $set: {
           statusCode: error.response?.status,
           response: error.response?.data,
         },
       });
     } else {
-      await WebhookResultModel.updateOne(resultKey, {
+      await WebhookResultModel.updateOne(resultIdentifier, {
         $set: {
           response: {
             error: `${error}`,
@@ -170,7 +170,7 @@ async function sendWebhook(
       });
     }
   } finally {
-    cache.del(getWebhookResultCacheKey(resultKey));
+    cache.del(createWebhookResultCacheKey(resultIdentifier));
   }
 }
 
@@ -206,22 +206,34 @@ function getChannel(channelId?: string) {
   );
 }
 
-type WebhookResultKey = {
+type WebhookResultIdentifier = {
   webhookId: string;
   coll: string;
   docId: string;
 };
-function getWebhookResultCacheKey(resultKey: WebhookResultKey) {
-  return `WebhookResult-${JSON.stringify(resultKey)}`;
+function createWebhookResultIdentifier(
+  webhook: DocumentType<Webhook>,
+  data: WatcherResultDocument
+): WebhookResultIdentifier {
+  return {
+    webhookId: webhook._id.toHexString(),
+    coll: data.ns.coll,
+    docId: data.documentKey._id.toHexString(),
+  };
+}
+function createWebhookResultCacheKey(
+  resultIdentifier: WebhookResultIdentifier
+) {
+  return `WebhookResult-${JSON.stringify(resultIdentifier)}`;
 }
 async function getWebhookResult(
-  resultKey: WebhookResultKey,
+  resultIdentifier: WebhookResultIdentifier,
   data: WatcherResultDocument
 ) {
-  const cacheKey = getWebhookResultCacheKey(resultKey);
+  const cacheKey = createWebhookResultCacheKey(resultIdentifier);
   {
     const result = await cache.wrap(cacheKey, () =>
-      WebhookResultModel.findOne(resultKey)
+      WebhookResultModel.findOne(resultIdentifier)
         .exec()
         .then((doc) => doc?.toJSON() ?? null)
     );
@@ -233,7 +245,7 @@ async function getWebhookResult(
   const timeout = AbortSignal.timeout(3000);
   for await (const _ of setInterval(300)) {
     const result = await cache.wrap(cacheKey, () =>
-      WebhookResultModel.findOne(resultKey)
+      WebhookResultModel.findOne(resultIdentifier)
         .exec()
         .then((doc) => doc?.toJSON() ?? null)
     );
@@ -287,14 +299,10 @@ async function handleChange(
       secondsToHms(video ? Video.getTimeSeconds(video, createdAt) : 0)
     );
 
-  const resultKey: WebhookResultKey = {
-    webhookId: webhook._id.toHexString(),
-    coll: data.ns.coll,
-    docId: data.documentKey._id.toHexString(),
-  };
+  const resultIdentifier = createWebhookResultIdentifier(webhook, data);
 
   const previousResult = webhook.followUpdate
-    ? getWebhookResult(resultKey, data)
+    ? getWebhookResult(resultIdentifier, data)
     : null;
   const previousBody = previousResult?.then((result) => result?.body);
   const previousResponse = previousResult?.then((result) => result?.response);
@@ -353,9 +361,9 @@ async function handleChange(
   }
 
   await WebhookResultModel.updateOne(
-    resultKey,
+    resultIdentifier,
     {
-      $setOnInsert: resultKey,
+      $setOnInsert: resultIdentifier,
       $set: {
         method: method,
         url: url,
@@ -364,12 +372,12 @@ async function handleChange(
     },
     { upsert: true }
   );
-  cache.del(getWebhookResultCacheKey(resultKey));
+  cache.del(createWebhookResultCacheKey(resultIdentifier));
 
   if (checkIsDiscordWebhookUrl(url)) {
-    await sendDiscordWebhook(method, url, body, webhook, resultKey);
+    await sendDiscordWebhook(method, url, body, webhook, resultIdentifier);
   } else {
-    await sendWebhook(method, url, body, webhook, resultKey);
+    await sendWebhook(method, url, body, webhook, resultIdentifier);
   }
 }
 
