@@ -26,10 +26,7 @@ import VideoModel, { Video } from "../models/Video";
 import WebhookModel, { type Webhook } from "../models/Webhook";
 import WebhookResultModel from "../models/WebhookResult";
 import { getCacheInstance } from "../modules/cache";
-import {
-  CollectionWatcher,
-  type WatcherResultDocument,
-} from "../modules/collection-watcher";
+import { type WatcherResultDocument } from "../modules/collection-watcher";
 import {
   getModelByCollectionName,
   importAllModels,
@@ -37,7 +34,7 @@ import {
 } from "../modules/db";
 import { isMatching } from "../modules/matching";
 import { getAgenda } from "../modules/schedule";
-import { secondsToHms } from "../util";
+import { flatObjectKey, secondsToHms, setIfDefine } from "../util";
 
 const debug = false;
 
@@ -404,11 +401,7 @@ export async function runWebhook() {
   const agenda = getAgenda();
   const pqueue = new PQueue({ concurrency: 1 });
 
-  const wathcers = new Map<string, CollectionWatcher>();
-  const webhooksByColl = new WeakMap<
-    CollectionWatcher,
-    DocumentType<Webhook>[]
-  >();
+  const changeStreams = new Map<string, mongo.ChangeStream>();
   const bufferChange = new Map<
     string,
     {
@@ -424,8 +417,8 @@ export async function runWebhook() {
       webhooksChangeStream?.close();
       pqueue.clear();
       await pqueue.onIdle();
-      for (const watcher of wathcers.values()) {
-        await watcher.stop();
+      for (const coll of changeStreams.keys()) {
+        await removeWebhook(coll);
       }
       await agenda.drain();
       await disconnectFromMongo();
@@ -493,59 +486,97 @@ export async function runWebhook() {
     }
   }
 
-  function handleWatcherData(
-    data: WatcherResultDocument,
-    watcher: CollectionWatcher
-  ) {
-    if (!("documentKey" in data) || !data.documentKey) return;
-    if (!("fullDocument" in data) || !data.fullDocument) {
-      webhookLog(
-        watcher.collectionName,
-        "<!> [ERROR] missing fullDocument",
-        data.documentKey
-      );
-      return;
-    }
-
-    const webhooks = webhooksByColl.get(watcher);
-    if (!webhooks) return;
-    for (const webhook of webhooks) {
-      if (prepareWebhookEvent(webhook, data)) {
-        processWebhookEvent(webhook, data).catch((error) => {
-          webhookLog(webhook, "<!> [ERROR]", error);
-        });
+  async function removeWebhook(coll: string) {
+    const previous = changeStreams.get(coll);
+    if (previous) {
+      try {
+        await previous.close();
+        previous.removeAllListeners();
+        changeStreams.delete(coll);
+        return previous.resumeToken;
+      } catch (error) {
+        webhookLog(
+          coll,
+          "<!> [FATAL] Unable to close the previous change stream.",
+          error
+        );
+        process.exit(1);
       }
     }
   }
 
   async function setupWebhook(coll: string, webhooks: DocumentType<Webhook>[]) {
     try {
-      let watcher = wathcers.get(coll);
-      if (watcher) {
-        await watcher.stop();
-      } else {
-        const model = getModelByCollectionName(coll);
-        if (!model) {
-          webhookLog(
-            coll,
-            `<!> [ERROR] Unable to get model (unknown collection "${coll}")`
-          );
-          return;
-        }
-        watcher = new CollectionWatcher(model);
-        watcher.on("data", handleWatcherData);
-        wathcers.set(coll, watcher);
-      }
+      // close previous change stream
+      const resumeAfter = await removeWebhook(coll);
 
-      webhooksByColl.set(watcher, webhooks);
-      watcher.listen({
-        filter: webhooks.every((webhook) => !!webhook.match)
-          ? { $or: webhooks.map((webhook) => webhook.match) }
-          : undefined,
-        operationType: webhooks.some((webhook) => webhook.followUpdate)
-          ? ["insert", "update"]
-          : ["insert"],
-      });
+      const model = getModelByCollectionName(coll);
+      if (!model) {
+        webhookLog(
+          coll,
+          `<!> [ERROR] Unable to get model (unknown collection "${coll}")`
+        );
+        return;
+      }
+      const changeStream = model.watch(
+        [
+          {
+            $match: {
+              $or: webhooks.map((webhook) =>
+                flatObjectKey({
+                  operationType: webhook.followUpdate
+                    ? { $in: ["insert", "update"] }
+                    : "insert",
+                  ...setIfDefine("fullDocument", webhook.match),
+                })
+              ),
+            },
+          },
+        ],
+        {
+          resumeAfter: resumeAfter,
+          fullDocument: "updateLookup",
+        }
+      );
+      changeStream.on(
+        "change",
+        (changeStreamData: mongo.ChangeStreamDocument) => {
+          if (
+            changeStreamData.operationType !== "insert" &&
+            changeStreamData.operationType !== "update"
+          ) {
+            return;
+          }
+          if (!("documentKey" in changeStreamData)) return;
+          if (
+            !("fullDocument" in changeStreamData) ||
+            !changeStreamData.fullDocument
+          ) {
+            webhookLog(
+              coll,
+              "<!> [ERROR] missing fullDocument",
+              changeStreamData.documentKey
+            );
+            return;
+          }
+
+          const data: WatcherResultDocument = {
+            documentKey: changeStreamData.documentKey,
+            fullDocument: new model(changeStreamData.fullDocument),
+            operationType: changeStreamData.operationType,
+            ns: changeStreamData.ns,
+          };
+
+          for (const webhook of webhooks) {
+            if (prepareWebhookEvent(webhook, data)) {
+              processWebhookEvent(webhook, data).catch((error) => {
+                webhookLog(webhook, "<!> [ERROR]", error);
+              });
+            }
+          }
+        }
+      );
+      changeStreams.set(coll, changeStream);
       webhookLog(coll, "start listening");
     } catch (error) {
       webhookLog(
@@ -573,11 +604,10 @@ export async function runWebhook() {
         const webhooks = entry[1].map(({ webhook }) => webhook);
         await setupWebhook(coll, webhooks);
       }
-      // Stop unnecessary watchers
-      for (const [coll, watcher] of wathcers.entries()) {
+      // Stop unnecessary changestreams
+      for (const coll of changeStreams.keys()) {
         if (!(coll in groups)) {
-          wathcers.delete(coll);
-          await watcher.stop();
+          await removeWebhook(coll);
         }
       }
     } catch (error) {
