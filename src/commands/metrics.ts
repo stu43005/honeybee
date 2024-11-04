@@ -63,14 +63,14 @@ const messageTypes: MessageTypeModel[] = [
     messageType: MessageType.SuperChat,
     model: SuperChat,
     calcUsersTotal: true,
-    calcAmount: false,
+    calcAmount: true,
     calcJpyAmount: true,
   },
   {
     messageType: MessageType.SuperSticker,
     model: SuperSticker,
     calcUsersTotal: true,
-    calcAmount: false,
+    calcAmount: true,
     calcJpyAmount: true,
   },
 ];
