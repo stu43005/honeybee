@@ -263,18 +263,10 @@ async function getWebhookResult(
   return null;
 }
 
-async function handleChange(
+async function processWebhookEvent(
   webhook: DocumentType<Webhook>,
   data: WatcherResultDocument
 ) {
-  if (!("documentKey" in data)) return;
-  if (!("fullDocument" in data) || !data.fullDocument) {
-    webhookLog(webhook, "<!> [ERROR] missing fullDocument", data.documentKey);
-    return;
-  }
-
-  // webhookLog(webhook, "receive change", data.documentKey);
-
   const video = getVideo(data.fullDocument.originVideoId);
   const channel =
     getChannel(data.fullDocument.channelId) ??
@@ -417,13 +409,19 @@ export async function runWebhook() {
     CollectionWatcher,
     DocumentType<Webhook>[]
   >();
+  const bufferChange = new Map<
+    string,
+    {
+      webhook: DocumentType<Webhook>;
+      data?: WatcherResultDocument;
+    }
+  >();
 
   process.on("SIGTERM", async (s) => {
     console.log("quitting webhook (SIGTERM) ...");
 
     try {
       webhooksChangeStream?.close();
-      pqueue.pause();
       pqueue.clear();
       await pqueue.onIdle();
       for (const watcher of wathcers.values()) {
@@ -453,20 +451,69 @@ export async function runWebhook() {
   await agenda.start();
   agenda.every("1 hour", prepareAllWebhooks);
 
-  async function watcherDataHandler(
+  global.setInterval(() => {
+    for (const [key, { webhook, data }] of bufferChange) {
+      bufferChange.delete(key);
+      if (data) {
+        processWebhookEvent(webhook, data).catch((error) => {
+          webhookLog(webhook, "<!> [ERROR]", error);
+        });
+      }
+    }
+  }, 5000);
+
+  function prepareWebhookEvent(
+    webhook: DocumentType<Webhook>,
+    data: WatcherResultDocument
+  ) {
+    try {
+      if (!webhook.followUpdate && data.operationType === "update")
+        return false;
+      if (webhook.match && !isMatching(data.fullDocument, webhook.match))
+        return false;
+
+      if (webhook.followUpdate) {
+        const cacheKey = createWebhookResultCacheKey(
+          createWebhookResultIdentifier(webhook, data)
+        );
+        if (bufferChange.has(cacheKey)) {
+          // buffer change
+          bufferChange.set(cacheKey, { webhook, data });
+          return false;
+        } else {
+          // mark next record as buffer
+          bufferChange.set(cacheKey, { webhook });
+        }
+      }
+
+      return true;
+    } catch (error) {
+      webhookLog(webhook, "<!> [ERROR]", error);
+      return false;
+    }
+  }
+
+  function handleWatcherData(
     data: WatcherResultDocument,
     watcher: CollectionWatcher
   ) {
+    if (!("documentKey" in data) || !data.documentKey) return;
+    if (!("fullDocument" in data) || !data.fullDocument) {
+      webhookLog(
+        watcher.collectionName,
+        "<!> [ERROR] missing fullDocument",
+        data.documentKey
+      );
+      return;
+    }
+
     const webhooks = webhooksByColl.get(watcher);
     if (!webhooks) return;
     for (const webhook of webhooks) {
-      try {
-        if (!webhook.followUpdate && data.operationType === "update") continue;
-        if (webhook.match && !isMatching(data.fullDocument, webhook.match))
-          continue;
-        await handleChange(webhook, data);
-      } catch (error) {
-        webhookLog(webhook, "<!> [ERROR]", error);
+      if (prepareWebhookEvent(webhook, data)) {
+        processWebhookEvent(webhook, data).catch((error) => {
+          webhookLog(webhook, "<!> [ERROR]", error);
+        });
       }
     }
   }
@@ -486,7 +533,7 @@ export async function runWebhook() {
           return;
         }
         watcher = new CollectionWatcher(model);
-        watcher.on("data", watcherDataHandler);
+        watcher.on("data", handleWatcherData);
         wathcers.set(coll, watcher);
       }
 
