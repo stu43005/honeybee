@@ -209,6 +209,10 @@ Failed=${health.failed}`
         schedulerLog(`[action required]: Unknown error occurred at ${jobId}`);
         break;
       }
+      case ErrorCode.Aborted: {
+        schedulerLog(`[job aborted]: ${jobId}`);
+        break;
+      }
       default: {
         schedulerLog(`[job succeeded]: ${jobId}`, result);
         break;

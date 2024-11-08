@@ -31,6 +31,7 @@ export enum ErrorCode {
   Unavailable = "UNAVAILABLE",
   Ban = "BAN",
   Unknown = "UNKNOWN",
+  Aborted = "ABORTED",
 }
 
 export interface HoneybeeJob {

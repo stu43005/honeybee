@@ -958,7 +958,7 @@ async function handleJob(
     if (err instanceof AbortError || axios.isCancel(err)) {
       if (stopController.signal.aborted) {
         videoLog(`END (Stop by signal)`);
-        return { error: null, result: stats };
+        return { error: ErrorCode.Aborted, result: stats };
       }
       job.backoff("immediate");
       videoLog("<!> [ABORTED]");
