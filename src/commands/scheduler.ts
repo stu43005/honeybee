@@ -1,5 +1,7 @@
 import type { DocumentType } from "@typegoose/typegoose";
 import type { Job } from "agenda";
+import { VideoStatus } from "holodex.js";
+import moment from "moment-timezone";
 import { IGNORE_FREE_CHAT, SHUTDOWN_TIMEOUT } from "../constants";
 import {
   ErrorCode,
@@ -7,7 +9,7 @@ import {
   HoneybeeStats,
   HoneybeeStatus,
 } from "../interfaces";
-import VideoModel, { type Video } from "../models/Video";
+import VideoModel, { LiveStatus, type Video } from "../models/Video";
 import { CollectionWatcher } from "../modules/collection-watcher";
 import { initMongo } from "../modules/db";
 import { getQueueInstance } from "../modules/queue";
@@ -39,7 +41,11 @@ export async function runScheduler() {
     process.exit(0);
   });
 
-  async function handleStream(video: DocumentType<Video>, replica: number) {
+  async function handleStream(
+    video: DocumentType<Video>,
+    replica: number,
+    isReplay = false
+  ) {
     const videoId = video.id;
     const title = video.title;
     const scheduledStartTime = video.scheduledStart;
@@ -71,6 +77,7 @@ export async function runScheduler() {
       .createJob({
         videoId,
         replica,
+        mode: isReplay ? "replay" : "live",
         defaultBackoffDelay: estimatedDelay,
       })
       .setId(jobId)
@@ -118,7 +125,17 @@ export async function runScheduler() {
       end: 1000,
     });
 
-    const liveAndUpcomingStreams = await VideoModel.findLiveVideos();
+    const halfHourAgo = moment.tz("UTC").subtract(30, "minutes").toDate();
+    const liveAndUpcomingStreams = await VideoModel.find({
+      $or: [
+        { status: { $in: LiveStatus } },
+        {
+          status: VideoStatus.Past,
+          hbRecordReplay: { $ne: true },
+          actualEnd: { $gt: halfHourAgo },
+        },
+      ],
+    });
 
     const unscheduledStreams = liveAndUpcomingStreams.filter(
       (video) =>
@@ -144,7 +161,7 @@ export async function runScheduler() {
       for (let replica = 1; replica <= video.getReplicas(); replica++) {
         const job = videoJobs.find((job) => job.data.replica === replica);
         if (!job) {
-          await handleStream(video, replica);
+          await handleStream(video, replica, video.isReplay());
         }
       }
     }
@@ -180,10 +197,12 @@ Failed=${health.failed}`
   queue.on("job succeeded", async (jobId, result: HoneybeeResult) => {
     const job = await queue.getJob(jobId);
     if (job) {
-      const { videoId, replica } = job.data;
+      const { videoId, replica, mode } = job.data;
       await job.remove();
 
-      if (replica === 1) {
+      if (mode === "replay") {
+        await VideoModel.updateResult(videoId, result, true);
+      } else if (replica === 1) {
         await VideoModel.updateResult(videoId, result);
       }
     }

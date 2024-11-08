@@ -11,6 +11,7 @@ import {
 } from "@typegoose/typegoose";
 import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
 import { Video as HolodexVideo, VideoStatus } from "holodex.js";
+import moment from "moment-timezone";
 import type { FlattenMaps } from "mongoose";
 import assert from "node:assert";
 import {
@@ -155,6 +156,9 @@ export class Video extends TimeStamps {
   public hbReplica?: number;
 
   @prop()
+  public hbRecordReplay?: boolean;
+
+  @prop()
   public crawledAt?: Date;
 
   @prop()
@@ -170,10 +174,13 @@ export class Video extends TimeStamps {
   }
 
   public getReplicas(this: DocumentType<Video>): number {
-    if (!this.isLive()) {
-      return 0;
+    if (this.isLive()) {
+      return Math.max(1, this.hbReplica ?? 1);
     }
-    return Math.max(1, this.hbReplica ?? 1);
+    if (this.isReplay()) {
+      return 1;
+    }
+    return 0;
   }
 
   public isFreeChat(this: DocumentType<Video>): boolean {
@@ -186,6 +193,14 @@ export class Video extends TimeStamps {
 
   public isLive(this: DocumentType<Video>): boolean {
     return LiveStatus.includes(this.status);
+  }
+
+  public isReplay(this: DocumentType<Video>): boolean {
+    return (
+      this.status === VideoStatus.Past &&
+      this.hbRecordReplay !== true &&
+      moment.tz("UTC").subtract(1, "hour").isBefore(this.actualEnd)
+    );
   }
 
   public static getTimeSeconds(
@@ -374,7 +389,8 @@ export class Video extends TimeStamps {
   public static async updateResult(
     this: ReturnModelType<typeof Video>,
     videoId: string,
-    result: HoneybeeResult
+    result: HoneybeeResult,
+    isReplay?: boolean
   ) {
     await this.updateOne(
       {
@@ -387,6 +403,7 @@ export class Video extends TimeStamps {
           hbErrorCode: result.error,
           hbEnd: new Date(),
           hbCleanedAt: null,
+          ...setIfDefine("hbRecordReplay", isReplay),
         },
         $inc: {
           "hbStats.handled": result.result?.handled ?? 0,

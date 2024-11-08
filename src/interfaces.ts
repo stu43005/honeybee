@@ -54,6 +54,7 @@ export interface HoneybeeJob {
    * 1, 2, 3, ...
    */
   replica: number;
+  mode?: "live" | "replay";
   defaultBackoffDelay: number;
 }
 

@@ -120,15 +120,20 @@ async function handleJob(
   job: BeeQueue.Job<HoneybeeJob>,
   globalSignal: AbortSignal
 ): Promise<HoneybeeResult> {
-  const { videoId, replica } = job.data;
+  const { videoId, replica, mode = "live" } = job.data;
   assert(replica, "No specified replica.");
   const isFirstReplica = replica === 1;
+  const isReplay = mode === "replay";
   const video = await VideoModel.findByVideoId(videoId);
   assert(video, "Unable to find the video.");
   assert(video.getReplicas() >= replica, "Stop replica");
   const { channelId } = video;
   const { name: channelName, avatarUrl: channelAvatarUrl } =
     await video.getChannel();
+
+  if (isReplay && !video.isReplay()) {
+    throw new Error("No need to record the replay.");
+  }
 
   // Control cancel all operations
   const cancelController = new AbortController();
@@ -138,7 +143,7 @@ async function handleJob(
   pipeSignal(stopController.signal, cancelController);
 
   const mc = new Masterchat(videoId, channelId, {
-    mode: "live",
+    mode: mode,
     axiosInstance: axios.create({
       timeout: 4000,
       httpsAgent: new https.Agent({
