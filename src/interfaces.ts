@@ -34,6 +34,20 @@ export enum ErrorCode {
   Aborted = "ABORTED",
 }
 
+export enum UploadStatus {
+  Deleted = "deleted",
+  Failed = "failed",
+  Processed = "processed",
+  Rejected = "rejected",
+  Uploaded = "uploaded",
+}
+
+export enum PrivacyStatus {
+  Private = "private",
+  Public = "public",
+  Unlisted = "unlisted",
+}
+
 export interface HoneybeeJob {
   videoId: string;
   /**

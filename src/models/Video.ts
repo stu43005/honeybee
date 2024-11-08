@@ -13,7 +13,12 @@ import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
 import { Video as HolodexVideo, VideoStatus } from "holodex.js";
 import type { FlattenMaps } from "mongoose";
 import assert from "node:assert";
-import { HoneybeeStatus, type HoneybeeResult } from "../interfaces";
+import {
+  HoneybeeStatus,
+  PrivacyStatus,
+  UploadStatus,
+  type HoneybeeResult,
+} from "../interfaces";
 import { setIfDefine } from "../util";
 import ChannelModel, { Channel } from "./Channel";
 
@@ -87,10 +92,16 @@ export class Video extends TimeStamps {
   public duration!: number;
 
   @prop()
+  public uploadStatus?: UploadStatus;
+
+  @prop()
   public uploadedVideo?: boolean;
 
   @prop()
   public premiere?: boolean;
+
+  @prop()
+  public privacyStatus?: PrivacyStatus;
 
   @prop()
   public memberLimited?: boolean;

@@ -141,6 +141,8 @@ export async function updateVideoFromYoutube(targetVideos: string[]): Promise<Do
           ytInfo.status?.uploadStatus === "processed");
       video.memberLimited =
         ytInfo.statistics && ytInfo.statistics.viewCount === undefined;
+      video.privacyStatus = ytInfo.status?.privacyStatus as Video["privacyStatus"];
+      video.uploadStatus = ytInfo.status?.uploadStatus as Video["uploadStatus"];
       if (video.deleted) video.deleted = false;
     } else {
       video.status = VideoStatus.Missing;
