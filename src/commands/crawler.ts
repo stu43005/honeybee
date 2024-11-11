@@ -280,7 +280,6 @@ export async function runCrawler() {
       if (result.modifiedCount > 0) {
         console.log(`Already seen this video: ${data.video.id}`);
       }
-      await updateVideoFromYoutube([data.video.id]);
     } catch (error) {
       console.error(`An error occurred:`, error);
     }
@@ -299,6 +298,12 @@ export async function runCrawler() {
         ).map((video) => video.id),
         ...(
           await VideoModel.findLiveVideos()
+            .sort({ crawledAt: 1 })
+            .limit(50)
+            .select("id")
+        ).map((video) => video.id),
+        ...(
+          await VideoModel.findRecentlyEndedVideos()
             .sort({ crawledAt: 1 })
             .limit(50)
             .select("id")

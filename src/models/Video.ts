@@ -266,6 +266,27 @@ export class Video extends TimeStamps {
     });
   }
 
+  public static findRecentlyEndedVideos(
+    this: ReturnModelType<typeof Video>,
+    duration = moment.duration(1, "hour")
+  ) {
+    const adjustedTime = moment.tz("UTC").subtract(duration).toDate();
+    return this.find({
+      $or: [
+        {
+          status: VideoStatus.Past,
+          actualEnd: { $gt: adjustedTime },
+          uploadedVideo: { $ne: true },
+        },
+        {
+          status: VideoStatus.Missing,
+          hbEnd: { $gt: adjustedTime },
+          uploadedVideo: { $ne: true },
+        },
+      ],
+    });
+  }
+
   //#endregion find methods
 
   //#region update methods
@@ -445,6 +466,7 @@ export class Video extends TimeStamps {
           channelId: data.channel.id,
           channel: await ChannelModel.findByChannelId(data.channel.id),
           title: data.video.title,
+          crawledAt: null,
         },
       },
       {
