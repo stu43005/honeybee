@@ -571,7 +571,7 @@ async function handleJob(
                 })),
                 pollType: action.pollType,
                 voteCount: action.voteCount,
-                finished: "addPollResultAction" in groupedActions,
+                finished: false,
                 originVideoId: mc.videoId,
                 originChannelId: mc.channelId,
               };
@@ -589,6 +589,7 @@ async function handleJob(
           }
           case "addPollResultAction": {
             const bulk = groupedActions[type].map((action) => {
+              action.voteCount
               return {
                 updateOne: {
                   filter: {
@@ -599,6 +600,9 @@ async function handleJob(
                   update: {
                     $set: {
                       finished: true,
+                    },
+                    $max: {
+                      voteCount: action.voteCount,
                     },
                   },
                 },
