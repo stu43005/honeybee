@@ -123,6 +123,9 @@ export class Channel extends TimeStamps {
           ...setIfDefine("avatarUrl", channel.avatarUrl),
           ...setIfDefine("bannerUrl", channel.bannerUrl),
           ...setIfDefine("publishedAt", channel.createdAt),
+          ...setIfDefine("viewCount", channel.viewCount),
+          ...setIfDefine("videoCount", channel.videoCount),
+          ...setIfDefine("subscriberCount", channel.subscriberCount),
         },
         $set: {
           ...setIfDefine("englishName", channel.englishName),
@@ -130,11 +133,6 @@ export class Channel extends TimeStamps {
           ...setIfDefine("group", channel.group),
           ...setIfDefine("isInactive", channel.isInactive),
           holodexCrawledAt: new Date(),
-        },
-        $max: {
-          subscriberCount: channel.subscriberCount,
-          viewCount: channel.viewCount,
-          videoCount: channel.videoCount,
         },
       },
       {

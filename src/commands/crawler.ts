@@ -272,13 +272,18 @@ export async function runCrawler() {
     console.log(`Subscription denied: ${data.channel}`);
   });
   ytNotifier.on("notified", async (data) => {
-    console.log(
-      `Pubsub: ${data.channel.name} (${data.channel.id}) new video: [${data.video.id}] ${data.video.title}`
-    );
     try {
       const result = await VideoModel.updateFromNotification(data);
       if (result.modifiedCount > 0) {
-        console.log(`Already seen this video: ${data.video.id}`);
+        console.log(
+          `Pubsub: ${data.channel.name} (${data.channel.id}) already seen this video: [${data.video.id}] ${data.video.title}`
+        );
+      }
+      if (result.upsertedCount > 0) {
+        console.log(
+          `Pubsub: ${data.channel.name} (${data.channel.id}) new video: [${data.video.id}] ${data.video.title}`
+        );
+        await updateVideoFromYoutube([data.video.id]);
       }
     } catch (error) {
       console.error(`An error occurred:`, error);
@@ -299,13 +304,13 @@ export async function runCrawler() {
         ...(
           await VideoModel.findLiveVideos()
             .sort({ crawledAt: 1 })
-            .limit(50)
+            .limit(45)
             .select("id")
         ).map((video) => video.id),
         ...(
           await VideoModel.findRecentlyEndedVideos()
             .sort({ crawledAt: 1 })
-            .limit(50)
+            .limit(5)
             .select("id")
         ).map((video) => video.id),
       ])
@@ -325,9 +330,15 @@ export async function runCrawler() {
       const channelIds = Array.from(
         new Set<string>([
           ...(
+            await ChannelModel.findSubscribed()
+              .sort({ crawledAt: 1 })
+              .limit(25)
+              .select("id")
+          ).map((channel) => channel.id),
+          ...(
             await ChannelModel.find()
               .sort({ crawledAt: 1 })
-              .limit(50)
+              .limit(25)
               .select("id")
           ).map((channel) => channel.id),
         ])
@@ -339,7 +350,7 @@ export async function runCrawler() {
       );
     }
   );
-  agenda.every("10 minute", JOB_YOUTUBE_UPDATE_CHANNELS);
+  agenda.every("5 minute", JOB_YOUTUBE_UPDATE_CHANNELS);
 
   //#endregion youtube
 
