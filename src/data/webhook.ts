@@ -406,6 +406,24 @@ function toTimestamp(date: Date | string): string {
   return date;
 }
 
+/**
+ * Fix long text by inserting zero-width space
+ */
+export function fixLongText(text: string): string {
+  const words = text.match(/\b\w+\b|./g);
+  if (!words) return text;
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i];
+    if (word.length >= 20) {
+      const parts = word.match(/.{1,10}/g);
+      if (parts) {
+        words[i] = parts.join("\u200b");
+      }
+    }
+  }
+  return words.join("");
+}
+
 function getMessage(parameters: Record<string, any>) {
   if (parameters.message)
     return parameters.message.replace(/[\uFFF9\uFFFB]/g, "");

@@ -18,6 +18,7 @@ import {
   defaultInsertMethod,
   defaultUpdateMethod,
   defaultUpdateUrl,
+  fixLongText,
   matchPresets,
   templatePreset,
 } from "../data/webhook";
@@ -342,6 +343,16 @@ async function processWebhookEvent(
   if (!body) {
     // no message to send
     return;
+  }
+
+  if (checkIsDiscordWebhookUrl(url)) {
+    if (body.embeds && Array.isArray(body.embeds)) {
+      body.embeds = body.embeds.map((embed: any) => {
+        if (typeof embed?.footer?.text === "string")
+          embed.footer.text = fixLongText(embed.footer.text);
+        return embed;
+      });
+    }
   }
 
   if (parameters.previousBody && isEqual(parameters.previousBody, body)) {
