@@ -6,11 +6,12 @@ import {
   type RequestMethod,
   type RouteLike,
 } from "discord.js";
+import http from "http";
 import https from "https";
 import jsonTemplates, { type JsonTemplate } from "json-templates";
 import { groupBy, isEqual } from "lodash";
 import { mongo } from "mongoose";
-import { setInterval } from "node:timers/promises";
+import { setInterval, setTimeout } from "node:timers/promises";
 import pProps from "p-props";
 import PQueue from "p-queue";
 import {
@@ -41,9 +42,8 @@ const debug = false;
 
 const axiosInstance = axios.create({
   timeout: 4000,
-  httpsAgent: new https.Agent({
-    keepAlive: true,
-  }),
+  httpAgent: new http.Agent({ keepAlive: true }),
+  httpsAgent: new https.Agent({ keepAlive: true }),
 });
 const discordRest = new REST();
 
@@ -101,24 +101,12 @@ async function sendDiscordWebhook(
       await WebhookResultModel.deleteOne(resultIdentifier);
     }
   } catch (error) {
-    if (error instanceof HTTPError) {
-      await WebhookResultModel.updateOne(resultIdentifier, {
-        $set: {
-          statusCode: error.status,
-          response: {
-            error: `${error}`,
-          },
-        },
-      });
-    } else {
-      await WebhookResultModel.updateOne(resultIdentifier, {
-        $set: {
-          response: {
-            error: `${error}`,
-          },
-        },
-      });
-    }
+    await WebhookResultModel.updateOne(resultIdentifier, {
+      $set: {
+        statusCode: error instanceof HTTPError ? error.status : -1,
+        error: `${error}`,
+      },
+    });
   } finally {
     cache.del(createWebhookResultCacheKey(resultIdentifier));
   }
@@ -151,22 +139,12 @@ async function sendWebhook(
       await WebhookResultModel.deleteOne(resultIdentifier);
     }
   } catch (error) {
-    if (error instanceof AxiosError) {
-      await WebhookResultModel.updateOne(resultIdentifier, {
-        $set: {
-          statusCode: error.response?.status,
-          response: error.response?.data,
-        },
-      });
-    } else {
-      await WebhookResultModel.updateOne(resultIdentifier, {
-        $set: {
-          response: {
-            error: `${error}`,
-          },
-        },
-      });
-    }
+    await WebhookResultModel.updateOne(resultIdentifier, {
+      $set: {
+        statusCode: error instanceof AxiosError ? error.response?.status : -1,
+        error: `${error}`,
+      },
+    });
   } finally {
     cache.del(createWebhookResultCacheKey(resultIdentifier));
   }
@@ -381,17 +359,6 @@ async function processWebhookEvent(
   }
 }
 
-async function prepareWebhook(webhook: DocumentType<Webhook>) {
-  if (webhook.matchPreset && matchPresets[webhook.matchPreset]) {
-    const match = await matchPresets[webhook.matchPreset](webhook);
-    if (JSON.stringify(webhook.match) !== JSON.stringify(match)) {
-      webhookLog(webhook, "change match");
-      webhook.match = match;
-      await webhook.save();
-    }
-  }
-}
-
 function validateWebhook(webhook: DocumentType<Webhook>) {
   // validation
   const error = webhook.validateSync();
@@ -444,11 +411,45 @@ export async function runWebhook() {
   agenda.define(prepareAllWebhooks, async (): Promise<void> => {
     const webhooks = await WebhookModel.findEnabled();
     for (const webhook of webhooks) {
+      // Check if the webhook is still valid
+      webhook.failedAttempts ??= 0;
       try {
-        await prepareWebhook(webhook);
+        await axiosInstance.get(webhook.insertUrl, {
+          timeout: 60_000,
+        });
+        webhook.lastSuccess = new Date();
+        webhook.failedAttempts = 0;
+        webhook.enabled = true;
+      } catch (error) {
+        webhookLog(
+          webhook,
+          "<!> [ERROR] Unable to connect to the webhook",
+          error
+        );
+        webhook.failedAttempts += 1;
+
+        // Disable webhook after 24 failed attempts to prevent excessive retries.
+        if (webhook.failedAttempts >= 24) {
+          webhook.enabled = false;
+        }
+      }
+      webhook.lastChecked = new Date();
+
+      // Prepare webhook match
+      try {
+        if (webhook.matchPreset && matchPresets[webhook.matchPreset]) {
+          const match = await matchPresets[webhook.matchPreset](webhook);
+          if (JSON.stringify(webhook.match) !== JSON.stringify(match)) {
+            webhookLog(webhook, "change match");
+            webhook.match = match;
+          }
+        }
       } catch (error) {
         webhookLog(webhook, "<!> [ERROR] Unable to prepare webhook", error);
       }
+
+      await webhook.save();
+      await setTimeout(1000);
     }
   });
 
@@ -601,6 +602,7 @@ export async function runWebhook() {
 
   async function setupWebhooks() {
     try {
+      await setTimeout(5000);
       const allWebhooks = await WebhookModel.findEnabled(!debug);
       const groups = groupBy(
         allWebhooks

@@ -17,11 +17,8 @@ export interface Webhook extends Base {}
 })
 @index({ updatedAt: 1 })
 export class Webhook extends TimeStamps {
-  /**
-   * default `true`
-   */
-  @prop()
-  public enabled?: boolean;
+  @prop({ default: true })
+  public enabled!: boolean;
 
   @prop()
   public comment?: string;
@@ -79,6 +76,15 @@ export class Webhook extends TimeStamps {
 
   @prop()
   public template?: any;
+
+  @prop()
+  public lastChecked?: Date;
+
+  @prop()
+  public lastSuccess?: Date;
+
+  @prop({ default: 0 })
+  public failedAttempts!: number;
 
   //#region find methods
 

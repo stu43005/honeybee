@@ -3,7 +3,7 @@ import {
   getModelForClass,
   index,
   modelOptions,
-  prop
+  prop,
 } from "@typegoose/typegoose";
 import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
 
@@ -37,6 +37,9 @@ export class WebhookResult extends TimeStamps {
 
   @prop()
   public response?: any;
+
+  @prop()
+  public error?: string;
 }
 
 export default getModelForClass(WebhookResult);
