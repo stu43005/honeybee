@@ -1,11 +1,14 @@
 import { mongoose, type ReturnModelType } from "@typegoose/typegoose";
 import type { AnyParamConstructor } from "@typegoose/typegoose/lib/types";
 import Fastify from "fastify";
-import { VideoStatus } from "holodex.js";
 import moment from "moment-timezone";
 import type { AccumulatorOperator, FilterQuery, PipelineStage } from "mongoose";
 import PQueue from "p-queue";
 import { Gauge, Registry, type Metric, type MetricValue } from "prom-client";
+import {
+  METRICS_MAX_ENDED_HOURS,
+  METRICS_MAX_UPCOMING_HOURS,
+} from "../constants";
 import { MessageType } from "../interfaces";
 import BanAction from "../models/BanAction";
 import Channel from "../models/Channel";
@@ -17,7 +20,7 @@ import Milestone from "../models/Milestone";
 import RemoveChatAction from "../models/RemoveChatAction";
 import SuperChat from "../models/SuperChat";
 import SuperSticker from "../models/SuperSticker";
-import Video, { LiveStatus } from "../models/Video";
+import Video from "../models/Video";
 import { initMongo } from "../modules/db";
 import { getQueueInstance } from "../modules/queue";
 import { promiseSettledCallback, throttleWithReturnValue } from "../util";
@@ -501,29 +504,16 @@ export async function metrics() {
       const videoIds = new Set<string>();
       const channelIds = new Set<string>();
 
-      const halfHourAgo = moment.tz("UTC").subtract(30, "minutes").toDate();
       const videos = await wrapScrapeDuration(
         "honeybee_video_info",
         "video",
-        () =>
-          Video.find({
-            $or: [
-              {
-                status: { $in: LiveStatus },
-                availableAt: {
-                  $lt: moment.tz("UTC").add(48, "hours").toDate(),
-                },
-              },
-              {
-                status: VideoStatus.Past,
-                actualEnd: { $gt: halfHourAgo },
-              },
-              {
-                status: VideoStatus.Missing,
-                hbEnd: { $gt: halfHourAgo },
-              },
-            ],
-          })
+        async () => {
+          const videos = await Promise.all([
+            Video.findLiveVideos(METRICS_MAX_UPCOMING_HOURS),
+            Video.findRecentlyEndedVideos(METRICS_MAX_ENDED_HOURS),
+          ]);
+          return videos.flat();
+        }
       );
 
       metrics.honeybee_video_info.reset();

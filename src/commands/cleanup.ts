@@ -2,6 +2,7 @@ import { VideoStatus } from "holodex.js";
 import moment from "moment-timezone";
 import mongoose, { mongo } from "mongoose";
 import type { Arguments, Argv } from "yargs";
+import { MAX_HOURS_BEFORE_CLEANUP } from "../constants";
 import Chat from "../models/Chat";
 import Membership from "../models/Membership";
 import MembershipGift from "../models/MembershipGift";
@@ -30,7 +31,7 @@ async function cleanVideos(videoIds: string[]) {
     { id: { $in: videoIds } },
     { $set: { hbCleanedAt: new Date() } }
   );
-  console.log(`cleanup ${videoIds.length} streams.`);
+  console.log(`cleanup ${videoIds.length} streams: ${videoIds.join(", ")}`);
 }
 
 async function cleanEndedStreams() {
@@ -61,7 +62,9 @@ async function cleanEndedStreams() {
     }
   );
 
-  const oneHourAgo = moment.tz("UTC").subtract(1, "hour");
+  const cleanupThresholdTime = moment
+    .tz("UTC")
+    .subtract(MAX_HOURS_BEFORE_CLEANUP, "hour");
   const toRemoveVideoIds = new Set<string>([
     // The status of the video is already past or missing, and the last chat have exceeded 1 hour ago
     ...videos
@@ -70,12 +73,15 @@ async function cleanEndedStreams() {
         return (
           [VideoStatus.Past, VideoStatus.Missing].includes(video.status) &&
           (!video.availableAt ||
-            moment(video.availableAt).isBefore(oneHourAgo)) &&
+            moment(video.availableAt).isBefore(cleanupThresholdTime)) &&
           (!video.publishedAt ||
-            moment(video.publishedAt).isBefore(oneHourAgo)) &&
-          (!video.actualEnd || moment(video.actualEnd).isBefore(oneHourAgo)) &&
-          (!video.hbEnd || moment(video.hbEnd).isBefore(oneHourAgo)) &&
-          (!videoChat || moment(videoChat.lastTime).isBefore(oneHourAgo))
+            moment(video.publishedAt).isBefore(cleanupThresholdTime)) &&
+          (!video.actualEnd ||
+            moment(video.actualEnd).isBefore(cleanupThresholdTime)) &&
+          (!video.hbEnd ||
+            moment(video.hbEnd).isBefore(cleanupThresholdTime)) &&
+          (!videoChat ||
+            moment(videoChat.lastTime).isBefore(cleanupThresholdTime))
         );
       })
       .map((video) => video.id),

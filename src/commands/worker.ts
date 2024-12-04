@@ -131,7 +131,7 @@ async function handleJob(
   const { name: channelName, avatarUrl: channelAvatarUrl } =
     await video.getChannel();
 
-  if (isReplay && !video.isReplay()) {
+  if (isReplay && !video.isNeedReplay()) {
     throw new Error("No need to record the replay.");
   }
 

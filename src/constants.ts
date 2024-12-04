@@ -15,3 +15,8 @@ export const YOUTUBE_PUBSUB_SECRET = process.env.YOUTUBE_PUBSUB_SECRET;
 export const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 
 export const REDIS_URI = process.env.REDIS_URI;
+
+export const METRICS_MAX_UPCOMING_HOURS = 48;
+export const METRICS_MAX_ENDED_HOURS = 1;
+export const MAX_HOURS_BEFORE_CLEANUP = METRICS_MAX_ENDED_HOURS + 1;
+export const CRAWL_REPLAY_MAX_HOURS = 1;

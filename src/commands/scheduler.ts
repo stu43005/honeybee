@@ -2,7 +2,11 @@ import type { DocumentType } from "@typegoose/typegoose";
 import type { Job } from "agenda";
 import { VideoStatus } from "holodex.js";
 import moment from "moment-timezone";
-import { IGNORE_FREE_CHAT, SHUTDOWN_TIMEOUT } from "../constants";
+import {
+  CRAWL_REPLAY_MAX_HOURS,
+  IGNORE_FREE_CHAT,
+  SHUTDOWN_TIMEOUT,
+} from "../constants";
 import {
   ErrorCode,
   HoneybeeResult,
@@ -125,14 +129,17 @@ export async function runScheduler() {
       end: 1000,
     });
 
-    const halfHourAgo = moment.tz("UTC").subtract(30, "minutes").toDate();
     const liveAndUpcomingStreams = await VideoModel.find({
       $or: [
+        // live or upcoming
         { status: { $in: LiveStatus } },
+        // replay
         {
           status: VideoStatus.Past,
           hbRecordReplay: { $ne: true },
-          actualEnd: { $gt: halfHourAgo },
+          actualEnd: {
+            $gt: moment.tz("UTC").subtract(CRAWL_REPLAY_MAX_HOURS, "hour"),
+          },
         },
       ],
     });
@@ -161,7 +168,7 @@ export async function runScheduler() {
       for (let replica = 1; replica <= video.getReplicas(); replica++) {
         const job = videoJobs.find((job) => job.data.replica === replica);
         if (!job) {
-          await handleStream(video, replica, video.isReplay());
+          await handleStream(video, replica, video.isNeedReplay());
         }
       }
     }

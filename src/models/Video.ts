@@ -177,7 +177,7 @@ export class Video extends TimeStamps {
     if (this.isLive()) {
       return Math.max(1, this.hbReplica ?? 1);
     }
-    if (this.isReplay()) {
+    if (this.isNeedReplay()) {
       return 1;
     }
     return 0;
@@ -195,12 +195,8 @@ export class Video extends TimeStamps {
     return LiveStatus.includes(this.status);
   }
 
-  public isReplay(this: DocumentType<Video>): boolean {
-    return (
-      this.status === VideoStatus.Past &&
-      this.hbRecordReplay !== true &&
-      moment.tz("UTC").subtract(1, "hour").isBefore(this.actualEnd)
-    );
+  public isNeedReplay(this: DocumentType<Video>): boolean {
+    return this.status === VideoStatus.Past && this.hbRecordReplay !== true;
   }
 
   public static getTimeSeconds(
@@ -260,17 +256,30 @@ export class Video extends TimeStamps {
     return this.findOne({ id: videoId }).populate("channel");
   }
 
-  public static findLiveVideos(this: ReturnModelType<typeof Video>) {
+  public static findLiveVideos(
+    this: ReturnModelType<typeof Video>,
+    maxUpcomingHours: number | null = null
+  ) {
     return this.find({
       status: { $in: LiveStatus },
+      ...(maxUpcomingHours !== null
+        ? {
+            availableAt: {
+              $lt: moment.tz("UTC").add(maxUpcomingHours, "hours").toDate(),
+            },
+          }
+        : {}),
     });
   }
 
   public static findRecentlyEndedVideos(
     this: ReturnModelType<typeof Video>,
-    duration = moment.duration(1, "hour")
+    maxEndedHours: number
   ) {
-    const adjustedTime = moment.tz("UTC").subtract(duration).toDate();
+    const adjustedTime = moment
+      .tz("UTC")
+      .subtract(maxEndedHours, "hour")
+      .toDate();
     return this.find({
       $or: [
         {

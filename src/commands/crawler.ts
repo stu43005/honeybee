@@ -308,7 +308,7 @@ export async function runCrawler() {
             .select("id")
         ).map((video) => video.id),
         ...(
-          await VideoModel.findRecentlyEndedVideos()
+          await VideoModel.findRecentlyEndedVideos(1)
             .sort({ crawledAt: 1 })
             .limit(5)
             .select("id")
