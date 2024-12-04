@@ -263,13 +263,19 @@ export const templatePreset: Readonly<
       return;
     }
 
+    if (
+      (parameters.uploadedVideo ||
+        parameters.status === VideoStatus.Past ||
+        parameters.status === VideoStatus.Missing) &&
+      moment.tz().diff(parameters.publishedAt, "hours", true) > 3 &&
+      !parameters.previousResponse
+    ) {
+      // do not post old video
+      return;
+    }
+
     if (parameters.uploadedVideo) {
       // uploaded video
-      if (moment.tz().diff(parameters.publishedAt, "hours", true) > 3) {
-        // do not post old video
-        return;
-      }
-
       const videoLength: string = parameters.duration
         ? secondsToHms(parameters.duration)
         : "unknown";
