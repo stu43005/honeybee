@@ -17,11 +17,15 @@ export interface Webhook extends Base {}
 })
 @index({ updatedAt: 1 })
 export class Webhook extends TimeStamps {
-  @prop({ default: true })
+  // basic info
+
+  @prop({ default: true, index: true })
   public enabled!: boolean;
 
   @prop()
   public comment?: string;
+
+  // database config
 
   @prop({ type: [String], required: true })
   public colls!: string[];
@@ -46,7 +50,7 @@ export class Webhook extends TimeStamps {
   @prop()
   public followUpdate?: Boolean;
 
-  // webhook
+  // webhook config
 
   @prop({ required: true })
   public insertUrl!: string;
@@ -71,11 +75,15 @@ export class Webhook extends TimeStamps {
   @prop()
   public updateMethod?: string;
 
+  // template config
+
   @prop()
   public templatePreset?: string;
 
   @prop()
   public template?: any;
+
+  // check status
 
   @prop()
   public lastChecked?: Date;
@@ -88,23 +96,11 @@ export class Webhook extends TimeStamps {
 
   //#region find methods
 
-  public static async findEnabled(
+  public static findEnabled(
     this: ReturnModelType<typeof Webhook>,
     enabled = true
-  ): Promise<DocumentType<Webhook>[]> {
-    const result: DocumentType<Webhook>[] = [];
-    let i = 0;
-    for await (const webhook of this.find({ enabled: { $ne: !enabled } })) {
-      if (i > Number.MAX_SAFE_INTEGER) {
-        throw TypeError(
-          "Input is too long and exceeded Number.MAX_SAFE_INTEGER times."
-        );
-      }
-      result[i] = webhook;
-      i++;
-    }
-    result.length = i;
-    return result;
+  ) {
+    return this.find({ enabled: { $ne: !enabled } }).sort({ _id: 1});
   }
 
   //#endregion find methods

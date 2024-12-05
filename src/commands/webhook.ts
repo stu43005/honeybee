@@ -38,8 +38,6 @@ import { isMatching } from "../modules/matching";
 import { getAgenda } from "../modules/schedule";
 import { flatObjectKey, secondsToHms, setIfDefine } from "../util";
 
-const debug = false;
-
 const axiosInstance = axios.create({
   timeout: 4000,
   httpAgent: new http.Agent({ keepAlive: true }),
@@ -373,13 +371,19 @@ function validateWebhook(webhook: DocumentType<Webhook>) {
   return true;
 }
 
+interface CollectionSetting {
+  changeStream?: mongo.ChangeStream;
+  changeStreamMatch?: any;
+  webhooks: DocumentType<Webhook>[];
+}
+
 export async function runWebhook() {
   await importAllModels();
   const disconnectFromMongo = await initMongo();
   const agenda = getAgenda();
   const pqueue = new PQueue({ concurrency: 1 });
 
-  const changeStreams = new Map<string, mongo.ChangeStream>();
+  const collectionSettings = new Map<string, CollectionSetting>();
   const bufferChange = new Map<
     string,
     {
@@ -395,7 +399,7 @@ export async function runWebhook() {
       webhooksChangeStream?.close();
       pqueue.clear();
       await pqueue.onIdle();
-      for (const coll of changeStreams.keys()) {
+      for (const coll of collectionSettings.keys()) {
         await removeWebhook(coll);
       }
       await agenda.drain();
@@ -409,8 +413,7 @@ export async function runWebhook() {
 
   const prepareAllWebhooks = "webhook prepare webhooks";
   agenda.define(prepareAllWebhooks, async (): Promise<void> => {
-    const webhooks = await WebhookModel.findEnabled();
-    for (const webhook of webhooks) {
+    for await (const webhook of WebhookModel.findEnabled()) {
       // Check if the webhook is still valid
       webhook.failedAttempts ??= 0;
       try {
@@ -498,104 +501,144 @@ export async function runWebhook() {
     }
   }
 
-  async function removeWebhook(coll: string) {
-    const previous = changeStreams.get(coll);
-    if (previous) {
-      try {
-        await previous.close();
-        previous.removeAllListeners();
-        changeStreams.delete(coll);
-        return previous.resumeToken;
-      } catch (error) {
-        webhookLog(
-          coll,
-          "<!> [FATAL] Unable to close the previous change stream.",
-          error
-        );
-        process.exit(1);
-      }
+  async function closeChangeStream(
+    coll: string,
+    changeStream: mongo.ChangeStream
+  ) {
+    try {
+      await changeStream.close();
+      changeStream.removeAllListeners();
+      return changeStream.resumeToken;
+    } catch (error) {
+      webhookLog(
+        coll,
+        "<!> [FATAL] Unable to close the previous change stream.",
+        error
+      );
+      process.exit(1);
     }
+  }
+
+  async function removeWebhook(coll: string) {
+    const collectionSetting = collectionSettings.get(coll);
+    if (collectionSetting) {
+      collectionSettings.delete(coll);
+    }
+    const previous = collectionSetting?.changeStream;
+    if (previous) {
+      const resumeToken = await closeChangeStream(coll, previous);
+      return resumeToken;
+    }
+  }
+
+  async function startChangeStream(
+    coll: string,
+    collectionSetting: CollectionSetting
+  ) {
+    // close previous change stream if exists
+    const resumeAfter = collectionSetting.changeStream
+      ? await closeChangeStream(coll, collectionSetting.changeStream)
+      : undefined;
+
+    const model = getModelByCollectionName(coll);
+    if (!model) {
+      webhookLog(
+        coll,
+        `<!> [ERROR] Unable to get model (unknown collection "${coll}")`
+      );
+      return;
+    }
+    const changeStream = model.watch(
+      [{ $match: collectionSetting.changeStreamMatch }],
+      {
+        resumeAfter: resumeAfter,
+        fullDocument: "updateLookup",
+      }
+    );
+    changeStream.on(
+      "change",
+      (changeStreamData: mongo.ChangeStreamDocument) => {
+        if (
+          changeStreamData.operationType !== "insert" &&
+          changeStreamData.operationType !== "update"
+        ) {
+          return;
+        }
+        if (!("documentKey" in changeStreamData)) return;
+        if (
+          !("fullDocument" in changeStreamData) ||
+          !changeStreamData.fullDocument
+        ) {
+          webhookLog(
+            coll,
+            "<!> [ERROR] missing fullDocument",
+            changeStreamData.documentKey
+          );
+          return;
+        }
+
+        const data: WatcherResultDocument = {
+          documentKey: changeStreamData.documentKey,
+          fullDocument: new model(changeStreamData.fullDocument),
+          operationType: changeStreamData.operationType,
+          ns: changeStreamData.ns,
+        };
+
+        for (const webhook of collectionSetting.webhooks) {
+          if (prepareWebhookEvent(webhook, data)) {
+            processWebhookEvent(webhook, data).catch((error) => {
+              webhookLog(webhook, "<!> [ERROR]", error);
+            });
+          }
+        }
+      }
+    );
+    return changeStream;
+  }
+
+  function changeStreamIsValid(changeStream?: mongo.ChangeStream) {
+    return changeStream && changeStream.closed === false;
   }
 
   async function setupWebhook(coll: string, webhooks: DocumentType<Webhook>[]) {
     try {
-      // close previous change stream
-      const resumeAfter = await removeWebhook(coll);
+      const collectionSetting: CollectionSetting = collectionSettings.get(
+        coll
+      ) ?? { webhooks: [] };
 
-      const model = getModelByCollectionName(coll);
-      if (!model) {
-        webhookLog(
-          coll,
-          `<!> [ERROR] Unable to get model (unknown collection "${coll}")`
-        );
+      const changeStreamMatch = {
+        $or: webhooks.map((webhook) =>
+          flatObjectKey({
+            operationType: webhook.followUpdate
+              ? { $in: ["insert", "update"] }
+              : "insert",
+            ...setIfDefine("fullDocument", webhook.match),
+          })
+        ),
+      };
+
+      // check if match expression is the same of previous
+      if (
+        changeStreamIsValid(collectionSetting.changeStream) &&
+        collectionSetting.changeStreamMatch &&
+        isEqual(changeStreamMatch, collectionSetting.changeStreamMatch)
+      ) {
+        collectionSetting.webhooks = webhooks;
         return;
       }
-      const changeStream = model.watch(
-        [
-          {
-            $match: {
-              $or: webhooks.map((webhook) =>
-                flatObjectKey({
-                  operationType: webhook.followUpdate
-                    ? { $in: ["insert", "update"] }
-                    : "insert",
-                  ...setIfDefine("fullDocument", webhook.match),
-                })
-              ),
-            },
-          },
-        ],
-        {
-          resumeAfter: resumeAfter,
-          fullDocument: "updateLookup",
-        }
-      );
-      changeStream.on(
-        "change",
-        (changeStreamData: mongo.ChangeStreamDocument) => {
-          if (
-            changeStreamData.operationType !== "insert" &&
-            changeStreamData.operationType !== "update"
-          ) {
-            return;
-          }
-          if (!("documentKey" in changeStreamData)) return;
-          if (
-            !("fullDocument" in changeStreamData) ||
-            !changeStreamData.fullDocument
-          ) {
-            webhookLog(
-              coll,
-              "<!> [ERROR] missing fullDocument",
-              changeStreamData.documentKey
-            );
-            return;
-          }
 
-          const data: WatcherResultDocument = {
-            documentKey: changeStreamData.documentKey,
-            fullDocument: new model(changeStreamData.fullDocument),
-            operationType: changeStreamData.operationType,
-            ns: changeStreamData.ns,
-          };
-
-          for (const webhook of webhooks) {
-            if (prepareWebhookEvent(webhook, data)) {
-              processWebhookEvent(webhook, data).catch((error) => {
-                webhookLog(webhook, "<!> [ERROR]", error);
-              });
-            }
-          }
-        }
-      );
-      changeStreams.set(coll, changeStream);
-      webhookLog(coll, "start listening");
-    } catch (error) {
-      webhookLog(
+      collectionSetting.webhooks = webhooks;
+      collectionSetting.changeStreamMatch = changeStreamMatch;
+      collectionSetting.changeStream = await startChangeStream(
         coll,
-        "<!> [FATAL] Unable to create collection watcher.",
-        error
+        collectionSetting
       );
+      if (collectionSetting.changeStream) {
+        collectionSettings.set(coll, collectionSetting);
+        webhookLog(coll, "start listening");
+      }
+    } catch (error) {
+      webhookLog(coll, "<!> [FATAL] Unable to create change stream.", error);
       process.exit(1);
     }
   }
@@ -603,7 +646,7 @@ export async function runWebhook() {
   async function setupWebhooks() {
     try {
       await setTimeout(5000);
-      const allWebhooks = await WebhookModel.findEnabled(!debug);
+      const allWebhooks = await WebhookModel.findEnabled();
       const groups = groupBy(
         allWebhooks
           .filter(validateWebhook)
@@ -618,7 +661,7 @@ export async function runWebhook() {
         await setupWebhook(coll, webhooks);
       }
       // Stop unnecessary changestreams
-      for (const coll of changeStreams.keys()) {
+      for (const coll of collectionSettings.keys()) {
         if (!(coll in groups)) {
           await removeWebhook(coll);
         }

@@ -50,10 +50,12 @@ export async function importAllModels(): Promise<void> {
 
 export function getModelByCollectionName(
   collectionName: string
-): ReturnModelType<AnyParamConstructor<any>> | undefined {
+): AnyModelType | undefined {
   for (const model of Object.values(mongoose.models)) {
     if (model.collection.name === collectionName) {
       return model;
     }
   }
 }
+
+export type AnyModelType = ReturnModelType<AnyParamConstructor<any>>;
