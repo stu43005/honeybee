@@ -104,29 +104,34 @@ async function cleanWebhookResults() {
       },
     });
     for await (const doc of findCursor) {
+      let markDelete = false;
       switch (coll) {
         case "polls":
-          if (doc.finished) continue;
-          break;
-        case "raids":
           if (
-            !doc.updatedAt ||
+            doc.finished &&
             moment.tz().diff(doc.updatedAt, "hour", true) >= 1
           ) {
-            continue;
+            markDelete = true;
+          }
+          break;
+        case "raids":
+          if (moment.tz().diff(doc.updatedAt, "hour", true) >= 1) {
+            markDelete = true;
           }
           break;
         case "videos":
           if (
             EndedStatus.includes(doc.status) &&
-            moment.tz().diff(doc.updatedAt, "hour", true) >= 1
+            moment.tz().diff(doc.updatedAt, "hour", true) >= 24
           ) {
-            continue;
+            markDelete = true;
           }
           break;
       }
-      // Not delete
-      ids.delete((doc._id as mongo.BSON.ObjectId).toString());
+      if (!markDelete) {
+        // Not delete
+        ids.delete((doc._id as mongo.BSON.ObjectId).toString());
+      }
     }
 
     const result = await WebhookResult.deleteMany({
