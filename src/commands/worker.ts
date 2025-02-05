@@ -727,9 +727,9 @@ async function handleJob(
                 },
               }))
             );
-            await updateVideoFromYoutube(
-              payload.map((raid) => raid.originVideoId)
-            );
+            for (const raid of payload) {
+              await VideoModel.noticeFromRaid(raid);
+            }
             break;
           }
           // case "addCallForQuestionsBannerAction":
@@ -862,7 +862,7 @@ async function handleJob(
   };
 
   (async () => {
-    for await (const _ of setInterval(5000, null, {
+    for await (const _ of setInterval(30_000, null, {
       signal: cancelController.signal,
     })) {
       try {

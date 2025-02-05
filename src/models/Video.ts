@@ -22,6 +22,7 @@ import {
 } from "../interfaces";
 import { setIfDefine } from "../util";
 import ChannelModel, { Channel } from "./Channel";
+import type { Raid } from "./Raid";
 
 export class Stats {
   @prop({ required: true })
@@ -446,7 +447,7 @@ export class Video extends TimeStamps {
     );
   }
 
-  public static async updateFromNotification(
+  public static async noticeFromNotification(
     this: ReturnModelType<typeof Video>,
     data: {
       video: {
@@ -475,6 +476,35 @@ export class Video extends TimeStamps {
           channelId: data.channel.id,
           channel: await ChannelModel.findByChannelId(data.channel.id),
           title: data.video.title,
+          crawledAt: null,
+        },
+      },
+      {
+        upsert: true,
+      }
+    );
+  }
+
+  public static async noticeFromRaid(
+    this: ReturnModelType<typeof Video>,
+    raid: Raid
+  ) {
+    return await this.updateOne(
+      {
+        id: raid.originVideoId,
+      },
+      {
+        $setOnInsert: {
+          id: raid.originVideoId,
+          status: VideoStatus.New,
+          duration: 0,
+          availableAt: new Date(),
+          hbStatus: HoneybeeStatus.Created,
+          hbStart: new Date(),
+          channelId: "",
+          title: "",
+        },
+        $set: {
           crawledAt: null,
         },
       },

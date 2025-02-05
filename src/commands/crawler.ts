@@ -273,7 +273,7 @@ export async function runCrawler() {
   });
   ytNotifier.on("notified", async (data) => {
     try {
-      const result = await VideoModel.updateFromNotification(data);
+      const result = await VideoModel.noticeFromNotification(data);
       if (result.modifiedCount > 0) {
         console.log(
           `Pubsub: ${data.channel.name} (${data.channel.id}) already seen this video: [${data.video.id}] ${data.video.title}`
