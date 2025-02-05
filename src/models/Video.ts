@@ -158,7 +158,7 @@ export class Video extends TimeStamps {
   @prop()
   public hbRecordReplay?: boolean;
 
-  @prop()
+  @prop({ index: true })
   public crawledAt?: Date;
 
   @prop()

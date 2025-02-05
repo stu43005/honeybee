@@ -306,6 +306,9 @@ export async function runCrawler() {
           await VideoModel.find({ status: VideoStatus.New }).select("id")
         ),
         ...mapToId(
+          await VideoModel.find({ crawledAt: null }).limit(50).select("id")
+        ),
+        ...mapToId(
           await VideoModel.findLiveVideos()
             .sort({ crawledAt: 1 })
             .limit(45)
