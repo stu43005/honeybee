@@ -53,7 +53,6 @@ import { initMongo } from "../modules/db";
 import { getQueueInstance } from "../modules/queue";
 import { updateVideoFromYoutube } from "../modules/youtube";
 import { groupBy, pipeSignal, setIfDefine } from "../util";
-import { ActionCounter } from "../modules/action-counter";
 
 const { MongoError, MongoBulkWriteError } = mongoose.mongo;
 
@@ -860,7 +859,6 @@ async function handleJob(
   const autoscaleState = {
     lastChatAt: moment.tz("UTC"),
     scaleUpAt: moment.tz("UTC"),
-    actionCounter: new ActionCounter(),
   };
 
   (async () => {
@@ -886,19 +884,16 @@ async function handleJob(
             await updateVideoStats();
           }
 
-          // const chatsCount = await ChatModel.find({
-          //   originVideoId: videoId,
-          //   timestamp: {
-          //     $gt: autoscaleState.lastChatAt
-          //       .clone()
-          //       .subtract(1, "minute")
-          //       .toDate(),
-          //     $lte: autoscaleState.lastChatAt.toDate(),
-          //   },
-          // }).countDocuments();
-          const chatsCount = autoscaleState.actionCounter.countRecentActions(
-            moment.duration(1, "minute")
-          ) ?? 0;
+          const chatsCount = await ChatModel.find({
+            originVideoId: videoId,
+            timestamp: {
+              $gt: autoscaleState.lastChatAt
+                .clone()
+                .subtract(1, "minute")
+                .toDate(),
+              $lte: autoscaleState.lastChatAt.toDate(),
+            },
+          }).countDocuments();
           const chatReplicaCapacity = 350;
           const currentReplicas = video.getReplicas();
           const targetReplica =
@@ -957,7 +952,6 @@ async function handleJob(
               .map((action) => action.timestamp.valueOf())
           )
         );
-        autoscaleState.actionCounter.addActions(actions.length);
       }
     }
   } catch (err) {
