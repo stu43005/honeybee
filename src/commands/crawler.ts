@@ -294,25 +294,29 @@ export async function runCrawler() {
 
   //#region youtube
 
+  function mapToId(list: { id: string }[]): string[] {
+    return list.map((item) => item.id);
+  }
+
   const JOB_YOUTUBE_UPDATE_VIDEOS = "crawler youtube update";
   agenda.define(JOB_YOUTUBE_UPDATE_VIDEOS, async (job: Job): Promise<void> => {
     const videoIds = Array.from(
       new Set<string>([
-        ...(
+        ...mapToId(
           await VideoModel.find({ status: VideoStatus.New }).select("id")
-        ).map((video) => video.id),
-        ...(
+        ),
+        ...mapToId(
           await VideoModel.findLiveVideos()
             .sort({ crawledAt: 1 })
             .limit(45)
             .select("id")
-        ).map((video) => video.id),
-        ...(
+        ),
+        ...mapToId(
           await VideoModel.findRecentlyEndedVideos(1)
             .sort({ crawledAt: 1 })
             .limit(5)
             .select("id")
-        ).map((video) => video.id),
+        ),
       ])
     );
     const batch: string[][] = [];
@@ -329,18 +333,18 @@ export async function runCrawler() {
     async (job: Job): Promise<void> => {
       const channelIds = Array.from(
         new Set<string>([
-          ...(
+          ...mapToId(
             await ChannelModel.findSubscribed()
               .sort({ crawledAt: 1 })
               .limit(25)
               .select("id")
-          ).map((channel) => channel.id),
-          ...(
+          ),
+          ...mapToId(
             await ChannelModel.find()
               .sort({ crawledAt: 1 })
               .limit(25)
               .select("id")
-          ).map((channel) => channel.id),
+          ),
         ])
       );
       const batch: string[][] = [];
