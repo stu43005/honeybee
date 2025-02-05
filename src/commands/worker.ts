@@ -45,7 +45,6 @@ import RemoveChatActionModel, {
 import SuperChatModel, { type SuperChat } from "../models/SuperChat";
 import SuperStickerModel, { type SuperSticker } from "../models/SuperSticker";
 import VideoModel from "../models/Video";
-import { ActionCounter } from "../modules/action-counter";
 import {
   currencyToJpyAmount,
   getCurrencymapItem,
@@ -589,7 +588,6 @@ async function handleJob(
           }
           case "addPollResultAction": {
             const bulk = groupedActions[type].map((action) => {
-              action.voteCount
               return {
                 updateOne: {
                   filter: {
@@ -734,6 +732,8 @@ async function handleJob(
             );
             break;
           }
+          // case "addCallForQuestionsBannerAction":
+          // case "addChatSummaryBannerAction":
           // case "showTooltipAction":
           // case "addViewerEngagementMessageAction":
           // case "closePanelAction":
@@ -856,13 +856,19 @@ async function handleJob(
     actionCount: 0,
     lastUpdateAt: moment.tz("UTC"),
   };
-  const actionCounter = new ActionCounter();
+  const autoscaleState = {
+    lastChatAt: moment.tz("UTC"),
+    scaleUpAt: moment.tz("UTC"),
+  };
 
   (async () => {
     for await (const _ of setInterval(5000, null, {
       signal: cancelController.signal,
     })) {
       try {
+        const video = await VideoModel.findByVideoId(videoId);
+        if (!video) continue;
+
         if (isFirstReplica) {
           // update video stats every 200 action or over 1 hour
           // 2k messages / per 10m: every 1m
@@ -878,37 +884,46 @@ async function handleJob(
             await updateVideoStats();
           }
 
-          const video = await VideoModel.findByVideoId(videoId);
-          switch (video?.getReplicas()) {
-            case 1: {
-              const recentActions = actionCounter.countRecentActions(
-                moment.duration(1, "minute")
-              );
-              if (recentActions !== null && recentActions >= 600) {
-                // scale up
-                videoLog(`scale up`);
-                video.hbReplica = 2;
-                await video.save();
-              }
-              break;
-            }
-            case 2: {
-              const recentActions = actionCounter.countRecentActions(
-                moment.duration(10, "minute")
-              );
-              if (recentActions !== null && recentActions / 10 < 300) {
-                // scale down
-                videoLog(`scale down`);
-                video.hbReplica = 1;
-                await video.save();
-              }
-              break;
-            }
+          const chatsCount = await ChatModel.find({
+            originVideoId: videoId,
+            timestamp: {
+              $gt: autoscaleState.lastChatAt
+                .clone()
+                .subtract(1, "minute")
+                .toDate(),
+              $lte: autoscaleState.lastChatAt.toDate(),
+            },
+          }).countDocuments();
+          const chatReplicaCapacity = 350;
+          const currentReplicas = video.getReplicas();
+          const targetReplica =
+            Math.ceil(chatsCount / chatReplicaCapacity) || 1;
+          const scaleDownThreshold =
+            (currentReplicas - 1) * chatReplicaCapacity * 0.9;
+          if (currentReplicas < targetReplica) {
+            videoLog(`scale up (target: ${targetReplica})`);
+            await VideoModel.updateOne(
+              { id: videoId },
+              { $inc: { hbReplica: 1 } }
+            );
+            autoscaleState.scaleUpAt = moment.tz("UTC");
+          } else if (
+            currentReplicas > targetReplica &&
+            scaleDownThreshold > chatsCount &&
+            moment
+              .tz("UTC")
+              .subtract(10, "minute")
+              .isAfter(autoscaleState.scaleUpAt)
+          ) {
+            videoLog(`scale down (target: ${targetReplica})`);
+            await VideoModel.updateOne(
+              { id: videoId },
+              { $inc: { hbReplica: -1 } }
+            );
           }
         } else {
           // check replica
-          const video = await VideoModel.findByVideoId(videoId);
-          if (video && video.getReplicas() < replica) {
+          if (video.getReplicas() < replica) {
             stopController.abort(new Error("Stop replica"));
           }
         }
@@ -929,7 +944,14 @@ async function handleJob(
         await handleActions(actions);
 
         updateStatsCounter.actionCount += actions.length;
-        actionCounter.addActions(actions.length);
+        autoscaleState.lastChatAt = moment(
+          Math.max(
+            autoscaleState.lastChatAt.valueOf(),
+            ...actions
+              .filter((action) => action.type === "addChatItemAction")
+              .map((action) => action.timestamp.valueOf())
+          )
+        );
       }
     }
   } catch (err) {
