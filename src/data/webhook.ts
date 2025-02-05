@@ -233,8 +233,8 @@ export const templatePreset: Readonly<
               }
             : {}),
           footer: {
-            text: parameters.video.title,
-            icon_url: parameters.channel.avatarUrl,
+            text: parameters.video?.title,
+            icon_url: parameters.channel?.avatarUrl,
           },
           timestamp: parameters.timestamp,
         },
