@@ -472,7 +472,6 @@ export async function metrics() {
 
   const lastFullCollect: Partial<Record<keyof typeof metrics, number>> = {
     // honeybee_messages_total: Date.now(),
-    // honeybee_users_total: 0,
     honeybee_purchase_amount_jpy_total: Date.now(),
     honeybee_purchase_amount_total: Date.now(),
     honeybee_actions_total: Date.now(),
@@ -492,12 +491,6 @@ export async function metrics() {
       )?.[0] as keyof typeof metrics | undefined;
       if (force) {
         metrics[force].reset();
-      }
-      const forceUsersTotal =
-        force === "honeybee_users_total" ||
-        lastFullCollect.honeybee_users_total === 0;
-      if (forceUsersTotal) {
-        metrics.honeybee_users_total.reset();
       }
       metrics.honeybee_scrape_duration_seconds.reset();
 
@@ -596,27 +589,21 @@ export async function metrics() {
       removeOtherVideos(metrics.honeybee_actions_total, videoIds);
 
       let updateUsersVideoIds: string[];
-      if (forceUsersTotal) {
-        updateUsersVideoIds = [...videoIds];
+      const updateSize = Math.round(videoIds.size / 10 / messagesTotalMils);
+      updateUsersVideoIds = [...videoIds]
+        .filter((vid) => !recentUpdateUsersVideoIds.has(vid))
+        .sort(() => Math.random() - 0.5)
+        .slice(0, updateSize);
+      if (updateUsersVideoIds.length < updateSize) {
+        updateUsersVideoIds = updateUsersVideoIds.concat(
+          [...videoIds]
+            .filter((vid) => !updateUsersVideoIds.includes(vid))
+            .sort(() => Math.random() - 0.5)
+            .slice(0, updateSize - updateUsersVideoIds.length)
+        );
         recentUpdateUsersVideoIds.clear();
-      } else {
-        const updateSize = Math.round(videoIds.size / 10 / messagesTotalMils);
-        updateUsersVideoIds = [...videoIds]
-          .filter((vid) => !recentUpdateUsersVideoIds.has(vid))
-          .sort(() => Math.random() - 0.5)
-          .slice(0, updateSize);
-        if (updateUsersVideoIds.length < updateSize) {
-          updateUsersVideoIds = updateUsersVideoIds.concat(
-            [...videoIds]
-              .filter((vid) => !updateUsersVideoIds.includes(vid))
-              .sort(() => Math.random() - 0.5)
-              .slice(0, updateSize - updateUsersVideoIds.length)
-          );
-          recentUpdateUsersVideoIds.clear();
-        }
-        for (const vid of updateUsersVideoIds)
-          recentUpdateUsersVideoIds.add(vid);
       }
+      for (const vid of updateUsersVideoIds) recentUpdateUsersVideoIds.add(vid);
 
       promiseSettledCallback(
         await Promise.allSettled([
@@ -641,36 +628,6 @@ export async function metrics() {
                 })
             )
           ),
-          ...messageTypes
-            .filter((type) => type.calcUsersTotal)
-            .map((type) =>
-              wrapScrapeDuration("honeybee_users_total", type.messageType, () =>
-                updateMetrics("honeybee_users_total", type.model, {
-                  match: {
-                    originVideoId: {
-                      $in: updateUsersVideoIds,
-                    },
-                  },
-                  groupBy: {
-                    _id: {
-                      authorChannelId: "$authorChannelId",
-                      videoId: "$originVideoId",
-                    },
-                    authorType: {
-                      $last: "$authorType",
-                    },
-                  },
-                  labels: {
-                    videoId: "$_id.videoId",
-                    authorType: "$authorType",
-                    type: type.messageType,
-                  },
-                  value: { $sum: 1 },
-                  fetchAll: true,
-                  method: "set",
-                })
-              )
-            ),
           ...messageTypes
             .filter((type) => type.calcJpyAmount)
             .map((type) =>
@@ -745,6 +702,46 @@ export async function metrics() {
         (reason) => console.error(reason)
       );
 
+      // lazy update users total
+      void Promise.allSettled(
+        messageTypes
+          .filter((type) => type.calcUsersTotal)
+          .map((type) =>
+            wrapScrapeDuration("honeybee_users_total", type.messageType, () =>
+              updateMetrics("honeybee_users_total", type.model, {
+                match: {
+                  originVideoId: {
+                    $in: updateUsersVideoIds,
+                  },
+                },
+                groupBy: {
+                  _id: {
+                    authorChannelId: "$authorChannelId",
+                    videoId: "$originVideoId",
+                  },
+                  authorType: {
+                    $last: "$authorType",
+                  },
+                },
+                labels: {
+                  videoId: "$_id.videoId",
+                  authorType: "$authorType",
+                  type: type.messageType,
+                },
+                value: { $sum: 1 },
+                fetchAll: true,
+                method: "set",
+              })
+            )
+          )
+      ).then((results) =>
+        promiseSettledCallback(
+          results,
+          () => void 0,
+          (reason) => console.error(reason)
+        )
+      );
+
       const channels = await wrapScrapeDuration(
         "honeybee_channel_info",
         "channel",
@@ -794,9 +791,6 @@ export async function metrics() {
 
       if (force) {
         lastFullCollect[force] = Date.now();
-      }
-      if (forceUsersTotal) {
-        lastFullCollect.honeybee_users_total = Date.now();
       }
     } catch (error) {
       console.error("[FATAL] Collect failed:", error);
