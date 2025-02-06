@@ -159,6 +159,9 @@ export class Video extends TimeStamps {
   @prop()
   public hbRecordReplay?: boolean;
 
+  @prop()
+  public hbIgnore?: boolean;
+
   @prop({ index: true })
   public crawledAt?: Date;
 
@@ -193,11 +196,15 @@ export class Video extends TimeStamps {
   }
 
   public isLive(this: DocumentType<Video>): boolean {
-    return LiveStatus.includes(this.status);
+    return LiveStatus.includes(this.status) && !this.hbIgnore;
   }
 
   public isNeedReplay(this: DocumentType<Video>): boolean {
-    return this.status === VideoStatus.Past && this.hbRecordReplay !== true;
+    return (
+      this.status === VideoStatus.Past &&
+      this.hbRecordReplay !== true &&
+      !this.hbIgnore
+    );
   }
 
   public static getTimeSeconds(
@@ -263,6 +270,7 @@ export class Video extends TimeStamps {
   ) {
     return this.find({
       status: { $in: LiveStatus },
+      hbIgnore: { $ne: true },
       ...(maxUpcomingHours !== null
         ? {
             availableAt: {
@@ -287,13 +295,31 @@ export class Video extends TimeStamps {
           status: VideoStatus.Past,
           actualEnd: { $gt: adjustedTime },
           uploadedVideo: { $ne: true },
+          hbIgnore: { $ne: true },
         },
         {
           status: VideoStatus.Missing,
           hbEnd: { $gt: adjustedTime },
           uploadedVideo: { $ne: true },
+          hbIgnore: { $ne: true },
         },
       ],
+    });
+  }
+
+  public static findNeedReplayVideos(
+    this: ReturnModelType<typeof Video>,
+    maxEndedHours: number
+  ) {
+    const adjustedTime = moment
+      .tz("UTC")
+      .subtract(maxEndedHours, "hour")
+      .toDate();
+    return this.find({
+      status: VideoStatus.Past,
+      actualEnd: { $gt: adjustedTime },
+      hbRecordReplay: { $ne: true },
+      hbIgnore: { $ne: true },
     });
   }
 
@@ -323,6 +349,7 @@ export class Video extends TimeStamps {
           ...setIfDefine("viewers", stream.liveViewers),
           ...setIfDefine("availableAt", stream.availableAt),
           ...setIfDefine("scheduledStart", stream.scheduledStart),
+          hbIgnore: channel.hbIgnore,
         },
         $set: {
           ...setIfDefine("topic", stream.topic),

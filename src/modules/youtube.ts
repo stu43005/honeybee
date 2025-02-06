@@ -1,4 +1,4 @@
-import type { DocumentType } from "@typegoose/typegoose";
+import { isDocument, type DocumentType } from "@typegoose/typegoose";
 import { google, type youtube_v3 } from "googleapis";
 import { VideoStatus } from "holodex.js";
 import moment from "moment-timezone";
@@ -156,6 +156,9 @@ export async function updateVideoFromYoutube(targetVideos: string[]): Promise<Do
       } else {
         needUpdateChannels.push(video.channelId);
       }
+    }
+    if (video.channel && isDocument(video.channel)) {
+      if (video.channel.hbIgnore) video.hbIgnore = true;
     }
 
     video.duration ??= 0;

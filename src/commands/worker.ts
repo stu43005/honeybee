@@ -130,6 +130,9 @@ async function handleJob(
   const { name: channelName, avatarUrl: channelAvatarUrl } =
     await video.getChannel();
 
+  if (video.hbIgnore) {
+    throw new Error("This video is ignored.");
+  }
   if (isReplay && !video.isNeedReplay()) {
     throw new Error("No need to record the replay.");
   }
@@ -868,6 +871,11 @@ async function handleJob(
       try {
         const video = await VideoModel.findByVideoId(videoId);
         if (!video) continue;
+
+        if (video.hbIgnore) {
+          stopController.abort(new Error("This video is ignored."));
+          continue;
+        }
 
         if (isFirstReplica) {
           // update video stats every 200 action or over 1 hour

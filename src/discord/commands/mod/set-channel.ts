@@ -2,7 +2,7 @@ import {
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
 } from "discord.js";
-import ChannelModel from "../../../models/Channel";
+import ChannelModel, { type Channel } from "../../../models/Channel";
 import { updateChannelFromYoutube } from "../../../modules/youtube";
 import type { Command } from "../command";
 
@@ -20,6 +20,11 @@ export class SetChannelCommand implements Command {
       builder
         .setName("extra-crawl")
         .setDescription("Whether to crawl the channel.")
+    )
+    .addBooleanOption((builder) =>
+      builder
+        .setName("is-ignore")
+        .setDescription("Whether to ignore the channel.")
     )
     .toJSON();
 
@@ -41,11 +46,15 @@ export class SetChannelCommand implements Command {
     }
 
     let modified = false;
-    const extraCrawl = intr.options.getBoolean("extra-crawl");
-    if (extraCrawl !== null) {
-      channel.extraCrawl = extraCrawl;
-      modified = true;
+    function setBoolean(key: keyof Channel, valueKey: string) {
+      const value = intr.options.getBoolean(valueKey);
+      if (channel && value !== null) {
+        channel[key] = value;
+        modified = true;
+      }
     }
+    setBoolean("extraCrawl", "extra-crawl");
+    setBoolean("hbIgnore", "is-ignore");
 
     if (modified) {
       await channel.save();

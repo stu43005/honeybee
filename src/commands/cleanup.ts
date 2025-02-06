@@ -1,4 +1,3 @@
-import { VideoStatus } from "holodex.js";
 import moment from "moment-timezone";
 import mongoose, { mongo } from "mongoose";
 import type { Arguments, Argv } from "yargs";
@@ -12,7 +11,7 @@ import Placeholder from "../models/Placeholder";
 import RemoveChatAction from "../models/RemoveChatAction";
 import SuperChat from "../models/SuperChat";
 import SuperSticker from "../models/SuperSticker";
-import Video, { EndedStatus } from "../models/Video";
+import Video, { LiveStatus } from "../models/Video";
 import WebhookResult from "../models/WebhookResult";
 import { initMongo } from "../modules/db";
 import { getAgenda } from "../modules/schedule";
@@ -69,9 +68,10 @@ async function cleanEndedStreams() {
     // The status of the video is already past or missing, and the last chat have exceeded 1 hour ago
     ...videos
       .filter((video) => {
+        if (video.hbIgnore) return true;
         const videoChat = chats.find((chat) => chat._id.videoId === video.id);
         return (
-          [VideoStatus.Past, VideoStatus.Missing].includes(video.status) &&
+          !LiveStatus.includes(video.status) &&
           (!video.availableAt ||
             moment(video.availableAt).isBefore(cleanupThresholdTime)) &&
           (!video.publishedAt ||
@@ -109,20 +109,20 @@ async function cleanWebhookResults() {
         case "polls":
           if (
             doc.finished &&
-            moment.tz().diff(doc.updatedAt, "hour", true) >= 1
+            moment.tz().diff(doc.updatedAt, "days", true) >= 1
           ) {
             markDelete = true;
           }
           break;
         case "raids":
-          if (moment.tz().diff(doc.updatedAt, "hour", true) >= 1) {
+          if (moment.tz().diff(doc.updatedAt, "days", true) >= 1) {
             markDelete = true;
           }
           break;
         case "videos":
           if (
-            EndedStatus.includes(doc.status) &&
-            moment.tz().diff(doc.updatedAt, "hour", true) >= 24
+            !LiveStatus.includes(doc.status) &&
+            moment.tz().diff(doc.updatedAt, "days", true) >= 1
           ) {
             markDelete = true;
           }

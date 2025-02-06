@@ -1,7 +1,5 @@
 import type { DocumentType } from "@typegoose/typegoose";
 import type { Job } from "agenda";
-import { VideoStatus } from "holodex.js";
-import moment from "moment-timezone";
 import {
   CRAWL_REPLAY_MAX_HOURS,
   IGNORE_FREE_CHAT,
@@ -13,7 +11,7 @@ import {
   HoneybeeStats,
   HoneybeeStatus,
 } from "../interfaces";
-import VideoModel, { LiveStatus, type Video } from "../models/Video";
+import VideoModel, { type Video } from "../models/Video";
 import { CollectionWatcher } from "../modules/collection-watcher";
 import { initMongo } from "../modules/db";
 import { getQueueInstance } from "../modules/queue";
@@ -129,20 +127,12 @@ export async function runScheduler() {
       end: 1000,
     });
 
-    const liveAndUpcomingStreams = await VideoModel.find({
-      $or: [
-        // live or upcoming
-        { status: { $in: LiveStatus } },
-        // replay
-        {
-          status: VideoStatus.Past,
-          hbRecordReplay: { $ne: true },
-          actualEnd: {
-            $gt: moment.tz("UTC").subtract(CRAWL_REPLAY_MAX_HOURS, "hour"),
-          },
-        },
-      ],
-    });
+    const liveAndUpcomingStreams = (
+      await Promise.all([
+        VideoModel.findLiveVideos(),
+        VideoModel.findNeedReplayVideos(CRAWL_REPLAY_MAX_HOURS),
+      ])
+    ).flat();
 
     const unscheduledStreams = liveAndUpcomingStreams.filter(
       (video) =>

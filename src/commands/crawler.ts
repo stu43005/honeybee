@@ -241,22 +241,19 @@ export async function runCrawler() {
   });
   fastify.use("/notifications/youtube", ytNotifier.listener());
 
-  async function subscribeYtPubsub() {
-    if (!enabledYtPubsub) return;
-    const channels = await ChannelModel.findSubscribed().select("id name");
-    for (const channel of channels) {
-      await setTimeout(250);
-      console.log(`Subscribing: [${channel.id}] ${channel.name}`);
-      ytNotifier.subscribe(channel.id);
-    }
-  }
-
   if (enabledYtPubsub) {
     const JOB_YOUTUBE_PUBSUB_SUBSCRIBE = "crawler youtube pubsub subscribe";
     agenda.define(
       JOB_YOUTUBE_PUBSUB_SUBSCRIBE,
       async (job: Job): Promise<void> => {
-        await subscribeYtPubsub();
+        if (!enabledYtPubsub) return;
+        for await (const channel of ChannelModel.findSubscribed().select(
+          "id name"
+        )) {
+          console.log(`Subscribing: [${channel.id}] ${channel.name}`);
+          ytNotifier.subscribe(channel.id);
+          await setTimeout(250);
+        }
       }
     );
     agenda.every("12 hours", JOB_YOUTUBE_PUBSUB_SUBSCRIBE);

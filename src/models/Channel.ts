@@ -13,8 +13,25 @@ import { HOLODEX_ALL_VTUBERS, HOLODEX_FETCH_ORG } from "../constants";
 import { setIfDefine } from "../util";
 
 @modelOptions({ schemaOptions: { collection: "channels" } })
-@index({ organization: 1, isInactive: 1 })
-@index({ extraCrawl: 1, isInactive: 1 })
+@index(
+  { organization: 1, isInactive: 1, hbIgnore: 1 },
+  {
+    partialFilterExpression: {
+      isInactive: { $ne: true },
+      hbIgnore: { $ne: true },
+    },
+  }
+)
+@index(
+  { extraCrawl: 1, isInactive: 1, hbIgnore: 1 },
+  {
+    partialFilterExpression: {
+      extraCrawl: true,
+      isInactive: { $ne: true },
+      hbIgnore: { $ne: true },
+    },
+  }
+)
 @index({ updatedAt: 1 })
 export class Channel extends TimeStamps {
   @prop({ required: true, unique: true })
@@ -53,11 +70,14 @@ export class Channel extends TimeStamps {
   @prop()
   public videoCount?: number;
 
-  @prop({ index: true })
+  @prop()
   public isInactive?: Boolean;
 
   @prop()
   public extraCrawl?: Boolean;
+
+  @prop()
+  public hbIgnore?: boolean;
 
   @prop({ index: true })
   public crawledAt?: Date;
@@ -82,23 +102,25 @@ export class Channel extends TimeStamps {
     return this.findOne({ id: channelId });
   }
 
-  public static SubscribedQuery: Readonly<FilterQuery<Channel>> =
-    HOLODEX_FETCH_ORG === HOLODEX_ALL_VTUBERS
-      ? Object.freeze({
+  public static SubscribedQuery: Readonly<FilterQuery<Channel>> = Object.freeze(
+    {
+      $or: [
+        {
+          organization:
+            HOLODEX_FETCH_ORG === HOLODEX_ALL_VTUBERS
+              ? { $ne: null }
+              : HOLODEX_FETCH_ORG,
           isInactive: { $ne: true },
-        })
-      : Object.freeze({
-          $or: [
-            {
-              organization: HOLODEX_FETCH_ORG,
-              isInactive: { $ne: true },
-            },
-            {
-              extraCrawl: true,
-              isInactive: { $ne: true },
-            },
-          ],
-        });
+          hbIgnore: { $ne: true },
+        },
+        {
+          extraCrawl: true,
+          isInactive: { $ne: true },
+          hbIgnore: { $ne: true },
+        },
+      ],
+    }
+  );
   public static findSubscribed(this: ReturnModelType<typeof Channel>) {
     return this.find(this.SubscribedQuery);
   }
