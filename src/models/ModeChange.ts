@@ -19,6 +19,9 @@ export class ModeChange {
 
   @prop({ required: true })
   originChannelId!: string;
+
+  @prop()
+  isReplay?: boolean;
 }
 
 export default getModelForClass(ModeChange);

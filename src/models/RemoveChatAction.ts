@@ -16,6 +16,9 @@ export class RemoveChatAction {
 
   @prop({ required: true })
   timestamp!: Date;
+
+  @prop()
+  isReplay?: boolean;
 }
 
 export default getModelForClass(RemoveChatAction);

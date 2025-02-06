@@ -51,7 +51,6 @@ import {
 } from "../modules/currency-convert";
 import { initMongo } from "../modules/db";
 import { getQueueInstance } from "../modules/queue";
-import { updateVideoFromYoutube } from "../modules/youtube";
 import { groupBy, pipeSignal, setIfDefine } from "../util";
 
 const { MongoError, MongoBulkWriteError } = mongoose.mongo;
@@ -122,7 +121,7 @@ async function handleJob(
   const { videoId, replica, mode = "live" } = job.data;
   assert(replica, "No specified replica.");
   const isFirstReplica = replica === 1;
-  const isReplay = mode === "replay";
+  const isReplay = mode === "replay" || undefined;
   const video = await VideoModel.findByVideoId(videoId);
   assert(video, "Unable to find the video.");
   assert(video.getReplicas() >= replica, "Stop replica");
@@ -194,6 +193,7 @@ async function handleJob(
                 isModerator: action.isModerator,
                 originVideoId: mc.videoId,
                 originChannelId: mc.channelId,
+                isReplay,
               };
             });
             await ChatModel.insertMany(payload, insertOptions);
@@ -236,6 +236,7 @@ async function handleJob(
                   isModerator: action.isModerator,
                   originVideoId: mc.videoId,
                   originChannelId: mc.channelId,
+                  isReplay,
                 };
               })
             );
@@ -277,6 +278,7 @@ async function handleJob(
                     color: action.color,
                     originVideoId: mc.videoId,
                     originChannelId: mc.channelId,
+                    isReplay,
                   };
                 }
               )
@@ -293,6 +295,7 @@ async function handleJob(
                 originVideoId: mc.videoId,
                 originChannelId: mc.channelId,
                 timestamp: action.timestamp,
+                isReplay,
               })
             );
             await RemoveChatActionModel.insertMany(payload, insertOptions);
@@ -305,6 +308,7 @@ async function handleJob(
               originVideoId: mc.videoId,
               originChannelId: mc.channelId,
               timestamp: action.timestamp,
+              isReplay,
             }));
             await BanActionModel.insertMany(payload, insertOptions);
             break;
@@ -335,6 +339,7 @@ async function handleJob(
                 originVideoId: mc.videoId,
                 originChannelId: mc.channelId,
                 timestamp: action.timestamp,
+                isReplay,
               };
             });
             await MembershipModel.insertMany(payload, insertOptions);
@@ -373,6 +378,7 @@ async function handleJob(
                 originVideoId: mc.videoId,
                 originChannelId: mc.channelId,
                 timestamp: action.timestamp,
+                isReplay,
               };
             });
             await MilestoneModel.insertMany(payload, insertOptions);
@@ -399,6 +405,7 @@ async function handleJob(
                   isModerator: action.isModerator,
                   originVideoId: mc.videoId,
                   originChannelId: mc.channelId,
+                  isReplay,
                 };
               }
             );
@@ -416,6 +423,7 @@ async function handleJob(
                 description: action.description,
                 originVideoId: mc.videoId,
                 originChannelId: mc.channelId,
+                isReplay,
               };
             });
 
@@ -430,6 +438,7 @@ async function handleJob(
                   id: action.id,
                   originVideoId: mc.videoId,
                   originChannelId: mc.channelId,
+                  isReplay,
                 };
               }
             );
@@ -472,6 +481,7 @@ async function handleJob(
                       isModerator: item.isModerator,
                       originVideoId: mc.videoId,
                       originChannelId: mc.channelId,
+                      isReplay,
                     };
                   });
                   // videoLog("replaceChat:", payload?.length);
@@ -518,13 +528,14 @@ async function handleJob(
                           isModerator: item.isModerator,
                           originVideoId: mc.videoId,
                           originChannelId: mc.channelId,
+                          isReplay,
                         };
                       }
                     )
                   );
                   videoLog("<!> replaceSuperChat:", payload);
                   // TODO replaceSuperChat
-                  // await SuperChatModel.insertMany(payload, insertOptions);
+                  await SuperChatModel.insertMany(payload, insertOptions);
                   break;
                 }
                 case "addPlaceholderItemAction": {
@@ -535,6 +546,7 @@ async function handleJob(
                         id: item.id,
                         originVideoId: mc.videoId,
                         originChannelId: mc.channelId,
+                        isReplay,
                       };
                     }
                   );
@@ -546,6 +558,7 @@ async function handleJob(
             break;
           }
           case "showPollPanelAction": {
+            if (isReplay) break;
             const payload: Poll[] = groupedActions[type].map((action) => {
               return {
                 id: action.id,
@@ -563,6 +576,7 @@ async function handleJob(
             break;
           }
           case "updatePollAction": {
+            if (isReplay) break;
             const payload: Poll[] = groupedActions[type].map((action) => {
               return {
                 id: action.id,
@@ -590,6 +604,7 @@ async function handleJob(
             break;
           }
           case "addPollResultAction": {
+            if (isReplay) break;
             const bulk = groupedActions[type].map((action) => {
               return {
                 updateOne: {
@@ -635,6 +650,7 @@ async function handleJob(
                   amount: action.amount,
                   originVideoId: mc.videoId,
                   originChannelId: mc.channelId,
+                  isReplay,
                 };
               }
             );
@@ -670,6 +686,7 @@ async function handleJob(
                   senderName: action.senderName,
                   originVideoId: mc.videoId,
                   originChannelId: mc.channelId,
+                  isReplay,
                 };
               }
             );
@@ -677,6 +694,7 @@ async function handleJob(
             break;
           }
           case "addIncomingRaidBannerAction": {
+            if (isReplay) break;
             const payload: Raid[] = groupedActions[type].map((action) => {
               return {
                 id: action.actionId,
@@ -705,6 +723,7 @@ async function handleJob(
             break;
           }
           case "addOutgoingRaidBannerAction": {
+            if (isReplay) break;
             const payload: Raid[] = groupedActions[type].map((action) => {
               return {
                 outgoingId: action.actionId,

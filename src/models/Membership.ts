@@ -48,6 +48,9 @@ export class Membership {
 
   @prop({ required: true })
   public timestamp!: Date;
+
+  @prop()
+  public isReplay?: boolean;
 }
 
 export default getModelForClass(Membership);

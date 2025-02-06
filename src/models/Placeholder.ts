@@ -14,6 +14,9 @@ export class Placeholder {
 
   @prop({ required: true })
   originChannelId!: string;
+
+  @prop()
+  isReplay?: boolean;
 }
 
 export default getModelForClass(Placeholder);

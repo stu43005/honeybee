@@ -14,6 +14,9 @@ export class BanAction {
 
   @prop({ required: true })
   timestamp!: Date;
+
+  @prop()
+  isReplay?: boolean;
 }
 
 export default getModelForClass(BanAction);

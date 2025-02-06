@@ -67,6 +67,9 @@ export class SuperSticker {
 
   @prop({ required: true })
   public timestamp!: Date;
+
+  @prop()
+  public isReplay?: boolean;
 }
 
 export default getModelForClass(SuperSticker);

@@ -51,6 +51,9 @@ export class BannerAction {
 
   @prop({ required: true })
   public originChannelId!: string;
+
+  @prop()
+  public isReplay?: boolean;
 }
 
 export default getModelForClass(BannerAction);
