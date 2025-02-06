@@ -46,9 +46,14 @@ export class SetChannelCommand implements Command {
     }
 
     let modified = false;
-    function setBoolean(key: keyof Channel, valueKey: string) {
+
+    // Extract the keys of boolean properties of Channel
+    type ChannelBooleanKeys = {
+      [K in keyof Channel]: Channel[K] & {} extends Boolean ? K : never;
+    }[keyof Channel] & {};
+    function setBoolean(key: ChannelBooleanKeys, valueKey: string) {
       const value = intr.options.getBoolean(valueKey);
-      if (channel && value !== null) {
+      if (channel && key && value !== null) {
         channel[key] = value;
         modified = true;
       }
