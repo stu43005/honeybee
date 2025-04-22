@@ -6,11 +6,8 @@ import {
   cleanupBuilder,
 } from "./commands/cleanup";
 import { runCrawler } from "./commands/crawler";
-import { health } from "./commands/health";
-import { inspect } from "./commands/inspect";
 import { runDiscordBot } from "./commands/discord-bot";
 import { metrics } from "./commands/metrics";
-import { migrate } from "./commands/migrate";
 import { runScheduler } from "./commands/scheduler";
 import { runWebhook } from "./commands/webhook";
 import { runWorker } from "./commands/worker";
@@ -37,9 +34,6 @@ yargs(process.argv.slice(2))
   .command("discord-bot", "start discord bot", runDiscordBot)
   .command("webhook", "start webhook service", runWebhook)
   .command("crawler", "start crawler", runCrawler)
-  .command("health", "show real-time cluster status", health)
   .command("metrics", "Prometheus metrics endpoint", metrics)
   .command("cleanup", "cleanup ended streams", cleanupBuilder, cleanup)
-  .command("migrate", "migrate datetime format", migrate)
-  .command("inspect", "migrate datetime format", inspect)
   .demandCommand(1).argv;
