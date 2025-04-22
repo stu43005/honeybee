@@ -884,6 +884,9 @@ async function handleJob(
   };
 
   (async () => {
+    // replay chat does not need to calculate replica
+    if (isReplay) return;
+
     for await (const _ of setInterval(30_000, null, {
       signal: cancelController.signal,
     })) {
