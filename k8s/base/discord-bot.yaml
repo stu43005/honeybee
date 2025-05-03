@@ -53,3 +53,18 @@ spec:
                   name: google-api-key
                   key: key
           resources: {}
+          ports:
+            - name: http-port
+              containerPort: 3000
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http-port
+            failureThreshold: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http-port
+            initialDelaySeconds: 3
+            periodSeconds: 10

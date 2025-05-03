@@ -1,6 +1,5 @@
 import { mongoose, type ReturnModelType } from "@typegoose/typegoose";
 import type { AnyParamConstructor } from "@typegoose/typegoose/lib/types";
-import Fastify from "fastify";
 import moment from "moment-timezone";
 import type { AccumulatorOperator, FilterQuery, PipelineStage } from "mongoose";
 import PQueue from "p-queue";
@@ -21,8 +20,9 @@ import RemoveChatAction from "../models/RemoveChatAction";
 import SuperChat from "../models/SuperChat";
 import SuperSticker from "../models/SuperSticker";
 import Video from "../models/Video";
-import { initMongo } from "../modules/db";
-import { getQueueInstance } from "../modules/queue";
+import { Application } from "../modules/application";
+import { MongodbModule } from "../modules/db";
+import { QueueModule } from "../modules/queue";
 import { promiseSettledCallback, throttleWithReturnValue } from "../util";
 
 const { Long } = mongoose.mongo;
@@ -89,26 +89,12 @@ const actions: Record<string, ReturnModelType<AnyParamConstructor<any>>> = {
 };
 
 export async function metrics() {
-  const disconnect = await initMongo();
-  const queue = getQueueInstance("honeybee", { isWorker: false });
-  const fastify = Fastify({
-    logger: true,
-  });
+  const app = new Application();
+  app.use(new MongodbModule());
+  const { queue } = app.use(new QueueModule("honeybee", { isWorker: false }));
+  const { server: fastify } = app.http;
   const lastIdMap = new Map<string, string>();
   const register = new Registry();
-
-  process.on("SIGINT", async () => {
-    console.log("quitting metrics (SIGTERM) ...");
-
-    try {
-      await fastify.close();
-      await queue.close();
-      await disconnect();
-    } catch (err) {
-      console.error("metrics failed to shut down gracefully", err);
-    }
-    process.exit(0);
-  });
 
   const collectData = throttleWithReturnValue(_collectWithLock, 59_000);
   const checkHealth = throttleWithReturnValue(
@@ -798,28 +784,12 @@ export async function metrics() {
     }
   }
 
-  fastify.get("/healthz", async function (request, reply) {
-    if (
-      mongoose.connection.readyState !== mongoose.ConnectionStates.connected
-    ) {
-      throw new Error("mongoose not ready.");
-    }
-    try {
-      await queue.checkHealth();
-    } catch (error) {
-      throw new Error("bee-queue not ready.");
-    }
-    return "ok";
-  });
   fastify.get("/metrics", async function (request, reply) {
     reply.header("Content-Type", register.contentType);
     return register.metrics();
   });
 
-  await fastify.listen({
-    port: Number(process.env.PORT || 3000),
-    host: "0.0.0.0",
-  });
+  await app.init();
 
   console.log(`metrics is ready`);
 }

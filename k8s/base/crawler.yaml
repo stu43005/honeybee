@@ -65,7 +65,7 @@ spec:
           resources: {}
           ports:
             - name: http-port
-              containerPort: 17835
+              containerPort: 3000
           startupProbe:
             httpGet:
               path: /healthz
@@ -98,8 +98,8 @@ metadata:
 spec:
   ports:
     - name: http-port
-      port: 17835
-      targetPort: 17835
+      port: 3000
+      targetPort: 3000
   type: ClusterIP
   selector:
     app: crawler

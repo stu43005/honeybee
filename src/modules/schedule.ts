@@ -1,28 +1,44 @@
 import Agenda from "agenda";
 import assert from "assert";
 import { MONGO_URI } from "./db";
+import type { Module } from "./module";
 
-export function getAgenda() {
-  assert(MONGO_URI, "MONGO_URI should be defined.");
+export class AgendaModule implements Module {
+  name = "agenda";
+  agenda: Agenda;
 
-  const agenda = new Agenda({
-    db: {
-      address: MONGO_URI,
-      // collection: isProd ? "agendaJobs" : `testJobs-${HOSTNAME}`,
-    },
-  });
+  constructor() {
+    assert(MONGO_URI, "MONGO_URI should be defined.");
 
-  agenda.on("start", (job) => {
-    console.log(`[${job.attrs.name}] starting at ${new Date().toISOString()}`);
-  });
+    this.agenda = new Agenda({
+      db: {
+        address: MONGO_URI,
+        // collection: isProd ? "agendaJobs" : `testJobs-${HOSTNAME}`,
+      },
+    });
 
-  agenda.on("success", (job) => {
-    console.log(`[${job.attrs.name}] successed at ${new Date().toISOString()}`);
-  });
+    this.agenda.on("start", (job) => {
+      console.log(
+        `[${job.attrs.name}] starting at ${new Date().toISOString()}`
+      );
+    });
 
-  agenda.on("fail", (err, job) => {
-    console.log(`[${job.attrs.name}] failed with error: ${err.message}`);
-  });
+    this.agenda.on("success", (job) => {
+      console.log(
+        `[${job.attrs.name}] successed at ${new Date().toISOString()}`
+      );
+    });
 
-  return agenda;
+    this.agenda.on("fail", (err, job) => {
+      console.log(`[${job.attrs.name}] failed with error: ${err.message}`);
+    });
+  }
+
+  async init() {
+    await this.agenda.start();
+  }
+
+  async close() {
+    return this.agenda.drain();
+  }
 }

@@ -46,18 +46,18 @@ spec:
                   key: MONGO_URI
           resources: {}
           ports:
-            - name: metrics-port
+            - name: http-port
               containerPort: 3000
           startupProbe:
             httpGet:
               path: /healthz
-              port: metrics-port
+              port: http-port
             failureThreshold: 30
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /healthz
-              port: metrics-port
+              port: http-port
             initialDelaySeconds: 3
             periodSeconds: 10
       topologySpreadConstraints:
@@ -79,7 +79,7 @@ metadata:
     app.kubernetes.io/version: dev
 spec:
   ports:
-    - name: metrics-port
+    - name: http-port
       port: 3000
       targetPort: 3000
   type: ClusterIP

@@ -13,8 +13,9 @@ import SuperChat from "../models/SuperChat";
 import SuperSticker from "../models/SuperSticker";
 import Video, { LiveStatus } from "../models/Video";
 import WebhookResult from "../models/WebhookResult";
-import { initMongo } from "../modules/db";
-import { getAgenda } from "../modules/schedule";
+import { Application } from "../modules/application";
+import { MongodbModule } from "../modules/db";
+import { AgendaModule } from "../modules/schedule";
 
 async function cleanVideos(videoIds: string[]) {
   await Placeholder.deleteMany({ originVideoId: { $in: videoIds } });
@@ -191,33 +192,25 @@ export function cleanupBuilder(yargs: Argv): Argv<CleanupOptions> {
 }
 
 export async function cleanup(argv: Arguments<CleanupOptions>) {
-  const disconnectFromMongo = await initMongo();
+  const app = new Application();
+  app.use(new MongodbModule());
 
   if (argv.daemon) {
-    const agenda = getAgenda();
-
-    process.on("SIGTERM", async () => {
-      console.log("quitting cleanup (SIGTERM) ...");
-
-      try {
-        await agenda.drain();
-        await disconnectFromMongo();
-      } catch (err) {
-        console.log("cleanup failed to shut down gracefully", err);
-      }
-      process.exit(0);
-    });
+    const { agenda } = app.use(new AgendaModule());
 
     agenda.define("cleanup ended streams", cleanEndedStreams);
     agenda.define("cleanup webhookresults", cleanWebhookResults);
 
-    await agenda.start();
+    await app.init();
+
     agenda.every("5 minutes", "cleanup ended streams");
     agenda.every("1 hour", "cleanup webhookresults");
   } else {
+    await app.init();
+
     await cleanEndedStreams();
     await cleanWebhookResults();
 
-    await disconnectFromMongo();
+    await app.close("SIGTERM");
   }
 }

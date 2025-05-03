@@ -1,7 +1,5 @@
 import fastifyExpress from "@fastify/express";
-import { mongoose } from "@typegoose/typegoose";
 import type { Job } from "agenda";
-import Fastify from "fastify";
 import {
   ExtraData,
   VideoStatus,
@@ -20,9 +18,10 @@ import {
 } from "../constants";
 import ChannelModel from "../models/Channel";
 import VideoModel from "../models/Video";
-import { initMongo } from "../modules/db";
+import { Application } from "../modules/application";
+import { MongodbModule } from "../modules/db";
 import { getHolodex } from "../modules/holodex";
-import { getAgenda } from "../modules/schedule";
+import { AgendaModule } from "../modules/schedule";
 import {
   updateChannelFromYoutube,
   updateVideoFromYoutube,
@@ -30,36 +29,13 @@ import {
 
 export async function runCrawler() {
   const holoapi = getHolodex();
-  const disconnectFromMongo = await initMongo();
-  const agenda = getAgenda();
-  await agenda.start();
-  const fastify = Fastify({
-    logger: false,
-    disableRequestLogging: true,
-  });
+  const app = new Application();
+  app.use(new MongodbModule());
+  const { agenda } = app.use(new AgendaModule());
+  const { server: fastify } = app.http;
   await fastify.register(fastifyExpress);
 
-  process.on("SIGTERM", async () => {
-    console.log("quitting crawler (SIGTERM) ...");
-
-    try {
-      await fastify.close();
-      await agenda.drain();
-      await disconnectFromMongo();
-    } catch (err) {
-      console.error("crawler failed to shut down gracefully", err);
-    }
-    process.exit(0);
-  });
-
-  fastify.get("/healthz", async function (request, reply) {
-    if (
-      mongoose.connection.readyState !== mongoose.ConnectionStates.connected
-    ) {
-      throw new Error("mongoose not ready.");
-    }
-    return "ok";
-  });
+  await app.init();
 
   //#region holodex
 
@@ -130,18 +106,20 @@ export async function runCrawler() {
   const JOB_HOLODEX_OUTDATE_VIDEO = "crawler holodex outdate video";
   agenda.define(JOB_HOLODEX_OUTDATE_VIDEO, async (job: Job): Promise<void> => {
     const needUpdate = await VideoModel.findLiveVideos()
-      .where({
-        $or: [
-          {
-            holodexCrawledAt: null,
-          },
-          {
-            holodexCrawledAt: {
-              $lt: moment.tz("UTC").subtract(20, "minutes").toDate(),
+      .and([
+        {
+          $or: [
+            {
+              holodexCrawledAt: null,
             },
-          },
-        ],
-      })
+            {
+              holodexCrawledAt: {
+                $lt: moment.tz("UTC").subtract(20, "minutes").toDate(),
+              },
+            },
+          ],
+        },
+      ])
       .sort({ holodexCrawledAt: 1 })
       .limit(1);
     if (needUpdate.length > 0) {
@@ -194,18 +172,20 @@ export async function runCrawler() {
     JOB_HOLODEX_OUTDATE_CHANNEL,
     async (job: Job): Promise<void> => {
       const needUpdate = await ChannelModel.findSubscribed()
-        .where({
-          $or: [
-            {
-              holodexCrawledAt: null,
-            },
-            {
-              holodexCrawledAt: {
-                $lt: moment.tz("UTC").subtract(20, "minutes").toDate(),
+        .and([
+          {
+            $or: [
+              {
+                holodexCrawledAt: null,
               },
-            },
-          ],
-        })
+              {
+                holodexCrawledAt: {
+                  $lt: moment.tz("UTC").subtract(20, "minutes").toDate(),
+                },
+              },
+            ],
+          },
+        ])
         .sort({ holodexCrawledAt: 1 })
         .limit(1);
       if (needUpdate.length > 0) {
@@ -357,11 +337,6 @@ export async function runCrawler() {
   agenda.every("5 minute", JOB_YOUTUBE_UPDATE_CHANNELS);
 
   //#endregion youtube
-
-  await fastify.listen({
-    port: Number(process.env.PORT || 17835),
-    host: "0.0.0.0",
-  });
 
   console.log(
     `crawler is ready (org=${HOLODEX_FETCH_ORG}, max_upcoming_hours=${HOLODEX_MAX_UPCOMING_HOURS})`

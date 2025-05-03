@@ -12,8 +12,9 @@ import {
   type RESTPutAPIApplicationCommandsJSONBody,
 } from "discord.js";
 import { commands } from "../discord/commands";
-import { initMongo } from "../modules/db";
 import type { AppCommand } from "../discord/commands/command";
+import { Application } from "../modules/application";
+import { MongodbModule } from "../modules/db";
 
 const DISCORD_ID = process.env.DISCORD_ID!;
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN!;
@@ -55,25 +56,20 @@ export async function runDiscordBot() {
   assert(DISCORD_ID);
   assert(DISCORD_TOKEN);
 
-  await registerCommands(commands);
-
-  const disconnectFromMongo = await initMongo();
+  const app = new Application();
+  app.use(new MongodbModule());
   const client = new Client({
-    intents: [
-      GatewayIntentBits.Guilds,
-    ],
+    intents: [GatewayIntentBits.Guilds],
   });
-
-  process.on("SIGTERM", async () => {
-    console.log("quitting discord bot (SIGTERM) ...");
-
-    try {
+  app.use({
+    name: "discord-bot",
+    async init() {
+      await registerCommands(commands);
+      await client.login(DISCORD_TOKEN);
+    },
+    async close() {
       await client.destroy();
-      await disconnectFromMongo();
-    } catch (err) {
-      console.log("discord bot failed to shut down gracefully", err);
-    }
-    process.exit(0);
+    },
   });
 
   client.on(Events.ClientReady, () => {
@@ -142,5 +138,5 @@ export async function runDiscordBot() {
   client.on(Events.Debug, (message) => console.debug(message));
   client.on(Events.Warn, (message) => console.warn(message));
 
-  await client.login(DISCORD_TOKEN);
+  await app.init();
 }

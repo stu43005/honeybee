@@ -15,7 +15,7 @@ import { FetchError } from "node-fetch";
 import assert from "node:assert";
 import https from "node:https";
 import { setInterval, setTimeout } from "node:timers/promises";
-import { JOB_CONCURRENCY, SHUTDOWN_TIMEOUT } from "../constants";
+import { JOB_CONCURRENCY } from "../constants";
 import {
   ErrorCode,
   HoneybeeResult,
@@ -45,12 +45,13 @@ import RemoveChatActionModel, {
 import SuperChatModel, { type SuperChat } from "../models/SuperChat";
 import SuperStickerModel, { type SuperSticker } from "../models/SuperSticker";
 import VideoModel from "../models/Video";
+import { Application } from "../modules/application";
 import {
   currencyToJpyAmount,
   getCurrencymapItem,
 } from "../modules/currency-convert";
-import { initMongo } from "../modules/db";
-import { getQueueInstance } from "../modules/queue";
+import { MongodbModule } from "../modules/db";
+import { QueueModule } from "../modules/queue";
 import { groupBy, pipeSignal, setIfDefine } from "../util";
 
 const { MongoError, MongoBulkWriteError } = mongoose.mongo;
@@ -1046,21 +1047,16 @@ async function handleJob(
 // collect live chat and save to mongodb
 export async function runWorker() {
   const exitController = new AbortController();
-  const disconnectFromMongo = await initMongo();
-  const queue = getQueueInstance("honeybee", { activateDelayedJobs: true });
-
-  process.on("SIGTERM", async (s) => {
-    console.log("quitting worker (SIGTERM) ...");
-
-    try {
+  const app = new Application();
+  app.use(new MongodbModule());
+  const { queue } = app.use(
+    new QueueModule("honeybee", { activateDelayedJobs: true })
+  );
+  app.use({
+    name: "exit-signal",
+    async close(s) {
       exitController.abort(new Error(`Received ${s}`));
-      await queue.close(SHUTDOWN_TIMEOUT);
-      await disconnectFromMongo();
-    } catch (err) {
-      console.log("worker failed to shut down gracefully", err);
-    }
-
-    process.exit(0);
+    },
   });
 
   queue.on("ready", () => {
@@ -1078,4 +1074,6 @@ export async function runWorker() {
   queue.process<HoneybeeResult>(JOB_CONCURRENCY, (job) =>
     handleJob(job, exitController.signal)
   );
+
+  await app.init();
 }

@@ -27,15 +27,16 @@ import ChannelModel from "../models/Channel";
 import VideoModel, { Video } from "../models/Video";
 import WebhookModel, { type Webhook } from "../models/Webhook";
 import WebhookResultModel from "../models/WebhookResult";
+import { Application } from "../modules/application";
 import { getCacheInstance } from "../modules/cache";
 import { type WatcherResultDocument } from "../modules/collection-watcher";
 import {
   getModelByCollectionName,
   importAllModels,
-  initMongo,
+  MongodbModule,
 } from "../modules/db";
 import { isMatching } from "../modules/matching";
-import { getAgenda } from "../modules/schedule";
+import { AgendaModule } from "../modules/schedule";
 import { flatObjectKey, secondsToHms, setIfDefine } from "../util";
 
 const axiosInstance = axios.create({
@@ -379,9 +380,9 @@ interface CollectionSetting {
 
 export async function runWebhook() {
   await importAllModels();
-  const disconnectFromMongo = await initMongo();
-  const agenda = getAgenda();
-  const pqueue = new PQueue({ concurrency: 1 });
+  const app = new Application();
+  app.use(new MongodbModule());
+  const { agenda } = app.use(new AgendaModule());
 
   const collectionSettings = new Map<string, CollectionSetting>();
   const bufferChange = new Map<
@@ -392,23 +393,22 @@ export async function runWebhook() {
     }
   >();
 
-  process.on("SIGTERM", async (s) => {
-    console.log("quitting webhook (SIGTERM) ...");
-
-    try {
-      webhooksChangeStream?.close();
-      pqueue.clear();
-      await pqueue.onIdle();
+  app.use({
+    name: "remove-webhook",
+    async close() {
       for (const coll of collectionSettings.keys()) {
         await removeWebhook(coll);
       }
-      await agenda.drain();
-      await disconnectFromMongo();
-    } catch (err) {
-      console.log("webhook failed to shut down gracefully", err);
-    }
+    },
+  });
 
-    process.exit(0);
+  const pqueue = new PQueue({ concurrency: 1 });
+  app.use({
+    name: "p-queue",
+    async close() {
+      pqueue.clear();
+      await pqueue.onIdle();
+    },
   });
 
   const prepareAllWebhooks = "webhook prepare webhooks";
@@ -456,7 +456,7 @@ export async function runWebhook() {
     }
   });
 
-  await agenda.start();
+  await app.init();
   agenda.every("1 hour", prepareAllWebhooks);
 
   global.setInterval(() => {
@@ -681,6 +681,12 @@ export async function runWebhook() {
   ]).on("change", (data: mongo.ChangeStreamDocument<Webhook>) => {
     webhookLog(data, data.operationType.toUpperCase());
     if (pqueue.size < 2) pqueue.add(() => setupWebhooks());
+  });
+  app.use({
+    name: "webhook-change-stream",
+    async close() {
+      await webhooksChangeStream.close();
+    },
   });
 
   await pqueue.add(() => setupWebhooks());

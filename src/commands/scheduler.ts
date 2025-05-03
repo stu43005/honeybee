@@ -1,10 +1,6 @@
 import type { DocumentType } from "@typegoose/typegoose";
 import type { Job } from "agenda";
-import {
-  CRAWL_REPLAY_MAX_HOURS,
-  IGNORE_FREE_CHAT,
-  SHUTDOWN_TIMEOUT,
-} from "../constants";
+import { CRAWL_REPLAY_MAX_HOURS, IGNORE_FREE_CHAT } from "../constants";
 import {
   ErrorCode,
   HoneybeeResult,
@@ -12,10 +8,11 @@ import {
   HoneybeeStatus,
 } from "../interfaces";
 import VideoModel, { type Video } from "../models/Video";
+import { Application } from "../modules/application";
 import { CollectionWatcher } from "../modules/collection-watcher";
-import { initMongo } from "../modules/db";
-import { getQueueInstance } from "../modules/queue";
-import { getAgenda } from "../modules/schedule";
+import { MongodbModule } from "../modules/db";
+import { QueueModule } from "../modules/queue";
+import { AgendaModule } from "../modules/schedule";
 
 function schedulerLog(...obj: any) {
   console.log(...obj);
@@ -26,22 +23,10 @@ function getJobId(videoId: string, replica: number) {
 }
 
 export async function runScheduler() {
-  const disconnectFromMongo = await initMongo();
-  const queue = getQueueInstance("honeybee", { isWorker: false });
-  const agenda = getAgenda();
-
-  process.on("SIGTERM", async () => {
-    schedulerLog("quitting scheduler (SIGTERM) ...");
-
-    try {
-      await agenda.drain();
-      await queue.close(SHUTDOWN_TIMEOUT);
-      await disconnectFromMongo();
-    } catch (err) {
-      schedulerLog("scheduler failed to shut down gracefully", err);
-    }
-    process.exit(0);
-  });
+  const app = new Application();
+  app.use(new MongodbModule());
+  const { queue } = app.use(new QueueModule("honeybee", { isWorker: false }));
+  const { agenda } = app.use(new AgendaModule());
 
   async function handleStream(
     video: DocumentType<Video>,
@@ -282,8 +267,7 @@ Failed=${health.failed}`
     );
   });
 
-  await queue.ready();
-  await agenda.start();
+  await app.init();
   agenda.every("30 seconds", rearrange);
   agenda.every("1 minute", checkStalledJobs);
 

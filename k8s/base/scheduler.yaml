@@ -48,3 +48,18 @@ spec:
                   name: honeybee-mongodb
                   key: MONGO_URI
           resources: {}
+          ports:
+            - name: http-port
+              containerPort: 3000
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http-port
+            failureThreshold: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http-port
+            initialDelaySeconds: 3
+            periodSeconds: 10

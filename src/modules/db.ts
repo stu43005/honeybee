@@ -3,20 +3,25 @@ import type { AnyParamConstructor } from "@typegoose/typegoose/lib/types";
 import assert from "node:assert";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import type { Module } from "./module";
 
 export const MONGO_URI = process.env.MONGO_URI;
 
-export async function initMongo() {
-  assert(MONGO_URI, "MONGO_URI should be defined.");
+export class MongodbModule implements Module {
+  name = "mongodb";
 
-  // await mongoose.connect(MONGO_URI, {
-  //   useNewUrlParser: true,
-  //   useUnifiedTopology: true,
-  //   useCreateIndex: true,
-  // });
-  await mongoose.connect(MONGO_URI);
+  async init(): Promise<void> {
+    assert(MONGO_URI, "MONGO_URI should be defined.");
+    await mongoose.connect(MONGO_URI);
+  }
 
-  return () => mongoose.disconnect();
+  async close(): Promise<void> {
+    return mongoose.disconnect();
+  }
+
+  async healthCheck(): Promise<boolean> {
+    return mongoose.connection.readyState === mongoose.ConnectionStates.connected;
+  }
 }
 
 export async function changeStreamCloseSignal(
