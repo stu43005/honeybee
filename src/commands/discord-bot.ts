@@ -3,6 +3,7 @@ import {
   Client,
   DiscordAPIError,
   Events,
+  GatewayIntentBits,
   InteractionType,
   REST,
   RESTJSONErrorCodes,
@@ -58,7 +59,9 @@ export async function runDiscordBot() {
 
   const disconnectFromMongo = await initMongo();
   const client = new Client({
-    intents: [],
+    intents: [
+      GatewayIntentBits.Guilds,
+    ],
   });
 
   process.on("SIGTERM", async () => {

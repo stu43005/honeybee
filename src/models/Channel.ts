@@ -102,6 +102,27 @@ export class Channel extends TimeStamps {
     return this.findOne({ id: channelId });
   }
 
+  public static findByName(
+    this: ReturnModelType<typeof Channel>,
+    name: string,
+    limit: number = 25
+  ) {
+    return this.findSubscribed()
+      .and([
+        {
+          $or: [
+            { name: { $regex: name, $options: "i" } },
+            { englishName: { $regex: name, $options: "i" } },
+            { organization: { $regex: name, $options: "i" } },
+            { group: { $regex: name, $options: "i" } },
+            { id: { $regex: name, $options: "i" } },
+          ],
+        },
+      ])
+      .sort({ subscriberCount: -1 })
+      .limit(limit);
+  }
+
   public static SubscribedQuery: Readonly<FilterQuery<Channel>> = Object.freeze(
     {
       $or: [
