@@ -1,5 +1,5 @@
 import type { DocumentType } from "@typegoose/typegoose";
-import { time } from "discord.js";
+import { DefaultRestOptions, time } from "discord.js";
 import { VideoStatus } from "holodex.js";
 import moment from "moment-timezone";
 import path from "node:path";
@@ -9,7 +9,7 @@ import type { Webhook } from "../models/Webhook";
 import { abbreviate, secondsToHms, setIfDefine } from "../util";
 
 export function checkIsDiscordWebhookUrl(url: string): boolean {
-  return url.startsWith("https://discord.com/api/webhooks/");
+  return url.startsWith(DefaultRestOptions.api + "/webhooks/");
 }
 
 export const defaultUpdateUrl = (parameters: Record<string, any>): string => {

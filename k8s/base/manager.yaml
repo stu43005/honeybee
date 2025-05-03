@@ -1,38 +1,32 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: cleanup
+  name: manager
   labels:
-    app: cleanup
-    app.kubernetes.io/component: cleanup
+    app: manager
+    app.kubernetes.io/component: manager
     app.kubernetes.io/name: honeybee
     app.kubernetes.io/version: dev
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: cleanup
+      app: manager
   template:
     metadata:
       labels:
-        app: cleanup
-        app.kubernetes.io/component: cleanup
+        app: manager
+        app.kubernetes.io/component: manager
         app.kubernetes.io/name: honeybee
         app.kubernetes.io/version: dev
     spec:
       containers:
-        - name: cleanup
+        - name: manager
           image: ghcr.io/stu43005/honeybee/honeybee
           imagePullPolicy: Always
           args:
-            - "cleanup"
-            - "--daemon"
+            - "manager"
           env:
-            - name: HOLODEX_FETCH_ORG
-              valueFrom:
-                secretKeyRef:
-                  name: honeybee-secrets
-                  key: HOLODEX_FETCH_ORG
             - name: MONGO_URI
               valueFrom:
                 secretKeyRef:
@@ -60,4 +54,4 @@ spec:
           whenUnsatisfiable: ScheduleAnyway
           labelSelector:
             matchLabels:
-              app: cleanup
+              app: manager

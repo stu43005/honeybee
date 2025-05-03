@@ -4,10 +4,11 @@ import {
   index,
   modelOptions,
   prop,
-  type DocumentType,
+  type Ref,
   type ReturnModelType,
 } from "@typegoose/typegoose";
 import { Base, TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
+import { Track } from "./Track";
 
 export interface Webhook extends Base {}
 
@@ -16,6 +17,7 @@ export interface Webhook extends Base {}
   schemaOptions: { collection: "webhooks" },
 })
 @index({ updatedAt: 1 })
+@index({ track: 1, feature: 1 }, { unique: true })
 export class Webhook extends TimeStamps {
   // basic info
 
@@ -94,13 +96,21 @@ export class Webhook extends TimeStamps {
   @prop({ default: 0 })
   public failedAttempts!: number;
 
+  // track reference
+
+  @prop({ ref: () => Track })
+  public track?: Ref<Track>;
+
+  @prop()
+  public feature?: string;
+
   //#region find methods
 
   public static findEnabled(
     this: ReturnModelType<typeof Webhook>,
     enabled = true
   ) {
-    return this.find({ enabled: { $ne: !enabled } }).sort({ _id: 1});
+    return this.find({ enabled: { $ne: !enabled } }).sort({ _id: 1 });
   }
 
   //#endregion find methods

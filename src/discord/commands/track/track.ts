@@ -5,6 +5,7 @@ import {
   type AutocompleteInteraction,
   type ChatInputCommandInteraction,
 } from "discord.js";
+import { transformTrack } from "../../../components/track-operator";
 import ChannelModel from "../../../models/Channel";
 import TrackModel from "../../../models/Track";
 import type { Command } from "../command";
@@ -45,7 +46,7 @@ export class TrackCommand implements Command {
       return;
     }
 
-    const track = await TrackModel.findOne(trackKey);
+    let track = await TrackModel.findOne(trackKey);
     const channelWebhooks = (await baseChannel.fetchWebhooks()).filter(
       (webhook) => webhook.isIncoming()
     );
@@ -71,12 +72,13 @@ export class TrackCommand implements Command {
       return;
     }
 
-    await TrackModel.addTrackChannel(
+    track = await TrackModel.addTrackChannel(
       trackKey,
       channelWebhook.id,
       channelWebhook.token,
       channelId
     );
+    await transformTrack(track);
 
     await intr.reply({
       embeds: [

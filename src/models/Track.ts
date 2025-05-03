@@ -29,8 +29,8 @@ export class Track extends TimeStamps {
   @prop({ required: true })
   channelId!: string;
 
-  @prop({ required: true })
-  threadId!: string | null;
+  @prop()
+  threadId?: string;
 
   @prop({ type: String, default: [] })
   trackChannels!: string[];

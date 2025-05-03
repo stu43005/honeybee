@@ -1,6 +1,6 @@
 import moment from "moment-timezone";
 import mongoose, { mongo } from "mongoose";
-import type { Arguments, Argv } from "yargs";
+import assert from "node:assert";
 import { MAX_HOURS_BEFORE_CLEANUP } from "../constants";
 import Chat from "../models/Chat";
 import Membership from "../models/Membership";
@@ -13,9 +13,19 @@ import SuperChat from "../models/SuperChat";
 import SuperSticker from "../models/SuperSticker";
 import Video, { LiveStatus } from "../models/Video";
 import WebhookResult from "../models/WebhookResult";
-import { Application } from "../modules/application";
-import { MongodbModule } from "../modules/db";
-import { AgendaModule } from "../modules/schedule";
+import type { Application } from "../modules/application";
+import type { AgendaModule } from "../modules/schedule";
+
+export function cleanup(app: Application) {
+  const { agenda } = app.get<AgendaModule>("agenda") ?? {};
+  assert(agenda, "agenda should be defined.");
+
+  agenda.define("cleanup ended streams", cleanEndedStreams);
+  agenda.define("cleanup webhookresults", cleanWebhookResults);
+
+  agenda.every("5 minutes", "cleanup ended streams");
+  agenda.every("1 hour", "cleanup webhookresults");
+}
 
 async function cleanVideos(videoIds: string[]) {
   await Placeholder.deleteMany({ originVideoId: { $in: videoIds } });
@@ -175,42 +185,5 @@ async function cleanWebhookResults() {
     if (!ids.size) continue;
     await cleanByCollection(coll, ids);
     ids.clear();
-  }
-}
-
-interface CleanupOptions {
-  daemon: boolean;
-}
-
-export function cleanupBuilder(yargs: Argv): Argv<CleanupOptions> {
-  return yargs.option("daemon", {
-    alias: "d",
-    describe: "running as daemon mode",
-    type: "boolean",
-    default: false,
-  });
-}
-
-export async function cleanup(argv: Arguments<CleanupOptions>) {
-  const app = new Application();
-  app.use(new MongodbModule());
-
-  if (argv.daemon) {
-    const { agenda } = app.use(new AgendaModule());
-
-    agenda.define("cleanup ended streams", cleanEndedStreams);
-    agenda.define("cleanup webhookresults", cleanWebhookResults);
-
-    await app.init();
-
-    agenda.every("5 minutes", "cleanup ended streams");
-    agenda.every("1 hour", "cleanup webhookresults");
-  } else {
-    await app.init();
-
-    await cleanEndedStreams();
-    await cleanWebhookResults();
-
-    await app.close("SIGTERM");
   }
 }

@@ -5,6 +5,7 @@ import {
   type AutocompleteInteraction,
   type ChatInputCommandInteraction,
 } from "discord.js";
+import { transformTrack } from "../../../components/track-operator";
 import ChannelModel from "../../../models/Channel";
 import TrackModel from "../../../models/Track";
 import type { Command } from "../command";
@@ -45,7 +46,7 @@ export class UntrackCommand implements Command {
       return;
     }
 
-    const track = await TrackModel.findOne(trackKey);
+    let track = await TrackModel.findOne(trackKey);
     if (!track) {
       await intr.reply({
         content: "No tracking found for this channel.",
@@ -62,7 +63,8 @@ export class UntrackCommand implements Command {
       return;
     }
 
-    await TrackModel.removeTrackChannel(trackKey, channelId);
+    track = (await TrackModel.removeTrackChannel(trackKey, channelId)) ?? track;
+    await transformTrack(track);
 
     await intr.reply({
       embeds: [

@@ -9,7 +9,7 @@ spec:
   endpoints:
     - interval: 60s
       path: /metrics
-      port: metrics-port
+      port: http-port
       scheme: http
       scrapeTimeout: 60s
       relabelings:
