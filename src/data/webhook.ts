@@ -264,9 +264,19 @@ export const templatePreset: Readonly<
     }
 
     if (
+      parameters.status === VideoStatus.Live &&
+      moment.tz().diff(parameters.availableAt, "hours", true) > 12 &&
+      !parameters.previousResponse
+    ) {
+      // do not post old live stream
+      return;
+    }
+
+    if (
       (parameters.uploadedVideo ||
         parameters.status === VideoStatus.Past ||
         parameters.status === VideoStatus.Missing) &&
+      parameters.publishedAt &&
       moment.tz().diff(parameters.publishedAt, "hours", true) > 3 &&
       !parameters.previousResponse
     ) {

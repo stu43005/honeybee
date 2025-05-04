@@ -42,6 +42,13 @@ export const EndedStatus = Object.freeze([
   VideoStatus.Missing,
 ]);
 
+export const IsShortQuery = Object.freeze({
+  duration: { $lte: 60 },
+});
+export const IsNotShortQuery = Object.freeze({
+  duration: { $gt: 60 },
+});
+
 @modelOptions({ schemaOptions: { collection: "videos" } })
 @index(
   { availableAt: 1 },

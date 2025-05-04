@@ -48,6 +48,10 @@ export async function transformTrack(
             .map((field) => [field, ""])
         ),
         $set: webhook,
+      },
+      {
+        upsert: true,
+        setDefaultsOnInsert: true,
       }
     );
   }
@@ -78,12 +82,17 @@ function* transformTrackToWebhooks(track: DocumentType<Track>) {
   }
 
   for (const feature of track.enabledFeatures) {
-    const webhook = trackFeatures[feature]?.(track) as FlattenMaps<Webhook>;
+    const webhook = trackFeatures[feature]?.transform?.(track) as
+      | FlattenMaps<Webhook>
+      | null
+      | undefined;
     if (webhook) {
       webhook.track = track._id;
       webhook.feature = feature;
       webhook.insertUrl = insertUrl.toString();
-      webhook.updateUrl = updateUrl.toString();
+      if (webhook.followUpdate) {
+        webhook.updateUrl = updateUrl.toString();
+      }
       yield webhook;
     }
   }
