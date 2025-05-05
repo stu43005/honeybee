@@ -699,12 +699,14 @@ async function handleJob(
             const payload: Raid[] = groupedActions[type].map((action) => {
               return {
                 id: action.actionId,
+                targetId: action.targetId,
                 // sourceVideoId: ,
                 // sourceChannelId: ,
                 sourceName: action.sourceName,
                 sourcePhoto: action.sourcePhoto,
                 originVideoId: mc.videoId,
                 originChannelId: mc.channelId,
+                originName: channelName,
                 originPhoto: channelAvatarUrl,
                 timestamp: new Date(),
               };
@@ -728,12 +730,14 @@ async function handleJob(
             const payload: Raid[] = groupedActions[type].map((action) => {
               return {
                 outgoingId: action.actionId,
+                outgoingTargetId: action.targetId,
                 sourceVideoId: mc.videoId,
                 sourceChannelId: mc.channelId,
                 sourceName: channelName,
                 sourcePhoto: channelAvatarUrl,
                 originVideoId: action.targetVideoId,
                 // originChannelId: ,
+                originName: action.targetName,
                 originPhoto: action.targetPhoto,
                 timestamp: new Date(),
               };

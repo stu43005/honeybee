@@ -16,11 +16,17 @@ export class Raid extends TimeStamps {
   @prop()
   public id?: string;
 
+  @prop()
+  public targetId?: string;
+
   /**
    * outgoing raid id
    */
   @prop()
   public outgoingId?: string;
+
+  @prop()
+  public outgoingTargetId?: string;
 
   // source
   @prop()
@@ -41,6 +47,9 @@ export class Raid extends TimeStamps {
 
   @prop()
   public originChannelId?: string;
+
+  @prop()
+  public originName?: string;
 
   @prop()
   public originPhoto?: string;
