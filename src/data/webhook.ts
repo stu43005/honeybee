@@ -1,5 +1,5 @@
 import type { DocumentType } from "@typegoose/typegoose";
-import { DefaultRestOptions, time } from "discord.js";
+import { DefaultRestOptions, hyperlink, time } from "discord.js";
 import { VideoStatus } from "holodex.js";
 import moment from "moment-timezone";
 import path from "node:path";
@@ -207,34 +207,71 @@ export const templatePreset: Readonly<
       embeds: [
         {
           author: {
-            name: parameters.sourceName,
+            name: parameters.sourceChannel?.name || parameters.sourceName,
             ...(parameters.sourceChannelId
               ? {
                   url: Channel.getUrl(parameters.sourceChannelId),
                 }
               : {}),
-            icon_url: parameters.sourcePhoto,
+            icon_url: parameters.sourceChannel?.avatarUrl || parameters.sourcePhoto,
           },
-          title: `Raid Event • At ${parameters.timeCode}`,
+          title: `Raid Incoming • At ${parameters.timeCode}`,
           url: Video.getUrl(parameters.originVideoId, parameters.timeSecond),
           thumbnail: {
             url: Video.getVideoThumbnails(parameters.originVideoId).medium,
           },
-          description: `${parameters.sourceName} and their viewers just joined. Say hello!`,
+          description: `${parameters.sourceChannel?.name || parameters.sourceName} and their viewers just joined. Say hello!`,
           ...(parameters.sourceVideoId
             ? {
                 fields: [
                   {
                     name: "Link",
-                    value: `[Source Video](https://youtu.be/${parameters.sourceVideoId})`,
+                    value: hyperlink("Source Video", Video.getUrl(parameters.sourceVideoId)),
                     inline: true,
                   },
                 ],
               }
             : {}),
           footer: {
-            text: parameters.video?.title,
-            icon_url: parameters.channel?.avatarUrl,
+            text: parameters.video?.title || parameters.channel?.name || parameters.originName,
+            icon_url: parameters.channel?.avatarUrl || parameters.originPhoto,
+          },
+          timestamp: parameters.timestamp,
+        },
+      ],
+    };
+  },
+  "discord-embed-raids-outgoing": (parameters) => {
+    return {
+      embeds: [
+        {
+          author: {
+            name: parameters.channel?.name || parameters.originName,
+            ...(parameters.originChannelId
+              ? {
+                  url: Channel.getUrl(parameters.originChannelId),
+                }
+              : {}),
+            icon_url: parameters.channel?.avatarUrl || parameters.originPhoto,
+          },
+          title: `Raid Outgoing`,
+          ...(parameters.sourceVideoId ? {
+            url: Video.getUrl(parameters.sourceVideoId),
+            thumbnail: {
+              url: Video.getVideoThumbnails(parameters.sourceVideoId).medium,
+            },
+          } : {}),
+          description: `Sending you to ${parameters.channel?.name || parameters.originName}`,
+          fields: [
+            {
+              name: "Link",
+              value: hyperlink("Target Video", Video.getUrl(parameters.originVideoId)),
+              inline: true,
+            },
+          ],
+          footer: {
+            text: parameters.sourceVideo?.title || parameters.sourceChannel?.name || parameters.sourceName,
+            icon_url: parameters.sourceChannel?.avatarUrl || parameters.sourcePhoto,
           },
           timestamp: parameters.timestamp,
         },
