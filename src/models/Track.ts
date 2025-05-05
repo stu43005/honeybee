@@ -38,6 +38,9 @@ export class Track extends TimeStamps {
   @prop({ type: String, default: defaultTrackFeatures })
   enabledFeatures!: string[];
 
+  @prop({ type: String, default: [] })
+  chatBlocklist!: string[];
+
   public static async addTrackChannel(
     this: ReturnModelType<typeof Track>,
     key: TrackKey,

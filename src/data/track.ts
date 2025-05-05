@@ -7,7 +7,7 @@ type TrackFeaturesConfig = {
   description?: string;
   transform?: (
     track: Track
-  ) => Pick<FlattenMaps<Webhook>, ConfigredWebhookFields> | null;
+  ) => Partial<Pick<FlattenMaps<Webhook>, ConfigredWebhookFields>> | null;
   defaultFeature?: boolean;
 };
 
@@ -120,8 +120,11 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
       defaultFeature: true,
     },
     chats: {
+      description: `Post when tracked channels sends a message on thare owned channel`,
       transform: (track) => {
         if (track.trackChannels.length === 0) return null;
+        const chatsOtherChannels =
+          track.enabledFeatures.includes("chatsOtherChannels");
         return {
           colls: [
             "chats",
@@ -134,16 +137,145 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
           ],
           match: {
             authorChannelId: getChannelIdFilter(track),
+            ...(chatsOtherChannels
+              ? {}
+              : { originChannelId: getChannelIdFilter(track) }),
+            isReplay: { $ne: true },
           },
           templatePreset: "discord-embed-chats",
         };
       },
     },
+    chatsOtherChannels: {
+      description: `Post when tracked channels sends a message on other channels`,
+      transform: (track) => {
+        if (track.trackChannels.length === 0) return null;
+        const chats = track.enabledFeatures.includes("chats");
+        if (chats) return null;
+        return {
+          colls: [
+            "chats",
+            "superchats",
+            "superstickers",
+            "memberships",
+            "milestones",
+            "membershipgiftpurchases",
+            "membershipgifts",
+          ],
+          match: {
+            authorChannelId: getChannelIdFilter(track),
+            originChannelId: getChannelIdFilter(track, true),
+            isReplay: { $ne: true },
+          },
+          templatePreset: "discord-embed-chats",
+        };
+      },
+    },
+    moderatorChats: {
+      description: `Post when moderator sends a message on tracked channel`,
+      transform: (track) => {
+        if (track.trackChannels.length === 0) return null;
+        const chats = track.enabledFeatures.includes("chats");
+        const chatBlocklist = [
+          ...(chats ? track.trackChannels : []),
+          ...track.chatBlocklist,
+        ];
+        return {
+          colls: [
+            "chats",
+            "superchats",
+            "superstickers",
+            "memberships",
+            "milestones",
+            "membershipgiftpurchases",
+            "membershipgifts",
+          ],
+          match: {
+            ...(chatBlocklist.length > 0
+              ? { authorChannelId: { $nin: chatBlocklist } }
+              : {}),
+            originChannelId: getChannelIdFilter(track),
+            isModerator: true,
+            isReplay: { $ne: true },
+          },
+          templatePreset: "discord-embed-chats",
+        };
+      },
+    },
+    polls: {
+      description: `Post when tracked channels create a poll`,
+      transform: (track) => {
+        if (track.trackChannels.length === 0) return null;
+        return {
+          colls: ["polls"],
+          match: {
+            originChannelId: getChannelIdFilter(track),
+          },
+          followUpdate: true,
+          templatePreset: "discord-embed-polls",
+        };
+      },
+    },
+    modechanges: {
+      description: `Post when tracked channels change the chat mode`,
+      transform: (track) => {
+        if (track.trackChannels.length === 0) return null;
+        return {
+          colls: ["modechanges"],
+          match: {
+            originChannelId: getChannelIdFilter(track),
+            isReplay: { $ne: true },
+          },
+          templatePreset: "discord-embed-modechanges",
+        };
+      },
+    },
+    raids: {
+      description: `Post when someone raids the tracked channels`,
+      transform: (track) => {
+        if (track.trackChannels.length === 0) return null;
+        return {
+          colls: ["raids"],
+          match: {
+            originChannelId: getChannelIdFilter(track),
+          },
+          followUpdate: true,
+          templatePreset: "discord-embed-raids",
+        };
+      },
+    },
+    raidsOutgoing: {
+      description: `Post when tracked channels raids to other channels`,
+      transform: (track) => {
+        if (track.trackChannels.length === 0) return null;
+        return {
+          colls: ["raids"],
+          match: {
+            sourceChannelId: getChannelIdFilter(track),
+          },
+          followUpdate: true,
+          templatePreset: "discord-embed-raids-outgoing",
+        };
+      },
+    },
   } satisfies Record<string, TrackFeaturesConfig>);
 
-function getChannelIdFilter(track: Track) {
-  if (track.trackChannels.length <= 1) {
-    return track.trackChannels[0] ?? null;
+function getChannelIdFilter(track: Track, reverse = false) {
+  if (track.trackChannels.length === 0) {
+    return null;
+  }
+  if (track.trackChannels.length === 1) {
+    if (reverse) {
+      return {
+        $ne: track.trackChannels[0],
+      };
+    }
+    return track.trackChannels[0];
+  }
+  if (reverse) {
+    return {
+      $nin: track.trackChannels,
+    };
   }
   return {
     $in: track.trackChannels,

@@ -40,13 +40,18 @@ export async function transformTrack(
         feature: webhook.feature,
       },
       {
-        $unset: Object.fromEntries(
-          configredWebhookFields
-            .filter(
-              (field) => !(field in webhook) || webhook[field] === undefined
-            )
-            .map((field) => [field, ""])
-        ),
+        $unset: {
+          ...Object.fromEntries(
+            configredWebhookFields
+              .filter(
+                (field) => !(field in webhook) || webhook[field] === undefined
+              )
+              .map((field) => [field, ""])
+          ),
+          updateUrl: "",
+          insertMethod: "",
+          updateMethod: "",
+        },
         $set: webhook,
       },
       {
@@ -69,17 +74,6 @@ function* transformTrackToWebhooks(track: DocumentType<Track>) {
   if (track.threadId) {
     insertUrl.searchParams.set("thread_id", track.threadId);
   }
-  const updateUrl = new URL(
-    DefaultRestOptions.api +
-      Routes.webhookMessage(
-        track.clientId,
-        track.token,
-        "{{previousResponse.id}}"
-      )
-  );
-  if (track.threadId) {
-    insertUrl.searchParams.set("thread_id", track.threadId);
-  }
 
   for (const feature of track.enabledFeatures) {
     const webhook = trackFeatures[feature]?.transform?.(track) as
@@ -90,9 +84,6 @@ function* transformTrackToWebhooks(track: DocumentType<Track>) {
       webhook.track = track._id;
       webhook.feature = feature;
       webhook.insertUrl = insertUrl.toString();
-      if (webhook.followUpdate) {
-        webhook.updateUrl = updateUrl.toString();
-      }
       yield webhook;
     }
   }
