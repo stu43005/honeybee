@@ -6,11 +6,11 @@ import {
   type RequestMethod,
   type RouteLike,
 } from "discord.js";
-import http from "http";
-import https from "https";
 import jsonTemplates, { type JsonTemplate } from "json-templates";
 import { groupBy, isEqual } from "lodash";
 import { mongo } from "mongoose";
+import http from "node:http";
+import https from "node:https";
 import { setInterval, setTimeout } from "node:timers/promises";
 import pProps from "p-props";
 import PQueue from "p-queue";
@@ -20,7 +20,6 @@ import {
   defaultUpdateMethod,
   defaultUpdateUrl,
   fixLongText,
-  matchPresets,
   templatePreset,
 } from "../data/webhook";
 import ChannelModel from "../models/Channel";
@@ -31,12 +30,12 @@ import { Application } from "../modules/application";
 import { getCacheInstance } from "../modules/cache";
 import { type WatcherResultDocument } from "../modules/collection-watcher";
 import {
+  documentLog,
   getModelByCollectionName,
   importAllModels,
   MongodbModule,
 } from "../modules/db";
 import { isMatching } from "../modules/matching";
-import { AgendaModule } from "../modules/schedule";
 import { flatObjectKey, secondsToHms, setIfDefine } from "../util";
 
 const axiosInstance = axios.create({
@@ -50,27 +49,6 @@ const cache = getCacheInstance({
   ttl: 300_000,
   refreshThreshold: 30_000,
 });
-
-function webhookLog(
-  data: mongo.ChangeStreamDocument | mongo.Document | string,
-  ...obj: any
-) {
-  let id: unknown;
-  if (typeof data === "string") {
-    id = data;
-  } else if ("documentKey" in data) {
-    id =
-      data.documentKey._id instanceof mongo.BSON.ObjectId
-        ? data.documentKey._id.toHexString()
-        : data.documentKey._id;
-  } else {
-    id =
-      data._id instanceof mongo.BSON.ObjectId
-        ? data._id.toHexString()
-        : data._id;
-  }
-  console.log(`${id} -`, ...obj);
-}
 
 async function sendDiscordWebhook(
   method: string,
@@ -362,7 +340,7 @@ function validateWebhook(webhook: DocumentType<Webhook>) {
   // validation
   const error = webhook.validateSync();
   if (error) {
-    webhookLog(
+    documentLog(
       webhook,
       "<!> [ERROR] The format of the webhook is incorrect.",
       error
@@ -382,7 +360,6 @@ export async function runWebhook() {
   await importAllModels();
   const app = new Application();
   app.use(new MongodbModule());
-  const { agenda } = app.use(new AgendaModule());
 
   const collectionSettings = new Map<string, CollectionSetting>();
   const bufferChange = new Map<
@@ -411,60 +388,14 @@ export async function runWebhook() {
     },
   });
 
-  const prepareAllWebhooks = "webhook prepare webhooks";
-  agenda.define(prepareAllWebhooks, async (): Promise<void> => {
-    for await (const webhook of WebhookModel.findEnabled()) {
-      // Check if the webhook is still valid
-      webhook.failedAttempts ??= 0;
-      try {
-        await axiosInstance.get(webhook.insertUrl, {
-          timeout: 60_000,
-        });
-        webhook.lastSuccess = new Date();
-        webhook.failedAttempts = 0;
-        webhook.enabled = true;
-      } catch (error) {
-        webhookLog(
-          webhook,
-          "<!> [ERROR] Unable to connect to the webhook",
-          error
-        );
-        webhook.failedAttempts += 1;
-
-        // Disable webhook after 24 failed attempts to prevent excessive retries.
-        if (webhook.failedAttempts >= 24) {
-          webhook.enabled = false;
-        }
-      }
-      webhook.lastChecked = new Date();
-
-      // Prepare webhook match
-      try {
-        if (webhook.matchPreset && matchPresets[webhook.matchPreset]) {
-          const match = await matchPresets[webhook.matchPreset](webhook);
-          if (JSON.stringify(webhook.match) !== JSON.stringify(match)) {
-            webhookLog(webhook, "change match");
-            webhook.match = match;
-          }
-        }
-      } catch (error) {
-        webhookLog(webhook, "<!> [ERROR] Unable to prepare webhook", error);
-      }
-
-      await webhook.save();
-      await setTimeout(1000);
-    }
-  });
-
   await app.init();
-  agenda.every("1 hour", prepareAllWebhooks);
 
   global.setInterval(() => {
     for (const [key, { webhook, data }] of bufferChange) {
       bufferChange.delete(key);
       if (data) {
         processWebhookEvent(webhook, data).catch((error) => {
-          webhookLog(webhook, "<!> [ERROR]", error);
+          documentLog(webhook, "<!> [ERROR]", error);
         });
       }
     }
@@ -496,7 +427,7 @@ export async function runWebhook() {
 
       return true;
     } catch (error) {
-      webhookLog(webhook, "<!> [ERROR]", error);
+      documentLog(webhook, "<!> [ERROR]", error);
       return false;
     }
   }
@@ -510,7 +441,7 @@ export async function runWebhook() {
       changeStream.removeAllListeners();
       return changeStream.resumeToken;
     } catch (error) {
-      webhookLog(
+      documentLog(
         coll,
         "<!> [FATAL] Unable to close the previous change stream.",
         error
@@ -542,7 +473,7 @@ export async function runWebhook() {
 
     const model = getModelByCollectionName(coll);
     if (!model) {
-      webhookLog(
+      documentLog(
         coll,
         `<!> [ERROR] Unable to get model (unknown collection "${coll}")`
       );
@@ -569,7 +500,7 @@ export async function runWebhook() {
           !("fullDocument" in changeStreamData) ||
           !changeStreamData.fullDocument
         ) {
-          webhookLog(
+          documentLog(
             coll,
             "<!> [ERROR] missing fullDocument",
             changeStreamData.documentKey
@@ -587,7 +518,7 @@ export async function runWebhook() {
         for (const webhook of collectionSetting.webhooks) {
           if (prepareWebhookEvent(webhook, data)) {
             processWebhookEvent(webhook, data).catch((error) => {
-              webhookLog(webhook, "<!> [ERROR]", error);
+              documentLog(webhook, "<!> [ERROR]", error);
             });
           }
         }
@@ -635,10 +566,10 @@ export async function runWebhook() {
       );
       if (collectionSetting.changeStream) {
         collectionSettings.set(coll, collectionSetting);
-        webhookLog(coll, "start listening");
+        documentLog(coll, "start listening");
       }
     } catch (error) {
-      webhookLog(coll, "<!> [FATAL] Unable to create change stream.", error);
+      documentLog(coll, "<!> [FATAL] Unable to create change stream.", error);
       process.exit(1);
     }
   }
@@ -667,7 +598,7 @@ export async function runWebhook() {
         }
       }
     } catch (error) {
-      webhookLog("global", "<!> [FATAL] Unable to setup webhooks.", error);
+      documentLog("global", "<!> [FATAL] Unable to setup webhooks.", error);
       process.exit(1);
     }
   }
@@ -679,7 +610,7 @@ export async function runWebhook() {
       },
     },
   ]).on("change", (data: mongo.ChangeStreamDocument<Webhook>) => {
-    webhookLog(data, data.operationType.toUpperCase());
+    documentLog(data, data.operationType.toUpperCase());
     if (pqueue.size < 2) pqueue.add(() => setupWebhooks());
   });
   app.use({

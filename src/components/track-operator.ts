@@ -8,7 +8,7 @@ import WebhookModel, { type Webhook } from "../models/Webhook";
 import type { Application } from "../modules/application";
 import type { AgendaModule } from "../modules/schedule";
 
-export function trackOperator(app: Application) {
+export default function trackOperator(app: Application) {
   const { agenda } = app.get<AgendaModule>("agenda") ?? {};
   assert(agenda, "agenda should be defined.");
 

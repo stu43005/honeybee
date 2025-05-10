@@ -16,7 +16,7 @@ import WebhookResult from "../models/WebhookResult";
 import type { Application } from "../modules/application";
 import type { AgendaModule } from "../modules/schedule";
 
-export function cleanup(app: Application) {
+export default function cleanup(app: Application) {
   const { agenda } = app.get<AgendaModule>("agenda") ?? {};
   assert(agenda, "agenda should be defined.");
 

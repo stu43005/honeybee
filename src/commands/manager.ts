@@ -1,5 +1,6 @@
-import { cleanup } from "../components/cleanup";
-import { trackOperator } from "../components/track-operator";
+import cleanup from "../components/cleanup";
+import trackOperator from "../components/track-operator";
+import webhookPrepare from "../components/webhook-prepare";
 import { Application } from "../modules/application";
 import { MongodbModule } from "../modules/db";
 import { AgendaModule } from "../modules/schedule";
@@ -13,4 +14,5 @@ export async function runManager() {
   
   cleanup(app);
   trackOperator(app);
+  webhookPrepare(app);
 }

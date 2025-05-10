@@ -1,5 +1,6 @@
 import { mongoose, type ReturnModelType } from "@typegoose/typegoose";
 import type { AnyParamConstructor } from "@typegoose/typegoose/lib/types";
+import { mongo } from "mongoose";
 import assert from "node:assert";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -20,8 +21,31 @@ export class MongodbModule implements Module {
   }
 
   async healthCheck(): Promise<boolean> {
-    return mongoose.connection.readyState === mongoose.ConnectionStates.connected;
+    return (
+      mongoose.connection.readyState === mongoose.ConnectionStates.connected
+    );
   }
+}
+
+export function documentLog(
+  data: mongo.ChangeStreamDocument | mongo.Document | string,
+  ...obj: any
+) {
+  let id: unknown;
+  if (typeof data === "string") {
+    id = data;
+  } else if ("documentKey" in data) {
+    id =
+      data.documentKey._id instanceof mongo.BSON.ObjectId
+        ? data.documentKey._id.toHexString()
+        : data.documentKey._id;
+  } else {
+    id =
+      data._id instanceof mongo.BSON.ObjectId
+        ? data._id.toHexString()
+        : data._id;
+  }
+  console.log(`${id} -`, ...obj);
 }
 
 export async function changeStreamCloseSignal(
