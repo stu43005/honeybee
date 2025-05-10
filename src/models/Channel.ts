@@ -7,6 +7,7 @@ import {
   type ReturnModelType,
 } from "@typegoose/typegoose";
 import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
+import { hyperlink } from "discord.js";
 import { Channel as HolodexChannel } from "holodex.js";
 import type { FilterQuery, FlattenMaps } from "mongoose";
 import { HOLODEX_ALL_VTUBERS, HOLODEX_FETCH_ORG } from "../constants";
@@ -87,6 +88,10 @@ export class Channel extends TimeStamps {
 
   public getUrl(this: DocumentType<Channel>): string {
     return Channel.getUrl(this);
+  }
+
+  public getHyperlink(this: DocumentType<Channel>): string {
+    return hyperlink(this.name, Channel.getUrl(this));
   }
 
   public static getUrl(

@@ -6,7 +6,6 @@ import {
   ContainerBuilder,
   DiscordjsError,
   DiscordjsErrorCodes,
-  hyperlink,
   InteractionContextType,
   MessageFlags,
   PermissionsBitField,
@@ -26,6 +25,7 @@ import {
 } from "../../../data/track";
 import ChannelModel from "../../../models/Channel";
 import TrackModel, { type Track, type TrackKey } from "../../../models/Track";
+import { validateChannelId } from "../../../modules/youtube";
 import type { Command } from "../command";
 import { getTrackKey } from "./fns";
 
@@ -128,14 +128,20 @@ export class TrackCommand implements Command {
     baseChannel: CategoryChildChannel
   ) {
     const channelId = intr.options.getString("channel-id", true);
-    const channel = await ChannelModel.findByChannelId(channelId);
-    if (!channel) {
+    if (!validateChannelId(channelId)) {
       await intr.reply({
-        content: "Cannot find the channel.",
+        content: "Invalid channelId format.",
         ephemeral: true,
       });
       return;
     }
+
+    const channel =
+      (await ChannelModel.findByChannelId(channelId)) ??
+      (await ChannelModel.create({
+        id: channelId,
+        name: "Unknown channel",
+      }));
 
     let track = await TrackModel.findOne(trackKey);
     const channelWebhook = await this.getChannelWebhook(
@@ -150,7 +156,7 @@ export class TrackCommand implements Command {
       track.trackChannels.includes(channelId)
     ) {
       await intr.reply({
-        content: `Already tracked ${channel.name} (${channelId}).`,
+        content: `Already tracked ${channel.getHyperlink()} (${channelId}).`,
         ephemeral: true,
       });
       return;
@@ -165,7 +171,7 @@ export class TrackCommand implements Command {
     await intr.reply({
       embeds: [
         {
-          description: `Now tracking ${channel.name} (${channelId}).`,
+          description: `Now tracking ${channel.getHyperlink()} (${channelId}).`,
         },
       ],
     });
@@ -186,18 +192,24 @@ export class TrackCommand implements Command {
     }
 
     const channelId = intr.options.getString("channel-id", true);
-    const channel = await ChannelModel.findByChannelId(channelId);
-    if (!channel) {
+    if (!validateChannelId(channelId)) {
       await intr.reply({
-        content: "Cannot find the channel.",
+        content: "Invalid channelId format.",
         ephemeral: true,
       });
       return;
     }
 
+    const channel =
+      (await ChannelModel.findByChannelId(channelId)) ??
+      new ChannelModel({
+        id: channelId,
+        name: "Unknown channel",
+      });
+
     if (!track.trackChannels.includes(channelId)) {
       await intr.reply({
-        content: `${channel.name} (${channelId}) is not currently tracked in this channel.`,
+        content: `${channel.getHyperlink()} (${channelId}) is not currently tracked in this channel.`,
         ephemeral: true,
       });
       return;
@@ -217,7 +229,7 @@ export class TrackCommand implements Command {
     await intr.reply({
       embeds: [
         {
-          description: `No longer tracking ${channel.name} (${channelId}).`,
+          description: `No longer tracking ${channel.getHyperlink()} (${channelId}).`,
         },
       ],
     });
@@ -244,11 +256,13 @@ export class TrackCommand implements Command {
           (intr.channel?.isThread() ? ` > 💬 ${intr.channel.name}` : ""),
         trackChannels
           .map((channelId) => {
-            const channel = channels.find((c) => c.id === channelId);
-            return `- ${hyperlink(
-              channel?.name ?? "Unknown channel",
-              ChannelModel.getUrl(channelId)
-            )} (${channelId})`;
+            const channel =
+              channels.find((c) => c.id === channelId) ??
+              new ChannelModel({
+                id: channelId,
+                name: "Unknown channel",
+              });
+            return `- ${channel.getHyperlink()} (${channelId})`;
           })
           .join("\n") || "-# No channels are currently being tracked.",
       ].join("\n")

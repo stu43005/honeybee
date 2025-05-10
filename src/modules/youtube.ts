@@ -223,3 +223,12 @@ export async function updateChannelFromYoutube(targetChannels: string[]): Promis
 
   return result;
 }
+
+export function validateChannelId(channelId: string): boolean {
+  return (
+    typeof channelId === "string" &&
+    channelId.length === 24 &&
+    channelId.startsWith("UC") &&
+    /^[a-zA-Z0-9_-]+$/.test(channelId)
+  );
+}

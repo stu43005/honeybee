@@ -3,7 +3,7 @@ import {
   type ChatInputCommandInteraction,
 } from "discord.js";
 import ChannelModel, { type Channel } from "../../../models/Channel";
-import { updateChannelFromYoutube } from "../../../modules/youtube";
+import { updateChannelFromYoutube, validateChannelId } from "../../../modules/youtube";
 import type { Command } from "../command";
 
 export class SetChannelCommand implements Command {
@@ -30,6 +30,13 @@ export class SetChannelCommand implements Command {
 
   public async execute(intr: ChatInputCommandInteraction): Promise<void> {
     const channelId = intr.options.getString("channel-id", true);
+    if (!validateChannelId(channelId)) {
+      await intr.reply({
+        content: "Invalid channelId format.",
+        ephemeral: true,
+      });
+      return;
+    }
 
     let channel = await ChannelModel.findByChannelId(channelId);
     if (!channel) {
