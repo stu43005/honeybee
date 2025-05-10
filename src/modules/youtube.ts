@@ -23,7 +23,9 @@ export function getYoutubeApi() {
   return youtubeApi;
 }
 
-export async function updateVideoFromYoutube(targetVideos: string[]): Promise<DocumentType<Video>[]> {
+export async function updateVideoFromYoutube(
+  targetVideos: string[]
+): Promise<DocumentType<Video>[]> {
   const utcDate = moment.tz("UTC");
   if (!targetVideos.length) return [];
 
@@ -141,7 +143,8 @@ export async function updateVideoFromYoutube(targetVideos: string[]): Promise<Do
           ytInfo.status?.uploadStatus === "processed");
       video.memberLimited =
         ytInfo.statistics && ytInfo.statistics.viewCount === undefined;
-      video.privacyStatus = ytInfo.status?.privacyStatus as Video["privacyStatus"];
+      video.privacyStatus = ytInfo.status
+        ?.privacyStatus as Video["privacyStatus"];
       video.uploadStatus = ytInfo.status?.uploadStatus as Video["uploadStatus"];
       if (video.deleted) video.deleted = false;
     } else {
@@ -178,7 +181,9 @@ export async function updateVideoFromYoutube(targetVideos: string[]): Promise<Do
   return result;
 }
 
-export async function updateChannelFromYoutube(targetChannels: string[]): Promise<DocumentType<Channel>[]> {
+export async function updateChannelFromYoutube(
+  targetChannels: string[]
+): Promise<DocumentType<Channel>[]> {
   if (!targetChannels.length) return [];
 
   const youtube = getYoutubeApi();
@@ -215,6 +220,9 @@ export async function updateChannelFromYoutube(targetChannels: string[]): Promis
         channel.videoCount = Number(ytInfo.statistics.videoCount);
       if (ytInfo.statistics?.subscriberCount)
         channel.subscriberCount = Number(ytInfo.statistics.subscriberCount);
+      if (channel.deleted) channel.deleted = false;
+    } else {
+      channel.deleted = true;
     }
     channel.crawledAt = new Date();
     await channel.save();
