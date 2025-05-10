@@ -213,27 +213,36 @@ export const templatePreset: Readonly<
                   url: Channel.getUrl(parameters.sourceChannelId),
                 }
               : {}),
-            icon_url: parameters.sourceChannel?.avatarUrl || parameters.sourcePhoto,
+            icon_url:
+              parameters.sourceChannel?.avatarUrl || parameters.sourcePhoto,
           },
           title: `Raid Incoming • At ${parameters.timeCode}`,
           url: Video.getUrl(parameters.originVideoId, parameters.timeSecond),
           thumbnail: {
             url: Video.getVideoThumbnails(parameters.originVideoId).medium,
           },
-          description: `${parameters.sourceChannel?.name || parameters.sourceName} and their viewers just joined. Say hello!`,
+          description: `${
+            parameters.sourceChannel?.name || parameters.sourceName
+          } and their viewers just joined. Say hello!`,
           ...(parameters.sourceVideoId
             ? {
                 fields: [
                   {
                     name: "Link",
-                    value: hyperlink("Source Video", Video.getUrl(parameters.sourceVideoId)),
+                    value: hyperlink(
+                      "Source Video",
+                      Video.getUrl(parameters.sourceVideoId)
+                    ),
                     inline: true,
                   },
                 ],
               }
             : {}),
           footer: {
-            text: parameters.video?.title || parameters.channel?.name || parameters.originName,
+            text:
+              parameters.video?.title ||
+              parameters.channel?.name ||
+              parameters.originName,
             icon_url: parameters.channel?.avatarUrl || parameters.originPhoto,
           },
           timestamp: parameters.timestamp,
@@ -255,23 +264,35 @@ export const templatePreset: Readonly<
             icon_url: parameters.channel?.avatarUrl || parameters.originPhoto,
           },
           title: `Raid Outgoing`,
-          ...(parameters.sourceVideoId ? {
-            url: Video.getUrl(parameters.sourceVideoId),
-            thumbnail: {
-              url: Video.getVideoThumbnails(parameters.sourceVideoId).medium,
-            },
-          } : {}),
-          description: `Sending you to ${parameters.channel?.name || parameters.originName}`,
+          ...(parameters.sourceVideoId
+            ? {
+                url: Video.getUrl(parameters.sourceVideoId),
+                thumbnail: {
+                  url: Video.getVideoThumbnails(parameters.sourceVideoId)
+                    .medium,
+                },
+              }
+            : {}),
+          description: `Sending you to ${
+            parameters.channel?.name || parameters.originName
+          }`,
           fields: [
             {
               name: "Link",
-              value: hyperlink("Target Video", Video.getUrl(parameters.originVideoId)),
+              value: hyperlink(
+                "Target Video",
+                Video.getUrl(parameters.originVideoId)
+              ),
               inline: true,
             },
           ],
           footer: {
-            text: parameters.sourceVideo?.title || parameters.sourceChannel?.name || parameters.sourceName,
-            icon_url: parameters.sourceChannel?.avatarUrl || parameters.sourcePhoto,
+            text:
+              parameters.sourceVideo?.title ||
+              parameters.sourceChannel?.name ||
+              parameters.sourceName,
+            icon_url:
+              parameters.sourceChannel?.avatarUrl || parameters.sourcePhoto,
           },
           timestamp: parameters.timestamp,
         },
@@ -301,23 +322,53 @@ export const templatePreset: Readonly<
     }
 
     if (
-      parameters.status === VideoStatus.Live &&
-      moment.tz().diff(parameters.availableAt, "hours", true) > 12 &&
-      !parameters.previousResponse
+      parameters.uploadedVideo &&
+      ((!parameters.previousResponse &&
+        moment.tz().diff(parameters.availableAt, "hours", true) > 3) ||
+        (parameters.previousResponse &&
+          moment.tz().diff(parameters.availableAt, "hours", true) > 24))
     ) {
-      // do not post old live stream
       return;
     }
 
     if (
-      (parameters.uploadedVideo ||
-        parameters.status === VideoStatus.Past ||
-        parameters.status === VideoStatus.Missing) &&
-      parameters.publishedAt &&
-      moment.tz().diff(parameters.publishedAt, "hours", true) > 3 &&
+      parameters.status === VideoStatus.Live &&
+      !parameters.actualStart &&
+      moment.tz().diff(parameters.availableAt, "hours", true) > 24 &&
       !parameters.previousResponse
     ) {
-      // do not post old video
+      // status is live but not actually started
+      return;
+    }
+
+    if (
+      parameters.status === VideoStatus.Past &&
+      !parameters.uploadedVideo &&
+      ((parameters.actualEnd &&
+        moment.tz().diff(parameters.actualEnd, "hours", true) > 24) ||
+        !parameters.previousResponse)
+    ) {
+      return;
+    }
+
+    if (
+      parameters.status === VideoStatus.Missing &&
+      !parameters.uploadedVideo &&
+      (moment
+        .tz()
+        .diff(
+          new Date(
+            Math.max(
+              parameters.availableAt,
+              parameters.actualEnd ?? parameters.availableAt,
+              parameters.hbEnd ?? parameters.availableAt
+            )
+          ),
+          "hours",
+          true
+        ) > 24 ||
+        !parameters.previousResponse)
+    ) {
       return;
     }
 
@@ -418,7 +469,9 @@ export const templatePreset: Readonly<
       }
       case VideoStatus.Past:
       case VideoStatus.Missing: {
-        const vodMessage: string = premiere
+        const vodMessage: string = !parameters.actualStart
+          ? " never started this stream."
+          : premiere
           ? " premiered a new video on YouTube!"
           : " was live.";
         const durationStr: string = premiere
@@ -438,7 +491,9 @@ export const templatePreset: Readonly<
               thumbnail: {
                 url: Video.getVideoThumbnails(parameters.id).medium,
               },
-              description: parameters.deleted
+              description: !parameters.actualStart
+                ? "Live stream has never started."
+                : parameters.deleted
                 ? "No VOD is available."
                 : memberNotice + `Video available: [${durationStr}]`,
               footer: {

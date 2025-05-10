@@ -54,6 +54,7 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
             ...includeShortsFilter,
             ...getMemberVideosFilter(track),
           },
+          followUpdate: true,
           templatePreset: "discord-embed-video",
         };
       },
