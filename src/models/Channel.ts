@@ -85,6 +85,10 @@ export class Channel extends TimeStamps {
   @prop({ index: true })
   public holodexCrawledAt?: Date;
 
+  public getUrl(this: DocumentType<Channel>): string {
+    return Channel.getUrl(this);
+  }
+
   public static getUrl(
     channelOrId: DocumentType<Channel> | FlattenMaps<Channel> | string
   ): string {

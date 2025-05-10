@@ -4,9 +4,15 @@ import {
   modelOptions,
   prop,
   type ReturnModelType,
+  type DocumentType,
 } from "@typegoose/typegoose";
 import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
 import { defaultTrackFeatures } from "../data/track";
+import { transformTrack } from "../components/track-operator";
+import type {
+  Webhook as DiscordWebhook,
+  WebhookType as DiscordWebhookType,
+} from "discord.js";
 
 export interface TrackKey {
   guildId: string;
@@ -41,14 +47,21 @@ export class Track extends TimeStamps {
   @prop({ type: String, default: [] })
   chatBlocklist!: string[];
 
+  public getTrackKey(this: DocumentType<Track>): TrackKey {
+    return {
+      guildId: this.guildId,
+      channelId: this.channelId,
+      threadId: this.threadId ?? null,
+    };
+  }
+
   public static async addTrackChannel(
     this: ReturnModelType<typeof Track>,
     key: TrackKey,
-    clientId: string,
-    token: string,
+    channelWebhook: DiscordWebhook<DiscordWebhookType.Incoming>,
     trackChannelId: string
   ) {
-    return await this.findOneAndUpdate(
+    const track = await this.findOneAndUpdate(
       {
         guildId: key.guildId,
         channelId: key.channelId,
@@ -59,8 +72,8 @@ export class Track extends TimeStamps {
           guildId: key.guildId,
           channelId: key.channelId,
           threadId: key.threadId,
-          clientId,
-          token,
+          clientId: channelWebhook.id,
+          token: channelWebhook.token,
         },
         $addToSet: {
           trackChannels: trackChannelId,
@@ -71,72 +84,72 @@ export class Track extends TimeStamps {
         new: true,
       }
     );
+    await transformTrack(track);
+    return track;
   }
 
   public static async removeTrackChannel(
     this: ReturnModelType<typeof Track>,
     key: TrackKey,
+    channelWebhook: DiscordWebhook<DiscordWebhookType.Incoming>,
     trackChannelId: string
   ) {
-    return await this.findOneAndUpdate(
+    const track = await this.findOneAndUpdate(
       {
         guildId: key.guildId,
         channelId: key.channelId,
         threadId: key.threadId,
       },
       {
+        $set: {
+          guildId: key.guildId,
+          channelId: key.channelId,
+          threadId: key.threadId,
+          clientId: channelWebhook.id,
+          token: channelWebhook.token,
+        },
         $pull: {
           trackChannels: trackChannelId,
         },
       },
       {
+        upsert: true,
         new: true,
       }
     );
+    await transformTrack(track);
+    return track;
   }
 
-  public static async addFeature(
+  public static async setFeatures(
     this: ReturnModelType<typeof Track>,
     key: TrackKey,
-    feature: string
+    channelWebhook: DiscordWebhook<DiscordWebhookType.Incoming>,
+    features: string[]
   ) {
-    return await this.findOneAndUpdate(
+    const track = await this.findOneAndUpdate(
       {
         guildId: key.guildId,
         channelId: key.channelId,
         threadId: key.threadId,
       },
       {
-        $addToSet: {
-          enabledFeatures: feature,
+        $set: {
+          guildId: key.guildId,
+          channelId: key.channelId,
+          threadId: key.threadId,
+          clientId: channelWebhook.id,
+          token: channelWebhook.token,
+          enabledFeatures: features,
         },
       },
       {
+        upsert: true,
         new: true,
       }
     );
-  }
-
-  public static async removeFeature(
-    this: ReturnModelType<typeof Track>,
-    key: TrackKey,
-    feature: string
-  ) {
-    return await this.findOneAndUpdate(
-      {
-        guildId: key.guildId,
-        channelId: key.channelId,
-        threadId: key.threadId,
-      },
-      {
-        $pull: {
-          enabledFeatures: feature,
-        },
-      },
-      {
-        new: true,
-      }
-    );
+    await transformTrack(track);
+    return track;
   }
 }
 

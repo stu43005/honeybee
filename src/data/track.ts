@@ -306,6 +306,10 @@ function getMemberVideosFilter(track: Track) {
   };
 }
 
+export const allTrackFeatures = Object.freeze(
+  Object.entries(trackFeatures).map(([name]) => name)
+);
+
 export const defaultTrackFeatures = Object.freeze(
   Object.entries(trackFeatures)
     .filter(([, value]) => value.defaultFeature)

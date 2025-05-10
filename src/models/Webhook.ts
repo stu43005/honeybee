@@ -98,7 +98,7 @@ export class Webhook extends TimeStamps {
 
   // track reference
 
-  @prop({ ref: () => Track })
+  @prop({ ref: "Track" })
   public track?: Ref<Track>;
 
   @prop()
