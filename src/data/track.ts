@@ -248,10 +248,14 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
       description: `Post when tracked channels raids to other channels`,
       transform: (track) => {
         if (track.trackChannels.length === 0) return null;
+        const onlyOne = track.trackChannels.length === 1;
         return {
           colls: ["raids"],
           match: {
             sourceChannelId: getChannelIdFilter(track),
+            ...(onlyOne
+              ? {}
+              : { originChannelId: getChannelIdFilter(track, true) }),
           },
           followUpdate: true,
           templatePreset: "discord-embed-raids-outgoing",
