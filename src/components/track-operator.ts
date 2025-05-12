@@ -20,7 +20,27 @@ async function transformTracks() {
   for await (const track of TrackModel.find()) {
     await transformTrack(track);
   }
-  for await (const webhook of WebhookModel.find({ track: { $ne: null } })) {
+  for await (const webhook of WebhookModel.aggregate([
+    {
+      $match: {
+        track: { $ne: null },
+      },
+    },
+    {
+      $lookup: {
+        from: "tracks",
+        localField: "track",
+        foreignField: "_id",
+        as: "trackDoc",
+      },
+    },
+    {
+      $match: {
+        trackDoc: { $size: 0 },
+      },
+    },
+  ])) {
+    if (!webhook.track) continue;
     const track = await TrackModel.findById(webhook.track);
     if (!track) {
       await WebhookModel.deleteOne({ _id: webhook._id });
