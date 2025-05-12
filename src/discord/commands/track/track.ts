@@ -297,6 +297,7 @@ export class TrackCommand implements Command {
     });
 
     let isExiting = false;
+    let errorMsgs: string[] = [];
     while (true) {
       let track = await TrackModel.findOne(trackKey);
       const enabledFeatures = track?.enabledFeatures ?? defaultTrackFeatures;
@@ -327,12 +328,14 @@ export class TrackCommand implements Command {
         separator.setSpacing(SeparatorSpacingSize.Large)
       );
 
-      if (isExiting) {
-        const text2 = new TextDisplayBuilder().setContent(
-          `-# Operation canceled due to no action for over 10 minutes.`
-        );
+      if (errorMsgs.length > 0) {
+        const errorMsg = errorMsgs.join("\n");
+        const text2 = new TextDisplayBuilder().setContent(errorMsg);
         container.addTextDisplayComponents(text2);
-      } else {
+        errorMsgs = [];
+      }
+
+      if (!isExiting) {
         const selectMenu = new StringSelectMenuBuilder()
           .setCustomId("track-configure-features")
           .setPlaceholder("Select features to enable/disable")
@@ -380,9 +383,23 @@ export class TrackCommand implements Command {
           response.isStringSelectMenu()
         ) {
           await response.deferUpdate();
-          const enabledFeatures = allTrackFeatures.filter((feature) =>
+          const enabledFeatures = new Set(allTrackFeatures.filter((feature) =>
             response.values.includes(feature)
-          );
+          ));
+
+          if (!enabledFeatures.has("memberVideos") && !enabledFeatures.has("nonMemberVideos")) {
+            enabledFeatures.add("memberVideos");
+            enabledFeatures.add("nonMemberVideos");
+            errorMsgs.push("-# You have disabled `memberVideos` and `nonMemberVideos`. With both options disabled, **no** uploaded or live stream will be posted. They have been re-enabled for you. Only disable `memberVideos` if you specifically do not want to publish any membership-only videos on this channel, and only disable `nonMemberVideos` if you want this channel to contain only member videos (with no public videos at all).");
+          }
+
+          if (!enabledFeatures.has("includeShorts") && !enabledFeatures.has("includeNonShorts")) {
+            enabledFeatures.add("includeShorts");
+            enabledFeatures.add("includeNonShorts");
+            enabledFeatures.delete("uploads");
+            errorMsgs.push("-# You have disabled `includeShorts` and `includeNonShorts`. **Only adjust these settings if you want to exclude shorts or wish to have a channel limited to shorts.** They have been re-enabled for you, while the `uploads` feature has been disabled. If you want to fully enable/disable video uploads, please only change the `uploads` setting.");
+          }
+
           const channelWebhook = await this.getChannelWebhook(
             intr,
             track,
@@ -391,7 +408,7 @@ export class TrackCommand implements Command {
           track = await TrackModel.setFeatures(
             trackKey,
             channelWebhook,
-            enabledFeatures
+            [...enabledFeatures]
           );
         } else if (
           response.customId === "track-configure-save" &&
@@ -408,6 +425,7 @@ export class TrackCommand implements Command {
           error.code === DiscordjsErrorCodes.InteractionCollectorError
         ) {
           isExiting = true;
+          errorMsgs.push("-# Operation canceled due to no action for over 10 minutes.");
         } else {
           throw error;
         }
