@@ -172,7 +172,7 @@ export const templatePreset: Readonly<
         {
           author: {
             name: parameters.channel.name,
-            url: Channel.getUrl(parameters.channel.channelId),
+            url: Channel.getUrl(parameters.originChannelId),
             icon_url: parameters.channel.avatarUrl,
           },
           title: `Mode changed • At ${parameters.timeCode}`,
@@ -180,7 +180,7 @@ export const templatePreset: Readonly<
           thumbnail: {
             url: Video.getVideoThumbnails(parameters.originVideoId).medium,
           },
-          description: parameters.description ?? "unknow",
+          description: parameters.description ?? "unknown",
           fields: [
             {
               name: "Enabled",
@@ -385,7 +385,7 @@ export const templatePreset: Readonly<
           {
             author: {
               name: `${parameters.channel.name} posted a new video on YouTube!`,
-              url: Channel.getUrl(parameters.channel.id),
+              url: Channel.getUrl(parameters.channelId),
               icon_url: parameters.channel.avatarUrl,
             },
             title: shortTitle,
@@ -417,7 +417,7 @@ export const templatePreset: Readonly<
             {
               author: {
                 name: `${parameters.channel.name} scheduled a new stream!`,
-                url: Channel.getUrl(parameters.channel.id),
+                url: Channel.getUrl(parameters.channelId),
                 icon_url: parameters.channel.avatarUrl,
               },
               title: shortTitle,
@@ -448,7 +448,7 @@ export const templatePreset: Readonly<
             {
               author: {
                 name: `${parameters.channel.name}${liveMessage} 🔴`,
-                url: Channel.getUrl(parameters.channel.id),
+                url: Channel.getUrl(parameters.channelId),
                 icon_url: parameters.channel.avatarUrl,
               },
               title: shortTitle,
@@ -483,7 +483,7 @@ export const templatePreset: Readonly<
             {
               author: {
                 name: `${parameters.channel.name}${vodMessage}`,
-                url: Channel.getUrl(parameters.channel.id),
+                url: Channel.getUrl(parameters.channelId),
                 icon_url: parameters.channel.avatarUrl,
               },
               title: shortTitle,
