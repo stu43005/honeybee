@@ -15,21 +15,23 @@ import { setIfDefine } from "../util";
 
 @modelOptions({ schemaOptions: { collection: "channels" } })
 @index(
-  { organization: 1, isInactive: 1, hbIgnore: 1 },
+  { organization: 1, isInactive: 1, hbIgnore: 1, deleted: 1 },
   {
     partialFilterExpression: {
       isInactive: { $ne: true },
       hbIgnore: { $ne: true },
+      deleted: { $ne: true },
     },
   }
 )
 @index(
-  { extraCrawl: 1, isInactive: 1, hbIgnore: 1 },
+  { extraCrawl: 1, isInactive: 1, hbIgnore: 1, deleted: 1 },
   {
     partialFilterExpression: {
       extraCrawl: true,
       isInactive: { $ne: true },
       hbIgnore: { $ne: true },
+      deleted: { $ne: true },
     },
   }
 )
@@ -71,7 +73,7 @@ export class Channel extends TimeStamps {
   @prop()
   public videoCount?: number;
 
-  @prop()
+  @prop({ index: true })
   public deleted?: boolean;
 
   @prop()
@@ -145,11 +147,13 @@ export class Channel extends TimeStamps {
               : HOLODEX_FETCH_ORG,
           isInactive: { $ne: true },
           hbIgnore: { $ne: true },
+          deleted: { $ne: true },
         },
         {
           extraCrawl: true,
           isInactive: { $ne: true },
           hbIgnore: { $ne: true },
+          deleted: { $ne: true },
         },
       ],
     }
