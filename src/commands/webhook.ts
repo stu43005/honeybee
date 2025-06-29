@@ -566,7 +566,7 @@ export async function runWebhook() {
       );
       if (collectionSetting.changeStream) {
         collectionSettings.set(coll, collectionSetting);
-        documentLog(coll, "start listening");
+        documentLog(coll, `start listening (match length: ${changeStreamMatch.$or.length})`);
       }
     } catch (error) {
       documentLog(coll, "<!> [FATAL] Unable to create change stream.", error);
