@@ -283,12 +283,19 @@ export async function runCrawler() {
           await VideoModel.find({ status: VideoStatus.New }).select("id")
         ),
         ...mapToId(
-          await VideoModel.find({ crawledAt: null }).limit(50).select("id")
+          await VideoModel.find({ crawledAt: null }).select("id")
         ),
         ...mapToId(
           await VideoModel.findLiveVideos()
-            .sort({ crawledAt: 1 })
-            .limit(45)
+            .and([
+              {
+                actualStart: null,
+                scheduledStart: {
+                  $lt: moment.tz("UTC").add(5, "minutes").toDate(),
+                  $gt: moment.tz("UTC").subtract(5, "minutes").toDate(),
+                },
+              }
+            ])
             .select("id")
         ),
         ...mapToId(
@@ -297,8 +304,14 @@ export async function runCrawler() {
             .limit(5)
             .select("id")
         ),
+        ...mapToId(
+          await VideoModel.findLiveVideos()
+            .sort({ crawledAt: 1 })
+            .limit(100)
+            .select("id")
+        ),
       ])
-    );
+    ).slice(0, 100);
     const batch: string[][] = [];
     while (videoIds.length) batch.push(videoIds.splice(0, 50));
     await Promise.all(
@@ -314,19 +327,28 @@ export async function runCrawler() {
       const channelIds = Array.from(
         new Set<string>([
           ...mapToId(
+            await ChannelModel.find({ crawledAt: null }).select("id")
+          ),
+          ...mapToId(
             await ChannelModel.findSubscribed()
               .sort({ crawledAt: 1 })
               .limit(25)
               .select("id")
           ),
           ...mapToId(
-            await ChannelModel.find()
+            await ChannelModel.find({ deleted: true })
               .sort({ crawledAt: 1 })
-              .limit(25)
+              .limit(1)
+              .select("id")
+          ),
+          ...mapToId(
+            await ChannelModel.find({ deleted: { $ne: true } })
+              .sort({ crawledAt: 1 })
+              .limit(50)
               .select("id")
           ),
         ])
-      );
+      ).slice(0, 50);
       const batch: string[][] = [];
       while (channelIds.length) batch.push(channelIds.splice(0, 50));
       await Promise.all(
