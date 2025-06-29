@@ -124,8 +124,9 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
       description: `Post when tracked channels sends a message on thare owned channel`,
       transform: (track) => {
         if (track.trackChannels.length === 0) return null;
-        const chatsOtherChannels =
-          track.enabledFeatures.includes("chatsOtherChannels");
+        const trackChannels = Array.from(
+          new Set([...track.trackChannels, ...track.chatFollowlist])
+        );
         return {
           colls: [
             "chats",
@@ -137,10 +138,8 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
             "membershipgifts",
           ],
           match: {
-            authorChannelId: getChannelIdFilter(track),
-            ...(chatsOtherChannels
-              ? {}
-              : { originChannelId: getChannelIdFilter(track) }),
+            authorChannelId: { $in: trackChannels },
+            originChannelId: getChannelIdFilter(track),
             isReplay: { $ne: true },
           },
           templatePreset: "discord-embed-chats",
@@ -151,8 +150,6 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
       description: `Post when tracked channels sends a message on other channels`,
       transform: (track) => {
         if (track.trackChannels.length === 0) return null;
-        const chats = track.enabledFeatures.includes("chats");
-        if (chats) return null;
         return {
           colls: [
             "chats",
@@ -179,6 +176,7 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
         const chats = track.enabledFeatures.includes("chats");
         const chatBlocklist = [
           ...(chats ? track.trackChannels : []),
+          ...(chats ? track.chatFollowlist : []),
           ...track.chatBlocklist,
         ];
         return {

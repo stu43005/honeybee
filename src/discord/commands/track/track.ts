@@ -93,6 +93,30 @@ export class TrackCommand implements Command {
                 .setAutocomplete(true)
             )
         )
+        .addSubcommand((subBuilder) =>
+          subBuilder
+            .setName("follow-sender")
+            .setDescription("Follow the sender in the tracked channel.")
+            .addStringOption((option) =>
+              option
+                .setName("channel-id")
+                .setDescription("The Youtube channelId of the sender")
+                .setRequired(true)
+                .setAutocomplete(true)
+            )
+        )
+        .addSubcommand((subBuilder) =>
+          subBuilder
+            .setName("unfollow-sender")
+            .setDescription("Unfollow the sender in the tracked channel.")
+            .addStringOption((option) =>
+              option
+                .setName("channel-id")
+                .setDescription("The Youtube channelId of the sender")
+                .setRequired(true)
+                .setAutocomplete(true)
+            )
+        )
     )
     .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageWebhooks)
     .setContexts(InteractionContextType.Guild)
@@ -117,6 +141,12 @@ export class TrackCommand implements Command {
           break;
         case "unblock-moderator":
           await this.unblockModerator(intr, trackKey, baseChannel);
+          break;
+        case "follow-sender":
+          await this.followSender(intr, trackKey, baseChannel);
+          break;
+        case "unfollow-sender":
+          await this.unfollowSender(intr, trackKey, baseChannel);
           break;
       }
     } else {
@@ -494,6 +524,15 @@ export class TrackCommand implements Command {
       return;
     }
 
+    let track = await TrackModel.findOne(trackKey);
+    if (!track) {
+      await intr.reply({
+        content: "No tracking found for this channel.",
+        ephemeral: true,
+      });
+      return;
+    }
+
     const channel =
       (await ChannelModel.findByChannelId(channelId)) ??
       (await ChannelModel.create({
@@ -501,18 +540,7 @@ export class TrackCommand implements Command {
         name: "Unknown channel",
       }));
 
-    let track = await TrackModel.findOne(trackKey);
-    const channelWebhook = await this.getChannelWebhook(
-      intr,
-      track,
-      baseChannel
-    );
-
-    if (
-      track &&
-      track.clientId === channelWebhook.id &&
-      track.chatBlocklist.includes(channelId)
-    ) {
+    if (track.chatBlocklist.includes(channelId)) {
       await intr.reply({
         content: `Already blocked ${channel.getHyperlink()} (${channelId}).`,
         ephemeral: true,
@@ -520,6 +548,11 @@ export class TrackCommand implements Command {
       return;
     }
 
+    const channelWebhook = await this.getChannelWebhook(
+      intr,
+      track,
+      baseChannel
+    );
     track = await TrackModel.addChatBlock(trackKey, channelWebhook, channelId);
 
     await intr.reply({
@@ -536,19 +569,19 @@ export class TrackCommand implements Command {
     trackKey: TrackKey,
     baseChannel: CategoryChildChannel
   ) {
-    let track = await TrackModel.findOne(trackKey);
-    if (!track) {
+    const channelId = intr.options.getString("channel-id", true);
+    if (!validateChannelId(channelId)) {
       await intr.reply({
-        content: "No tracking found for this channel.",
+        content: "Invalid channelId format.",
         ephemeral: true,
       });
       return;
     }
 
-    const channelId = intr.options.getString("channel-id", true);
-    if (!validateChannelId(channelId)) {
+    let track = await TrackModel.findOne(trackKey);
+    if (!track) {
       await intr.reply({
-        content: "Invalid channelId format.",
+        content: "No tracking found for this channel.",
         ephemeral: true,
       });
       return;
@@ -589,6 +622,118 @@ export class TrackCommand implements Command {
     });
   }
 
+  private async followSender(
+    intr: ChatInputCommandInteraction,
+    trackKey: TrackKey,
+    baseChannel: CategoryChildChannel
+  ) {
+    const channelId = intr.options.getString("channel-id", true);
+    if (!validateChannelId(channelId)) {
+      await intr.reply({
+        content: "Invalid channelId format.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    let track = await TrackModel.findOne(trackKey);
+    if (!track) {
+      await intr.reply({
+        content: "No tracking found for this channel.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const channel =
+      (await ChannelModel.findByChannelId(channelId)) ??
+      (await ChannelModel.create({
+        id: channelId,
+        name: "Unknown channel",
+      }));
+
+    if (track.chatFollowlist.includes(channelId)) {
+      await intr.reply({
+        content: `Already following ${channel.getHyperlink()} (${channelId}).`,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const channelWebhook = await this.getChannelWebhook(
+      intr,
+      track,
+      baseChannel
+    );
+    track = await TrackModel.addChatFollow(trackKey, channelWebhook, channelId);
+
+    await intr.reply({
+      embeds: [
+        {
+          description: `Following ${channel.getHyperlink()} (${channelId}) in chat.`,
+        },
+      ],
+    });
+  }
+
+  private async unfollowSender(
+    intr: ChatInputCommandInteraction,
+    trackKey: TrackKey,
+    baseChannel: CategoryChildChannel
+  ) {
+    const channelId = intr.options.getString("channel-id", true);
+    if (!validateChannelId(channelId)) {
+      await intr.reply({
+        content: "Invalid channelId format.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    let track = await TrackModel.findOne(trackKey);
+    if (!track) {
+      await intr.reply({
+        content: "No tracking found for this channel.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const channel =
+      (await ChannelModel.findByChannelId(channelId)) ??
+      new ChannelModel({
+        id: channelId,
+        name: "Unknown channel",
+      });
+
+    if (!track.chatFollowlist.includes(channelId)) {
+      await intr.reply({
+        content: `${channel.getHyperlink()} (${channelId}) is not currently followed in this channel.`,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const channelWebhook = await this.getChannelWebhook(
+      intr,
+      track,
+      baseChannel
+    );
+    track = await TrackModel.removeChatFollow(
+      trackKey,
+      channelWebhook,
+      channelId
+    );
+
+    await intr.reply({
+      embeds: [
+        {
+          description: `Unfollowed ${channel.getHyperlink()} (${channelId}) in chat.`,
+        },
+      ],
+    });
+  }
+
   public async autocomplete(intr: AutocompleteInteraction): Promise<void> {
     const subcommand = intr.options.getSubcommand(true);
     const focused = intr.options.getFocused(true);
@@ -597,7 +742,8 @@ export class TrackCommand implements Command {
       case "channel-id":
         switch (subcommand) {
           case "remove":
-          case "unblock-moderator": {
+          case "unblock-moderator":
+          case "unfollow-sender": {
             const { trackKey } = await getTrackKey(intr);
             const track = trackKey && (await TrackModel.findOne(trackKey));
             if (!track) {
@@ -610,7 +756,9 @@ export class TrackCommand implements Command {
                   $in:
                     subcommand === "remove"
                       ? track.trackChannels
-                      : track.chatBlocklist,
+                      : subcommand === "unblock-moderator"
+                      ? track.chatBlocklist
+                      : track.chatFollowlist,
                 },
               },
             ]);

@@ -47,6 +47,9 @@ export class Track extends TimeStamps {
   @prop({ type: String, default: [] })
   chatBlocklist!: string[];
 
+  @prop({ type: String, default: [] })
+  chatFollowlist!: string[];
+
   public getTrackKey(this: DocumentType<Track>): TrackKey {
     return {
       guildId: this.guildId,
@@ -207,6 +210,72 @@ export class Track extends TimeStamps {
         },
         $pull: {
           chatBlocklist: userId,
+        },
+      },
+      {
+        upsert: true,
+        new: true,
+      }
+    );
+    await transformTrack(track);
+    return track;
+  }
+
+  public static async addChatFollow(
+    this: ReturnModelType<typeof Track>,
+    key: TrackKey,
+    channelWebhook: DiscordWebhook<DiscordWebhookType.Incoming>,
+    userId: string
+  ) {
+    const track = await this.findOneAndUpdate(
+      {
+        guildId: key.guildId,
+        channelId: key.channelId,
+        threadId: key.threadId,
+      },
+      {
+        $set: {
+          guildId: key.guildId,
+          channelId: key.channelId,
+          threadId: key.threadId,
+          clientId: channelWebhook.id,
+          token: channelWebhook.token,
+        },
+        $addToSet: {
+          chatFollowlist: userId,
+        },
+      },
+      {
+        upsert: true,
+        new: true,
+      }
+    );
+    await transformTrack(track);
+    return track;
+  }
+
+  public static async removeChatFollow(
+    this: ReturnModelType<typeof Track>,
+    key: TrackKey,
+    channelWebhook: DiscordWebhook<DiscordWebhookType.Incoming>,
+    userId: string
+  ) {
+    const track = await this.findOneAndUpdate(
+      {
+        guildId: key.guildId,
+        channelId: key.channelId,
+        threadId: key.threadId,
+      },
+      {
+        $set: {
+          guildId: key.guildId,
+          channelId: key.channelId,
+          threadId: key.threadId,
+          clientId: channelWebhook.id,
+          token: channelWebhook.token,
+        },
+        $pull: {
+          chatFollowlist: userId,
         },
       },
       {
