@@ -151,6 +151,72 @@ export class Track extends TimeStamps {
     await transformTrack(track);
     return track;
   }
+
+  public static async addChatBlock(
+    this: ReturnModelType<typeof Track>,
+    key: TrackKey,
+    channelWebhook: DiscordWebhook<DiscordWebhookType.Incoming>,
+    userId: string
+  ) {
+    const track = await this.findOneAndUpdate(
+      {
+        guildId: key.guildId,
+        channelId: key.channelId,
+        threadId: key.threadId,
+      },
+      {
+        $set: {
+          guildId: key.guildId,
+          channelId: key.channelId,
+          threadId: key.threadId,
+          clientId: channelWebhook.id,
+          token: channelWebhook.token,
+        },
+        $addToSet: {
+          chatBlocklist: userId,
+        },
+      },
+      {
+        upsert: true,
+        new: true,
+      }
+    );
+    await transformTrack(track);
+    return track;
+  }
+
+  public static async removeChatBlock(
+    this: ReturnModelType<typeof Track>,
+    key: TrackKey,
+    channelWebhook: DiscordWebhook<DiscordWebhookType.Incoming>,
+    userId: string
+  ) {
+    const track = await this.findOneAndUpdate(
+      {
+        guildId: key.guildId,
+        channelId: key.channelId,
+        threadId: key.threadId,
+      },
+      {
+        $set: {
+          guildId: key.guildId,
+          channelId: key.channelId,
+          threadId: key.threadId,
+          clientId: channelWebhook.id,
+          token: channelWebhook.token,
+        },
+        $pull: {
+          chatBlocklist: userId,
+        },
+      },
+      {
+        upsert: true,
+        new: true,
+      }
+    );
+    await transformTrack(track);
+    return track;
+  }
 }
 
 export default getModelForClass(Track);

@@ -65,6 +65,35 @@ export class TrackCommand implements Command {
         .setName("configure")
         .setDescription("Configure tracking settings.")
     )
+    .addSubcommandGroup((builder) =>
+      builder
+        .setName("chat")
+        .setDescription("Manage chat tracking settings.")
+        .addSubcommand((subBuilder) =>
+          subBuilder
+            .setName("block-moderator")
+            .setDescription("Block a moderator.")
+            .addStringOption((option) =>
+              option
+                .setName("channel-id")
+                .setDescription("The Youtube channelId of the moderator")
+                .setRequired(true)
+                .setAutocomplete(true)
+            )
+        )
+        .addSubcommand((subBuilder) =>
+          subBuilder
+            .setName("unblock-moderator")
+            .setDescription("Unblock a previously blocked moderator.")
+            .addStringOption((option) =>
+              option
+                .setName("channel-id")
+                .setDescription("The Youtube channelId of the moderator")
+                .setRequired(true)
+                .setAutocomplete(true)
+            )
+        )
+    )
     .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageWebhooks)
     .setContexts(InteractionContextType.Guild)
     .toJSON();
@@ -79,26 +108,32 @@ export class TrackCommand implements Command {
       return;
     }
 
+    const subcommandGroup = intr.options.getSubcommandGroup();
     const subcommand = intr.options.getSubcommand(true);
-    switch (subcommand) {
-      case "add":
-        await this.addTrackChannel(intr, trackKey, baseChannel);
-        break;
-      case "remove":
-        await this.removeTrackChannel(intr, trackKey, baseChannel);
-        break;
-      case "list":
-        await this.listTrackChannels(intr, trackKey, baseChannel);
-        break;
-      case "configure":
-        await this.configure(intr, trackKey, baseChannel);
-        break;
-      default:
-        await intr.reply({
-          content: "Unknown subcommand.",
-          ephemeral: true,
-        });
-        break;
+    if (subcommandGroup === "chat") {
+      switch (subcommand) {
+        case "block-moderator":
+          await this.blockModerator(intr, trackKey, baseChannel);
+          break;
+        case "unblock-moderator":
+          await this.unblockModerator(intr, trackKey, baseChannel);
+          break;
+      }
+    } else {
+      switch (subcommand) {
+        case "add":
+          await this.addTrackChannel(intr, trackKey, baseChannel);
+          break;
+        case "remove":
+          await this.removeTrackChannel(intr, trackKey, baseChannel);
+          break;
+        case "list":
+          await this.listTrackChannels(intr, trackKey, baseChannel);
+          break;
+        case "configure":
+          await this.configure(intr, trackKey, baseChannel);
+          break;
+      }
     }
   }
 
@@ -383,21 +418,33 @@ export class TrackCommand implements Command {
           response.isStringSelectMenu()
         ) {
           await response.deferUpdate();
-          const enabledFeatures = new Set(allTrackFeatures.filter((feature) =>
-            response.values.includes(feature)
-          ));
+          const enabledFeatures = new Set(
+            allTrackFeatures.filter((feature) =>
+              response.values.includes(feature)
+            )
+          );
 
-          if (!enabledFeatures.has("memberVideos") && !enabledFeatures.has("nonMemberVideos")) {
+          if (
+            !enabledFeatures.has("memberVideos") &&
+            !enabledFeatures.has("nonMemberVideos")
+          ) {
             enabledFeatures.add("memberVideos");
             enabledFeatures.add("nonMemberVideos");
-            errorMsgs.push("-# You have disabled `memberVideos` and `nonMemberVideos`. With both options disabled, **no** uploaded or live stream will be posted. They have been re-enabled for you. Only disable `memberVideos` if you specifically do not want to publish any membership-only videos on this channel, and only disable `nonMemberVideos` if you want this channel to contain only member videos (with no public videos at all).");
+            errorMsgs.push(
+              "-# You have disabled `memberVideos` and `nonMemberVideos`. With both options disabled, **no** uploaded or live stream will be posted. They have been re-enabled for you. Only disable `memberVideos` if you specifically do not want to publish any membership-only videos on this channel, and only disable `nonMemberVideos` if you want this channel to contain only member videos (with no public videos at all)."
+            );
           }
 
-          if (!enabledFeatures.has("includeShorts") && !enabledFeatures.has("includeNonShorts")) {
+          if (
+            !enabledFeatures.has("includeShorts") &&
+            !enabledFeatures.has("includeNonShorts")
+          ) {
             enabledFeatures.add("includeShorts");
             enabledFeatures.add("includeNonShorts");
             enabledFeatures.delete("uploads");
-            errorMsgs.push("-# You have disabled `includeShorts` and `includeNonShorts`. **Only adjust these settings if you want to exclude shorts or wish to have a channel limited to shorts.** They have been re-enabled for you, while the `uploads` feature has been disabled. If you want to fully enable/disable video uploads, please only change the `uploads` setting.");
+            errorMsgs.push(
+              "-# You have disabled `includeShorts` and `includeNonShorts`. **Only adjust these settings if you want to exclude shorts or wish to have a channel limited to shorts.** They have been re-enabled for you, while the `uploads` feature has been disabled. If you want to fully enable/disable video uploads, please only change the `uploads` setting."
+            );
           }
 
           const channelWebhook = await this.getChannelWebhook(
@@ -405,11 +452,9 @@ export class TrackCommand implements Command {
             track,
             baseChannel
           );
-          track = await TrackModel.setFeatures(
-            trackKey,
-            channelWebhook,
-            [...enabledFeatures]
-          );
+          track = await TrackModel.setFeatures(trackKey, channelWebhook, [
+            ...enabledFeatures,
+          ]);
         } else if (
           response.customId === "track-configure-save" &&
           response.isButton()
@@ -425,7 +470,9 @@ export class TrackCommand implements Command {
           error.code === DiscordjsErrorCodes.InteractionCollectorError
         ) {
           isExiting = true;
-          errorMsgs.push("-# Operation canceled due to no action for over 10 minutes.");
+          errorMsgs.push(
+            "-# Operation canceled due to no action for over 10 minutes."
+          );
         } else {
           throw error;
         }
@@ -433,41 +480,159 @@ export class TrackCommand implements Command {
     }
   }
 
+  public async blockModerator(
+    intr: ChatInputCommandInteraction,
+    trackKey: TrackKey,
+    baseChannel: CategoryChildChannel
+  ) {
+    const channelId = intr.options.getString("channel-id", true);
+    if (!validateChannelId(channelId)) {
+      await intr.reply({
+        content: "Invalid channelId format.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const channel =
+      (await ChannelModel.findByChannelId(channelId)) ??
+      (await ChannelModel.create({
+        id: channelId,
+        name: "Unknown channel",
+      }));
+
+    let track = await TrackModel.findOne(trackKey);
+    const channelWebhook = await this.getChannelWebhook(
+      intr,
+      track,
+      baseChannel
+    );
+
+    if (
+      track &&
+      track.clientId === channelWebhook.id &&
+      track.chatBlocklist.includes(channelId)
+    ) {
+      await intr.reply({
+        content: `Already blocked ${channel.getHyperlink()} (${channelId}).`,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    track = await TrackModel.addChatBlock(trackKey, channelWebhook, channelId);
+
+    await intr.reply({
+      embeds: [
+        {
+          description: `Blocked ${channel.getHyperlink()} (${channelId}) from chat.`,
+        },
+      ],
+    });
+  }
+
+  private async unblockModerator(
+    intr: ChatInputCommandInteraction,
+    trackKey: TrackKey,
+    baseChannel: CategoryChildChannel
+  ) {
+    let track = await TrackModel.findOne(trackKey);
+    if (!track) {
+      await intr.reply({
+        content: "No tracking found for this channel.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const channelId = intr.options.getString("channel-id", true);
+    if (!validateChannelId(channelId)) {
+      await intr.reply({
+        content: "Invalid channelId format.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const channel =
+      (await ChannelModel.findByChannelId(channelId)) ??
+      new ChannelModel({
+        id: channelId,
+        name: "Unknown channel",
+      });
+
+    if (!track.chatBlocklist.includes(channelId)) {
+      await intr.reply({
+        content: `${channel.getHyperlink()} (${channelId}) is not currently blocked in this channel.`,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const channelWebhook = await this.getChannelWebhook(
+      intr,
+      track,
+      baseChannel
+    );
+    track = await TrackModel.removeChatBlock(
+      trackKey,
+      channelWebhook,
+      channelId
+    );
+
+    await intr.reply({
+      embeds: [
+        {
+          description: `Unblocked ${channel.getHyperlink()} (${channelId}) from chat.`,
+        },
+      ],
+    });
+  }
+
   public async autocomplete(intr: AutocompleteInteraction): Promise<void> {
     const subcommand = intr.options.getSubcommand(true);
-    const focusedValue = intr.options.getFocused();
+    const focused = intr.options.getFocused(true);
 
-    switch (subcommand) {
-      case "add": {
-        const channels = await ChannelModel.findByName(focusedValue);
-        await intr.respond(
-          channels.map((channel) => ({
-            name: `${channel.name} (${channel.id})`,
-            value: channel.id,
-          }))
-        );
-        break;
-      }
-      case "remove": {
-        const { trackKey } = await getTrackKey(intr);
-        const track = trackKey && (await TrackModel.findOne(trackKey));
-        if (!track) {
-          await intr.respond([]);
-          return;
+    switch (focused.name) {
+      case "channel-id":
+        switch (subcommand) {
+          case "remove":
+          case "unblock-moderator": {
+            const { trackKey } = await getTrackKey(intr);
+            const track = trackKey && (await TrackModel.findOne(trackKey));
+            if (!track) {
+              await intr.respond([]);
+              return;
+            }
+            const channels = await ChannelModel.findByName(focused.value).and([
+              {
+                id: {
+                  $in:
+                    subcommand === "remove"
+                      ? track.trackChannels
+                      : track.chatBlocklist,
+                },
+              },
+            ]);
+            await intr.respond(
+              channels.map((channel) => ({
+                name: `${channel.name} (${channel.id})`,
+                value: channel.id,
+              }))
+            );
+            break;
+          }
+          default: {
+            const channels = await ChannelModel.findByName(focused.value);
+            await intr.respond(
+              channels.map((channel) => ({
+                name: `${channel.name} (${channel.id})`,
+                value: channel.id,
+              }))
+            );
+          }
         }
-        const channels = await ChannelModel.findByName(focusedValue).and([
-          {
-            id: { $in: track.trackChannels },
-          },
-        ]);
-        await intr.respond(
-          channels.map((channel) => ({
-            name: `${channel.name} (${channel.id})`,
-            value: channel.id,
-          }))
-        );
         break;
-      }
       default:
         await intr.respond([]);
         break;
