@@ -17,9 +17,8 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
       description: `Post when channels are live`,
       transform: (track) => {
         if (track.trackChannels.length === 0) return null;
-        const uploads =
-          track.enabledFeatures.includes("uploads") &&
-          Object.keys(getIncludeShortsFilter(track)).length === 0;
+        const onlyActualStart =
+          track.enabledFeatures.includes("onlyActualStart");
         const premieres = track.enabledFeatures.includes("premieres");
         return {
           colls: ["videos"],
@@ -28,7 +27,8 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
             status: {
               $in: ["live", "past", "missing"],
             },
-            ...(uploads ? {} : { uploadedVideo: { $ne: true } }),
+            uploadedVideo: { $ne: true },
+            ...(onlyActualStart ? { actualStart: { $exists: false } } : {}),
             ...(premieres ? {} : { premiere: { $ne: true } }),
             ...getMemberVideosFilter(track),
           },
@@ -38,20 +38,19 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
       },
       defaultFeature: true,
     },
+    onlyActualStart: {
+      description: `[Option] Only post when the actual start, instead of scheduled time`,
+    },
     uploads: {
       description: `Post when channels upload a new video`,
       transform: (track) => {
         if (track.trackChannels.length === 0) return null;
-        const includeShortsFilter = getIncludeShortsFilter(track);
-        const streams = track.enabledFeatures.includes("streams");
-        if (streams && Object.keys(includeShortsFilter).length === 0)
-          return null;
         return {
           colls: ["videos"],
           match: {
             channelId: getChannelIdFilter(track),
             uploadedVideo: true,
-            ...includeShortsFilter,
+            ...getIncludeShortsFilter(track),
             ...getMemberVideosFilter(track),
           },
           followUpdate: true,
@@ -66,6 +65,8 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
         if (track.trackChannels.length === 0) return null;
         const streams = track.enabledFeatures.includes("streams");
         if (streams) return null;
+        const onlyActualStart =
+          track.enabledFeatures.includes("onlyActualStart");
         return {
           colls: ["videos"],
           match: {
@@ -74,6 +75,7 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
               $in: ["live", "past", "missing"],
             },
             uploadedVideo: { $ne: true },
+            ...(onlyActualStart ? { actualStart: { $exists: false } } : {}),
             premiere: true,
             ...getMemberVideosFilter(track),
           },
@@ -105,19 +107,19 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
       defaultFeature: true,
     },
     memberVideos: {
-      description: `Include membership-only videos`,
+      description: `[Option] Include membership-only videos`,
       defaultFeature: true,
     },
     nonMemberVideos: {
-      description: `Include non-membership videos`,
+      description: `[Option] Include non-membership videos`,
       defaultFeature: true,
     },
     includeShorts: {
-      description: `Include shorts videos`,
+      description: `[Option] Include shorts videos`,
       defaultFeature: true,
     },
     includeNonShorts: {
-      description: `Include normal videos`,
+      description: `[Option] Include normal videos`,
       defaultFeature: true,
     },
     chats: {
