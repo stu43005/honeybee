@@ -1,99 +1,24 @@
-import { mongoose, type ReturnModelType } from "@typegoose/typegoose";
-import type { AnyParamConstructor } from "@typegoose/typegoose/lib/types";
 import moment from "moment-timezone";
-import type { AccumulatorOperator, FilterQuery, PipelineStage } from "mongoose";
 import PQueue from "p-queue";
-import { Gauge, Registry, type Metric, type MetricValue } from "prom-client";
+import { Gauge, Registry } from "prom-client";
 import {
   METRICS_MAX_ENDED_HOURS,
   METRICS_MAX_UPCOMING_HOURS,
 } from "../constants";
-import { MessageType } from "../interfaces";
-import BanAction from "../models/BanAction";
-import Channel from "../models/Channel";
-import Chat from "../models/Chat";
-import Membership from "../models/Membership";
-import MembershipGift from "../models/MembershipGift";
-import MembershipGiftPurchase from "../models/MembershipGiftPurchase";
-import Milestone from "../models/Milestone";
-import RemoveChatAction from "../models/RemoveChatAction";
-import SuperChat from "../models/SuperChat";
-import SuperSticker from "../models/SuperSticker";
-import Video from "../models/Video";
+import { VideoStatsType } from "../interfaces";
+import ChannelModel from "../models/Channel";
+import VideoModel, { type Video } from "../models/Video";
+import VideoStatsModel, { SCRAPE_DURATION_VIDEOID } from "../models/VideoStats";
 import { Application } from "../modules/application";
 import { MongodbModule } from "../modules/db";
 import { QueueModule } from "../modules/queue";
-import { promiseSettledCallback, throttleWithReturnValue } from "../util";
-
-const { Long } = mongoose.mongo;
-
-type LabelValues<L extends string, V = string> = Record<L, V>;
-type MetricLabels<M extends Metric> = M extends Metric<infer L> ? L : never;
-type MetricPayload<L extends string> = {
-  _id: LabelValues<L>;
-  value: any;
-  lastId: string;
-};
-
-type MessageTypeModel = {
-  messageType: MessageType;
-  model: ReturnModelType<AnyParamConstructor<any>>;
-  calcUsersTotal?: boolean;
-  calcAmount?: boolean;
-  calcJpyAmount?: boolean;
-};
-const messageTypes: MessageTypeModel[] = [
-  { messageType: MessageType.Chat, model: Chat, calcUsersTotal: true },
-  {
-    messageType: MessageType.Membership,
-    model: Membership,
-  },
-  {
-    messageType: MessageType.MembershipGift,
-    model: MembershipGift,
-  },
-  {
-    messageType: MessageType.MembershipGiftPurchase,
-    model: MembershipGiftPurchase,
-    calcUsersTotal: true,
-    calcAmount: true,
-  },
-  {
-    messageType: MessageType.Milestone,
-    model: Milestone,
-  },
-  {
-    messageType: MessageType.SuperChat,
-    model: SuperChat,
-    calcUsersTotal: true,
-    calcAmount: true,
-    calcJpyAmount: true,
-  },
-  {
-    messageType: MessageType.SuperSticker,
-    model: SuperSticker,
-    calcUsersTotal: true,
-    calcAmount: true,
-    calcJpyAmount: true,
-  },
-];
-const actions: Record<string, ReturnModelType<AnyParamConstructor<any>>> = {
-  banAction: BanAction,
-  removeChatAction: RemoveChatAction,
-  // bannerAction: BannerAction,
-  // modeChange: ModeChange,
-  // placeholder: Placeholder,
-  // poll: Poll,
-  // raid: Raid,
-  // errorLog: ErrorLog,
-};
+import { throttleWithReturnValue } from "../util";
 
 export async function metrics() {
   const app = new Application();
   app.use(new MongodbModule());
   const { queue } = app.use(new QueueModule("honeybee", { isWorker: false }));
   const { server: fastify } = app.http;
-  const lastIdMap = new Map<string, string>();
   const register = new Registry();
 
   const collectData = throttleWithReturnValue(_collectWithLock, 59_000);
@@ -306,104 +231,56 @@ export async function metrics() {
     }),
   };
 
-  type HoneybeeMetricLabels<M extends keyof typeof metrics> = MetricLabels<
-    (typeof metrics)[M]
-  >;
+  function setVideoMetrics(video: Video) {
+    metrics.honeybee_video_info.set(
+      {
+        videoId: video.id,
+        channelId: video.channelId,
+        title: video.title,
+        topic: video.topic,
+      },
+      1
+    );
 
-  async function updateMetrics<
-    M extends keyof typeof metrics,
-    T extends AnyParamConstructor<any>
-  >(
-    key: M,
-    model: ReturnModelType<T>,
-    {
-      match,
-      value,
-      labels: groupId,
-      groupBy,
-      fetchAll = false,
-      reset = false,
-      method = "inc",
-    }: {
-      match?: FilterQuery<any>;
-      groupBy?: PipelineStage.Group["$group"];
-      labels: Partial<LabelValues<HoneybeeMetricLabels<M>, any>>;
-      value: AccumulatorOperator;
-      fetchAll?: boolean;
-      reset?: boolean;
-      method?: "inc" | "set";
-    }
-  ): Promise<MetricPayload<HoneybeeMetricLabels<M>>[]> {
-    const gauge: Gauge<string> = metrics[key];
+    const videoIdLabel = { videoId: video.id };
+    if (video.viewers !== undefined)
+      metrics.honeybee_video_viewers.set(videoIdLabel, video.viewers);
+    if (video.maxViewers !== undefined && video.maxViewers > 0)
+      metrics.honeybee_video_max_viewers.set(videoIdLabel, video.maxViewers);
+    if (video.likes !== undefined && video.likes > 0)
+      metrics.honeybee_video_likes.set(videoIdLabel, video.likes);
+    if (video.availableAt !== undefined)
+      metrics.honeybee_video_start_time_seconds.set(
+        videoIdLabel,
+        video.availableAt.getTime() / 1000
+      );
+    if (video.actualStart !== undefined)
+      metrics.honeybee_video_actual_start_time_seconds.set(
+        videoIdLabel,
+        video.actualStart.getTime() / 1000
+      );
+    if (
+      video.hbEnd !== undefined &&
+      ["Failed", "Finished"].includes(video.hbStatus)
+    )
+      metrics.honeybee_video_end_time_seconds.set(
+        videoIdLabel,
+        video.hbEnd.getTime() / 1000
+      );
+    if (video.actualEnd !== undefined)
+      metrics.honeybee_video_actual_end_time_seconds.set(
+        videoIdLabel,
+        video.actualEnd.getTime() / 1000
+      );
 
-    const idKey = `${key}_@${model.modelName}`;
-    const lastId = lastIdMap.get(idKey);
-
-    function* buildPipeline(): Generator<PipelineStage, any, undefined> {
-      yield {
-        $match: {
-          ...(lastId && !fetchAll ? { _id: { $gt: lastId } } : null),
-          ...match,
-        },
-      };
-      yield { $sort: { _id: 1 } };
-      if (groupBy) {
-        yield {
-          $group: {
-            ...groupBy,
-            lastId: { $last: "$_id" },
-          },
-        };
-        yield { $sort: { lastId: 1 } };
-        yield {
-          $group: {
-            _id: groupId,
-            value: value,
-            lastId: { $last: "$lastId" },
-          },
-        };
-      } else {
-        yield {
-          $group: {
-            _id: groupId,
-            value: value,
-            lastId: { $last: "$_id" },
-          },
-        };
-      }
-      yield { $sort: { lastId: 1 } };
-    }
-
-    const records = await model.aggregate<
-      MetricPayload<HoneybeeMetricLabels<M>>
-    >(Array.from(buildPipeline()));
-
-    if (reset) {
-      gauge.reset();
-    }
-
-    if (records.length > 0) {
-      for (const record of records) {
-        const { _id: labels, value } = record;
-        if (typeof value === "number") {
-          gauge[method](labels, value);
-        } else if (typeof value === "bigint") {
-          if (value > Number.MAX_SAFE_INTEGER) {
-            throw new TypeError("can't convert BigInt to number");
-          }
-          gauge[method](labels, Number(value));
-        } else if (value instanceof Long) {
-          if (value.greaterThan(Number.MAX_SAFE_INTEGER)) {
-            throw new TypeError("can't convert Long to number");
-          }
-          gauge[method](labels, value.toInt());
-        } else if (value instanceof Date) {
-          gauge.set(labels, value.getTime() / 1000);
-        }
-      }
-      lastIdMap.set(idKey, records[records.length - 1].lastId);
-    }
-    return records;
+    // duration
+    if (video.duration !== undefined && video.duration > 0)
+      metrics.honeybee_video_duration_seconds.set(videoIdLabel, video.duration);
+    else if (video.actualStart !== undefined)
+      metrics.honeybee_video_duration_seconds.set(
+        videoIdLabel,
+        moment.tz("UTC").diff(video.actualStart, "second")
+      );
   }
 
   async function wrapScrapeDuration<T>(
@@ -434,66 +311,12 @@ export async function metrics() {
     await pqueue.add(_collect);
   }
 
-  function getMessagesTotal() {
-    let total = 0;
-    const values = Object.values<MetricValue<string>>(
-      (metrics.honeybee_messages_total as any).hashMap
-    );
-    for (const { value } of values) {
-      total += value;
-    }
-    return total;
-  }
-
-  function removeOtherVideos(metric: Gauge<"videoId">, videoIds: Set<string>) {
-    const values = Object.values<MetricValue<"videoId">>(
-      (metric as any).hashMap
-    );
-    for (const { labels } of values) {
-      if (labels.videoId && !videoIds.has(labels.videoId.toString())) {
-        metric.remove(labels);
-      }
-    }
-  }
-
-  const lastFullCollect: Partial<Record<keyof typeof metrics, number>> = {
-    // honeybee_messages_total: Date.now(),
-    honeybee_purchase_amount_jpy_total: Date.now(),
-    honeybee_purchase_amount_total: Date.now(),
-    honeybee_actions_total: Date.now(),
-  };
-  const recentUpdateUsersVideoIds = new Set<string>();
-
   async function _collect() {
     try {
-      const messagesTotalMils = Math.max(
-        1,
-        Math.ceil(getMessagesTotal() / 1_000_000)
-      );
-
-      const resetTimeMs = 2 * 3_600_000 * messagesTotalMils;
-      const force = Object.entries(lastFullCollect).find(
-        ([, time]) => time + resetTimeMs < Date.now()
-      )?.[0] as keyof typeof metrics | undefined;
-      if (force) {
-        metrics[force].reset();
-      }
       metrics.honeybee_scrape_duration_seconds.reset();
 
       const videoIds = new Set<string>();
       const channelIds = new Set<string>();
-
-      const videos = await wrapScrapeDuration(
-        "honeybee_video_info",
-        "video",
-        async () => {
-          const videos = await Promise.all([
-            Video.findLiveVideos(METRICS_MAX_UPCOMING_HOURS),
-            Video.findRecentlyEndedVideos(METRICS_MAX_ENDED_HOURS),
-          ]);
-          return videos.flat();
-        }
-      );
 
       metrics.honeybee_video_info.reset();
       metrics.honeybee_video_viewers.reset();
@@ -505,250 +328,133 @@ export async function metrics() {
       metrics.honeybee_video_actual_end_time_seconds.reset();
       metrics.honeybee_video_duration_seconds.reset();
 
-      if (videos.length > 0) {
-        for (const video of videos) {
+      await wrapScrapeDuration("video_info", "video", async () => {
+        for await (const video of VideoModel.findLiveVideos(
+          METRICS_MAX_UPCOMING_HOURS
+        ).setOptions({ readPreference: "secondaryPreferred" })) {
           videoIds.add(video.id);
           channelIds.add(video.channelId);
-
-          metrics.honeybee_video_info.set(
-            {
-              videoId: video.id,
-              channelId: video.channelId,
-              title: video.title,
-              topic: video.topic,
-            },
-            1
-          );
-
-          const videoIdLabel = { videoId: video.id };
-          if (video.viewers !== undefined)
-            metrics.honeybee_video_viewers.set(videoIdLabel, video.viewers);
-          if (video.maxViewers !== undefined && video.maxViewers > 0)
-            metrics.honeybee_video_max_viewers.set(
-              videoIdLabel,
-              video.maxViewers
-            );
-          if (video.likes !== undefined && video.likes > 0)
-            metrics.honeybee_video_likes.set(videoIdLabel, video.likes);
-          if (video.availableAt !== undefined)
-            metrics.honeybee_video_start_time_seconds.set(
-              videoIdLabel,
-              video.availableAt.getTime() / 1000
-            );
-          if (video.actualStart !== undefined)
-            metrics.honeybee_video_actual_start_time_seconds.set(
-              videoIdLabel,
-              video.actualStart.getTime() / 1000
-            );
-          if (
-            video.hbEnd !== undefined &&
-            ["Failed", "Finished"].includes(video.hbStatus)
-          )
-            metrics.honeybee_video_end_time_seconds.set(
-              videoIdLabel,
-              video.hbEnd.getTime() / 1000
-            );
-          if (video.actualEnd !== undefined)
-            metrics.honeybee_video_actual_end_time_seconds.set(
-              videoIdLabel,
-              video.actualEnd.getTime() / 1000
-            );
-
-          // duration
-          if (video.duration !== undefined && video.duration > 0)
-            metrics.honeybee_video_duration_seconds.set(
-              videoIdLabel,
-              video.duration
-            );
-          else if (video.actualStart !== undefined)
-            metrics.honeybee_video_duration_seconds.set(
-              videoIdLabel,
-              moment.tz("UTC").diff(video.actualStart, "second")
-            );
+          setVideoMetrics(video);
         }
-      }
+        for await (const video of VideoModel.findRecentlyEndedVideos(
+          METRICS_MAX_ENDED_HOURS
+        ).setOptions({ readPreference: "secondaryPreferred" })) {
+          videoIds.add(video.id);
+          channelIds.add(video.channelId);
+          setVideoMetrics(video);
+        }
+      });
 
-      removeOtherVideos(metrics.honeybee_messages_total, videoIds);
-      removeOtherVideos(metrics.honeybee_users_total, videoIds);
-      removeOtherVideos(metrics.honeybee_purchase_amount_jpy_total, videoIds);
-      removeOtherVideos(metrics.honeybee_purchase_amount_total, videoIds);
-      removeOtherVideos(metrics.honeybee_actions_total, videoIds);
+      metrics.honeybee_messages_total.reset();
+      metrics.honeybee_users_total.reset();
+      metrics.honeybee_purchase_amount_jpy_total.reset();
+      metrics.honeybee_purchase_amount_total.reset();
+      metrics.honeybee_actions_total.reset();
 
-      let updateUsersVideoIds: string[];
-      const updateSize = Math.round(videoIds.size / 10 / messagesTotalMils);
-      updateUsersVideoIds = [...videoIds]
-        .filter((vid) => !recentUpdateUsersVideoIds.has(vid))
-        .sort(() => Math.random() - 0.5)
-        .slice(0, updateSize);
-      if (updateUsersVideoIds.length < updateSize) {
-        updateUsersVideoIds = updateUsersVideoIds.concat(
-          [...videoIds]
-            .filter((vid) => !updateUsersVideoIds.includes(vid))
-            .sort(() => Math.random() - 0.5)
-            .slice(0, updateSize - updateUsersVideoIds.length)
-        );
-        recentUpdateUsersVideoIds.clear();
-      }
-      for (const vid of updateUsersVideoIds) recentUpdateUsersVideoIds.add(vid);
+      await wrapScrapeDuration("video_stats", "video", async () => {
+        for await (const videoStats of VideoStatsModel.find(
+          {
+            videoId: { $in: Array.from(videoIds) },
+          },
+          null,
+          { readPreference: "secondaryPreferred" }
+        )) {
+          switch (videoStats.type) {
+            case VideoStatsType.MessageTotal:
+              if (!videoStats.authorType) break;
+              metrics.honeybee_messages_total.set(
+                {
+                  videoId: videoStats.videoId,
+                  type: videoStats.messageType,
+                  authorType: videoStats.authorType,
+                },
+                videoStats.value
+              );
+              break;
+            case VideoStatsType.UsersTotal:
+              if (!videoStats.authorType) break;
+              metrics.honeybee_users_total.set(
+                {
+                  videoId: videoStats.videoId,
+                  type: videoStats.messageType,
+                  authorType: videoStats.authorType,
+                },
+                videoStats.value
+              );
+              break;
+            case VideoStatsType.PurchaseAmountJpyTotal:
+              if (!videoStats.authorType || !videoStats.currency) break;
+              metrics.honeybee_purchase_amount_jpy_total.set(
+                {
+                  videoId: videoStats.videoId,
+                  type: videoStats.messageType,
+                  authorType: videoStats.authorType,
+                  currency: videoStats.currency,
+                },
+                videoStats.value
+              );
+              break;
+            case VideoStatsType.PurchaseAmountTotal:
+              if (!videoStats.authorType) break;
+              metrics.honeybee_purchase_amount_total.set(
+                {
+                  videoId: videoStats.videoId,
+                  type: videoStats.messageType,
+                  authorType: videoStats.authorType,
+                  currency: videoStats.currency,
+                },
+                videoStats.value
+              );
+              break;
+            case VideoStatsType.ActionsTotal:
+              metrics.honeybee_actions_total.set(
+                {
+                  videoId: videoStats.videoId,
+                  actionType: videoStats.messageType,
+                },
+                videoStats.value
+              );
+              break;
+          }
+        }
+      });
 
-      promiseSettledCallback(
-        await Promise.allSettled([
-          ...messageTypes.map((type) =>
-            wrapScrapeDuration(
-              "honeybee_messages_total",
-              type.messageType,
-              () =>
-                updateMetrics("honeybee_messages_total", type.model, {
-                  match: {
-                    originVideoId: {
-                      $in: [...videoIds],
-                    },
-                  },
-                  labels: {
-                    videoId: "$originVideoId",
-                    authorType: "$authorType",
-                    type: type.messageType,
-                  },
-                  value: { $sum: 1 },
-                  fetchAll: force === "honeybee_messages_total",
-                })
-            )
-          ),
-          ...messageTypes
-            .filter((type) => type.calcJpyAmount)
-            .map((type) =>
-              wrapScrapeDuration(
-                "honeybee_purchase_amount_jpy_total",
-                type.messageType,
-                () =>
-                  updateMetrics(
-                    "honeybee_purchase_amount_jpy_total",
-                    type.model,
-                    {
-                      match: {
-                        originVideoId: {
-                          $in: [...videoIds],
-                        },
-                      },
-                      labels: {
-                        videoId: "$originVideoId",
-                        authorType: "$authorType",
-                        type: type.messageType,
-                        currency: "$currency",
-                      },
-                      value: { $sum: "$jpyAmount" },
-                      fetchAll: force === "honeybee_purchase_amount_jpy_total",
-                    }
-                  )
-              )
-            ),
-          ...messageTypes
-            .filter((type) => type.calcAmount)
-            .map((type) =>
-              wrapScrapeDuration(
-                "honeybee_purchase_amount_total",
-                type.messageType,
-                () =>
-                  updateMetrics("honeybee_purchase_amount_total", type.model, {
-                    match: {
-                      originVideoId: {
-                        $in: [...videoIds],
-                      },
-                    },
-                    labels: {
-                      videoId: "$originVideoId",
-                      authorType: "$authorType",
-                      type: type.messageType,
-                      currency: "$currency",
-                    },
-                    value: { $sum: "$amount" },
-                    fetchAll: force === "honeybee_purchase_amount_total",
-                  })
-              )
-            ),
-          ...Object.entries(actions).map(([actionType, model]) =>
-            wrapScrapeDuration("honeybee_actions_total", actionType, () =>
-              updateMetrics("honeybee_actions_total", model, {
-                match: {
-                  originVideoId: {
-                    $in: [...videoIds],
-                  },
-                },
-                labels: {
-                  videoId: "$originVideoId",
-                  actionType: actionType,
-                },
-                value: { $sum: 1 },
-                fetchAll: force === "honeybee_actions_total",
-              })
-            )
-          ),
-        ]),
-        () => void 0,
-        (reason) => console.error(reason)
-      );
+      await wrapScrapeDuration("video_stats", "scrape_duration", async () => {
+        for await (const videoStats of VideoStatsModel.find(
+          {
+            videoId: SCRAPE_DURATION_VIDEOID,
+          },
+          null,
+          { readPreference: "secondaryPreferred" }
+        )) {
+          metrics.honeybee_scrape_duration_seconds.set(
+            {
+              metric_name: videoStats.type,
+              type: videoStats.messageType,
+            },
+            videoStats.value
+          );
+        }
+      });
 
-      // lazy update users total
-      void Promise.allSettled(
-        messageTypes
-          .filter((type) => type.calcUsersTotal)
-          .map((type) =>
-            wrapScrapeDuration("honeybee_users_total", type.messageType, () =>
-              updateMetrics("honeybee_users_total", type.model, {
-                match: {
-                  originVideoId: {
-                    $in: updateUsersVideoIds,
-                  },
-                },
-                groupBy: {
-                  _id: {
-                    authorChannelId: "$authorChannelId",
-                    videoId: "$originVideoId",
-                  },
-                  authorType: {
-                    $last: "$authorType",
-                  },
-                },
-                labels: {
-                  videoId: "$_id.videoId",
-                  authorType: "$authorType",
-                  type: type.messageType,
-                },
-                value: { $sum: 1 },
-                fetchAll: true,
-                method: "set",
-              })
-            )
-          )
-      ).then((results) =>
-        promiseSettledCallback(
-          results,
-          () => void 0,
-          (reason) => console.error(reason)
-        )
-      );
+      metrics.honeybee_channel_info.reset();
+      metrics.honeybee_channel_subscribers.reset();
 
-      const channels = await wrapScrapeDuration(
-        "honeybee_channel_info",
-        "channel",
-        () =>
-          Channel.find({
+      await wrapScrapeDuration("channel_info", "channel", async () => {
+        for await (const channel of ChannelModel.find(
+          {
             $or: [
-              Channel.SubscribedQuery,
+              ChannelModel.SubscribedQuery,
               {
                 id: {
                   $in: [...channelIds],
                 },
               },
             ],
-          })
-      );
-
-      metrics.honeybee_channel_info.reset();
-      metrics.honeybee_channel_subscribers.reset();
-
-      if (channels.length > 0) {
-        for (const channel of channels) {
+          },
+          null,
+          { readPreference: "secondaryPreferred" }
+        )) {
           channelIds.add(channel.id);
 
           metrics.honeybee_channel_info.set(
@@ -773,11 +479,7 @@ export async function metrics() {
               channel.subscriberCount
             );
         }
-      }
-
-      if (force) {
-        lastFullCollect[force] = Date.now();
-      }
+      });
     } catch (error) {
       console.error("[FATAL] Collect failed:", error);
       process.exit(1);

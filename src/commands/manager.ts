@@ -1,5 +1,6 @@
 import cleanup from "../components/cleanup";
 import trackOperator from "../components/track-operator";
+import videoStats from "../components/video-stats";
 import webhookPrepare from "../components/webhook-prepare";
 import { Application } from "../modules/application";
 import { MongodbModule } from "../modules/db";
@@ -15,4 +16,5 @@ export async function runManager() {
   cleanup(app);
   trackOperator(app);
   webhookPrepare(app);
+  videoStats(app);
 }

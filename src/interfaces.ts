@@ -15,6 +15,10 @@ export enum MessageType {
   SuperChat = "superChat",
   SuperSticker = "superSticker",
   Chat = "chat",
+
+  // Actions
+  BanAction = "banAction",
+  RemoveChatAction = "removeChatAction",
 }
 
 export enum MessageAuthorType {
@@ -46,6 +50,14 @@ export enum PrivacyStatus {
   Private = "private",
   Public = "public",
   Unlisted = "unlisted",
+}
+
+export enum VideoStatsType {
+  MessageTotal = "message_total",
+  PurchaseAmountJpyTotal = "purchase_amount_jpy_total",
+  PurchaseAmountTotal = "purchase_amount_total",
+  ActionsTotal = "actions_total",
+  UsersTotal = "users_total",
 }
 
 export interface HoneybeeJob {
