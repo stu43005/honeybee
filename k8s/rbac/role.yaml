@@ -31,6 +31,10 @@ rules:
   - ingresses
   verbs:
   - get
+  - create
+  - apply
+  - update
+  - patch
 - apiGroups:
   - monitoring.coreos.com
   resources:
