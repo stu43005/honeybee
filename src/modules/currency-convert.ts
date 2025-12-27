@@ -1,4 +1,5 @@
 import axios from "axios";
+import Decimal from "decimal.js";
 import moment from "moment-timezone";
 import { currencyMap } from "../data/currency";
 import CurrencyExchange from "../models/CurrencyExchange";
@@ -139,7 +140,7 @@ export async function currencyToJpyAmount(amount: number, currency: string) {
       currencymapEntry.code,
       () => getExchange(currencymapEntry.code, "JPY")
     );
-    const jpyAmount = amount * jpyExchange.value;
+    const jpyAmount = new Decimal(amount).mul(jpyExchange.value).toNumber();
     return {
       amount: jpyAmount,
       currency: "JPY",
