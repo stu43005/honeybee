@@ -48,14 +48,19 @@ async function cleanEndedStreams() {
   const chats = await Chat.aggregate<{
     _id: { videoId: string };
     lastTime: Date;
-  }>([
-    {
-      $group: {
-        _id: { videoId: "$originVideoId" },
-        lastTime: { $last: "$timestamp" },
+  }>(
+    [
+      {
+        $group: {
+          _id: { videoId: "$originVideoId" },
+          lastTime: { $last: "$timestamp" },
+        },
       },
-    },
-  ]);
+    ],
+    {
+      readPreference: "secondaryPreferred",
+    }
+  );
   const videoIds = Array.from(new Set([...chats.map((r) => r._id.videoId)]));
 
   const videos = await Video.find(
@@ -69,6 +74,9 @@ async function cleanEndedStreams() {
       hbStatus: 1,
       hbEnd: 1,
       hbCleanedAt: 1,
+    },
+    {
+      readPreference: "secondaryPreferred",
     }
   );
 

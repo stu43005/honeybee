@@ -146,6 +146,7 @@ function getVideo(videoId?: string) {
   if (!videoId) return null;
   return cache.wrap(videoId, () =>
     VideoModel.findByVideoId(videoId)
+      .setOptions({ readPreference: "secondaryPreferred" })
       .exec()
       .then((doc) => doc?.toJSON() ?? null)
   );
@@ -154,6 +155,7 @@ function getChannel(channelId?: string) {
   if (!channelId) return null;
   return cache.wrap(channelId, () =>
     ChannelModel.findByChannelId(channelId)
+      .setOptions({ readPreference: "secondaryPreferred" })
       .exec()
       .then((doc) => doc?.toJSON() ?? null)
   );
@@ -484,6 +486,7 @@ export async function runWebhook() {
       {
         resumeAfter: resumeAfter,
         fullDocument: "updateLookup",
+        readPreference: "secondaryPreferred",
       }
     );
     changeStream.on(
@@ -566,7 +569,10 @@ export async function runWebhook() {
       );
       if (collectionSetting.changeStream) {
         collectionSettings.set(coll, collectionSetting);
-        documentLog(coll, `start listening (match length: ${changeStreamMatch.$or.length})`);
+        documentLog(
+          coll,
+          `start listening (match length: ${changeStreamMatch.$or.length})`
+        );
       }
     } catch (error) {
       documentLog(coll, "<!> [FATAL] Unable to create change stream.", error);
