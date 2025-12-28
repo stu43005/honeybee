@@ -373,20 +373,33 @@ export async function runWebhook() {
   >();
 
   app.use({
-    name: "remove-webhook",
+    name: "discord-rest-client",
     async close() {
-      for (const coll of collectionSettings.keys()) {
-        await removeWebhook(coll);
+      // Wait until all requests are done
+      for (const [, handler] of discordRest.handlers) {
+        while (!handler.inactive) {
+          await setTimeout(100);
+        }
       }
     },
   });
 
-  const pqueue = new PQueue({ concurrency: 1 });
+  const processWebhookQueue = new PQueue();
   app.use({
-    name: "p-queue",
+    name: "process-webhook-queue",
     async close() {
-      pqueue.clear();
-      await pqueue.onIdle();
+      // Wait until all processing are done
+      await processWebhookQueue.onIdle();
+    },
+  });
+
+  app.use({
+    name: "remove-webhook",
+    async close() {
+      // Stop all change streams
+      for (const coll of collectionSettings.keys()) {
+        await removeWebhook(coll);
+      }
     },
   });
 
@@ -396,7 +409,7 @@ export async function runWebhook() {
     for (const [key, { webhook, data }] of bufferChange) {
       bufferChange.delete(key);
       if (data) {
-        processWebhookEvent(webhook, data).catch((error) => {
+        processWebhookQueue.add(() => processWebhookEvent(webhook, data)).catch((error) => {
           documentLog(webhook, "<!> [ERROR]", error);
         });
       }
@@ -520,7 +533,7 @@ export async function runWebhook() {
 
         for (const webhook of collectionSetting.webhooks) {
           if (prepareWebhookEvent(webhook, data)) {
-            processWebhookEvent(webhook, data).catch((error) => {
+            processWebhookQueue.add(() => processWebhookEvent(webhook, data)).catch((error) => {
               documentLog(webhook, "<!> [ERROR]", error);
             });
           }
@@ -609,6 +622,15 @@ export async function runWebhook() {
     }
   }
 
+  const setupWebhooksQueue = new PQueue({ concurrency: 1 });
+  app.use({
+    name: "setup-webhooks-queue",
+    async close() {
+      // Wait until all setup are done
+      await setupWebhooksQueue.onIdle();
+    },
+  });
+
   const webhooksChangeStream = WebhookModel.watch([
     {
       $match: {
@@ -617,15 +639,16 @@ export async function runWebhook() {
     },
   ]).on("change", (data: mongo.ChangeStreamDocument<Webhook>) => {
     documentLog(data, data.operationType.toUpperCase());
-    if (pqueue.size < 2) pqueue.add(() => setupWebhooks());
+    if (setupWebhooksQueue.size < 2) setupWebhooksQueue.add(() => setupWebhooks());
   });
   app.use({
     name: "webhook-change-stream",
     async close() {
+      // Stop change stream
       await webhooksChangeStream.close();
     },
   });
 
-  await pqueue.add(() => setupWebhooks());
+  await setupWebhooksQueue.add(() => setupWebhooks());
   console.log("webhook is ready");
 }
