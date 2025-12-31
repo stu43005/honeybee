@@ -164,6 +164,9 @@ export class Video extends TimeStamps {
   public hbReplica?: number;
 
   @prop()
+  public scaleUpAt?: Date;
+
+  @prop()
   public hbRecordReplay?: boolean;
 
   @prop()

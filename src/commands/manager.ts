@@ -1,5 +1,6 @@
 import cleanup from "../components/cleanup";
 import trackOperator from "../components/track-operator";
+import videoScaler from "../components/video-scaler";
 import videoStats from "../components/video-stats";
 import webhookPrepare from "../components/webhook-prepare";
 import { Application } from "../modules/application";
@@ -17,4 +18,5 @@ export async function runManager() {
   trackOperator(app);
   webhookPrepare(app);
   videoStats(app);
+  videoScaler(app);
 }

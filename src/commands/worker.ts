@@ -918,44 +918,6 @@ async function handleJob(
             updateStatsCounter.lastUpdateAt = moment.tz("UTC");
             await updateVideoStats();
           }
-
-          const chatsCount = await ChatModel.find({
-            originVideoId: videoId,
-            timestamp: {
-              $gt: autoscaleState.lastChatAt
-                .clone()
-                .subtract(1, "minute")
-                .toDate(),
-              $lte: autoscaleState.lastChatAt.toDate(),
-            },
-          }).countDocuments();
-          const chatReplicaCapacity = 350;
-          const currentReplicas = video.getReplicas();
-          const targetReplica =
-            Math.ceil(chatsCount / chatReplicaCapacity) || 1;
-          const scaleDownThreshold =
-            (currentReplicas - 1) * chatReplicaCapacity * 0.9;
-          if (currentReplicas < targetReplica) {
-            videoLog(`scale up (target: ${targetReplica})`);
-            await VideoModel.updateOne(
-              { id: videoId },
-              { $inc: { hbReplica: 1 } }
-            );
-            autoscaleState.scaleUpAt = moment.tz("UTC");
-          } else if (
-            currentReplicas > targetReplica &&
-            scaleDownThreshold > chatsCount &&
-            moment
-              .tz("UTC")
-              .subtract(10, "minute")
-              .isAfter(autoscaleState.scaleUpAt)
-          ) {
-            videoLog(`scale down (target: ${targetReplica})`);
-            await VideoModel.updateOne(
-              { id: videoId },
-              { $inc: { hbReplica: -1 } }
-            );
-          }
         } else {
           // check replica
           if (video.getReplicas() < replica) {
