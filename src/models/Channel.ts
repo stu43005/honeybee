@@ -99,6 +99,18 @@ export class Channel extends TimeStamps {
     return hyperlink(this.name, Channel.getUrl(this));
   }
 
+  public isSubscribed(this: DocumentType<Channel>): boolean {
+    if (this.isInactive) return false;
+    if (this.hbIgnore) return false;
+    if (this.deleted) return false;
+
+    if (HOLODEX_FETCH_ORG === HOLODEX_ALL_VTUBERS && this.organization) return true;
+    if (this.organization === HOLODEX_FETCH_ORG) return true;
+    if (this.extraCrawl) return true;
+
+    return false;
+  }
+
   public static getUrl(
     channelOrId: DocumentType<Channel> | FlattenMaps<Channel> | string
   ): string {

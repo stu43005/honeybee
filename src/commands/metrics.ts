@@ -469,13 +469,13 @@ export async function metrics() {
             1
           );
 
-          const channelIdLabel = { channelId: channel.id };
           if (
+            channel.isSubscribed() &&
             channel.subscriberCount !== undefined &&
             channel.subscriberCount > 0
           )
             metrics.honeybee_channel_subscribers.set(
-              channelIdLabel,
+              { channelId: channel.id },
               channel.subscriberCount
             );
         }
