@@ -9,5 +9,7 @@ images:
 replicas:
   - name: worker
     count: 3
+  - name: manager
+    count: 2
 
 # Flux GitOps

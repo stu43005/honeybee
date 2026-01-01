@@ -53,7 +53,7 @@ async function videoScale() {
 
     const video = await VideoModel.findByVideoId(videoId);
     if (!video) continue;
-    if (video.hbIgnore) continue;
+    if (!video.isLive()) continue;
 
     const chatsCount = await ChatModel.find({
       originVideoId: videoId,
@@ -78,7 +78,7 @@ async function videoScale() {
 
     if (currentReplicas < targetReplica) {
       console.log(
-        `[${channelName}][${videoId}] scale up (target: ${targetReplica})`
+        `[${channelName}][${videoId}] scale up (current: ${currentReplicas}, target: ${targetReplica})`
       );
       await VideoModel.updateOne(
         { id: videoId },
@@ -94,7 +94,7 @@ async function videoScale() {
         moment.tz("UTC").subtract(10, "minute").isAfter(video.scaleUpAt))
     ) {
       console.log(
-        `[${channelName}][${videoId}] scale down (target: ${targetReplica})`
+        `[${channelName}][${videoId}] scale down (current: ${currentReplicas}, target: ${targetReplica})`
       );
       await VideoModel.updateOne(
         { id: videoId },
