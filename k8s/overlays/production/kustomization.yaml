@@ -8,6 +8,6 @@ images:
     newTag: sha-${SHA_SHORT}
 replicas:
   - name: worker
-    count: 2
+    count: 3
 
 # Flux GitOps
