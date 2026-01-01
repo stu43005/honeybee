@@ -13,7 +13,7 @@ export default function videoScaler(app: Application) {
   assert(agenda, "agenda should be defined.");
 
   agenda.define("video scale", videoScale);
-  agenda.every("1 minute", "video scale");
+  agenda.every("30 seconds", "video scale");
 }
 
 async function videoScale() {
