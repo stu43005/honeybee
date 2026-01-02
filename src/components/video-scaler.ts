@@ -4,7 +4,7 @@ import assert from "node:assert";
 import { MessageType, VideoStatsType } from "../interfaces";
 import ChatModel from "../models/Chat";
 import VideoModel from "../models/Video";
-import VideoStatsModel from "../models/VideoStats";
+import VideoStatsModel, { VideoStatsFlags } from "../models/VideoStats";
 import type { Application } from "../modules/application";
 import type { AgendaModule } from "../modules/schedule";
 
@@ -17,38 +17,23 @@ export default function videoScaler(app: Application) {
 }
 
 async function videoScale() {
-  const videos = await VideoStatsModel.aggregate<{
-    _id: string;
-  }>(
-    [
-      {
-        $match: {
-          type: VideoStatsType.MessageTotal,
-          messageType: MessageType.Chat,
-          updatedAt: {
-            $gte: new Date(Date.now() - 10 * 60 * 1000),
-          },
-        },
-      },
-      {
-        $group: {
-          _id: "$videoId",
-        },
-      },
-    ],
+  const stats = await VideoStatsModel.getVideoIdsWithoutFlag(
     {
-      readPreference: "secondaryPreferred",
-    }
+      type: VideoStatsType.MessageTotal,
+      messageType: MessageType.Chat,
+      updatedAt: {
+        $gte: new Date(Date.now() - 10 * 60 * 1000),
+      },
+    },
+    VideoStatsFlags.VideoScalerProcessed
   );
 
-  for await (const { _id: videoId } of videos) {
-    const lastChat = await ChatModel.findOne({
-      originVideoId: videoId,
-    })
-      .sort({ timestamp: -1 })
-      .select({ timestamp: 1 })
-      .setOptions({ readPreference: "secondaryPreferred" })
-      .exec();
+  for await (const { videoId, statsId, lastId } of stats) {
+    const lastChat = await ChatModel.findById(
+      lastId,
+      { timestamp: 1 },
+      { readPreference: "secondaryPreferred" }
+    );
     if (!lastChat) continue;
 
     const video = await VideoModel.findByVideoId(videoId);
@@ -103,5 +88,11 @@ async function videoScale() {
         }
       );
     }
+
+    await VideoStatsModel.setFlag(
+      statsId,
+      VideoStatsFlags.VideoScalerProcessed,
+      lastId
+    );
   }
 }

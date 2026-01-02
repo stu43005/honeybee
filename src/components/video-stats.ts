@@ -14,6 +14,7 @@ import SuperChatModel from "../models/SuperChat";
 import SuperStickerModel from "../models/SuperSticker";
 import VideoStatsModel, {
   SCRAPE_DURATION_VIDEOID,
+  VideoStatsFlags,
   type VideoStats,
 } from "../models/VideoStats";
 import type { Application } from "../modules/application";
@@ -121,40 +122,28 @@ export default function videoStats(app: Application) {
               )
               .join(",")} * * * *`,
             async job() {
-              const videoIds = await VideoStatsModel.aggregate<{
-                _id: string;
-              }>(
-                [
-                  {
-                    $match: {
-                      type: VideoStatsType.MessageTotal,
-                      messageType: type.messageType,
-                      updatedAt: {
-                        $gte: new Date(Date.now() - 60 * 60 * 1000),
-                      },
-                    },
-                  },
-                  {
-                    $group: {
-                      _id: "$videoId",
-                    },
-                  },
-                ],
+              const stats = await VideoStatsModel.getVideoIdsWithoutFlag(
                 {
-                  readPreference: "secondaryPreferred",
-                }
+                  type: VideoStatsType.MessageTotal,
+                  messageType: type.messageType,
+                  updatedAt: {
+                    $gte: new Date(Date.now() - 60 * 60 * 1000),
+                  },
+                },
+                VideoStatsFlags.VideoStatsUserTotalProcessed
               );
 
-              const updateUsersVideoIds = videoIds
-                .map(({ _id }) => _id)
-                .filter(
-                  (videoId) =>
-                    videoId !== SCRAPE_DURATION_VIDEOID &&
-                    hashStringToSegment(
-                      `${type.messageType}${videoId}`,
-                      usersTotalSegments
-                    ) === segment
-                );
+              const updateUsersVideoIds = new Set(
+                stats
+                  .filter(
+                    ({ videoId }) =>
+                      hashStringToSegment(
+                        `${type.messageType}${videoId}`,
+                        usersTotalSegments
+                      ) === segment
+                  )
+                  .map(({ videoId }) => videoId)
+              );
 
               await updateStats(
                 VideoStatsType.UsersTotal,
@@ -163,7 +152,7 @@ export default function videoStats(app: Application) {
                 {
                   match: {
                     originVideoId: {
-                      $in: updateUsersVideoIds,
+                      $in: Array.from(updateUsersVideoIds),
                     },
                   },
                   groupBy: {
@@ -182,6 +171,11 @@ export default function videoStats(app: Application) {
                   value: { $sum: 1 },
                   fetchAll: true,
                 }
+              );
+
+              await VideoStatsModel.setFlags(
+                stats.filter(({ videoId }) => updateUsersVideoIds.has(videoId)),
+                VideoStatsFlags.VideoStatsUserTotalProcessed
               );
             },
           })
@@ -388,6 +382,9 @@ async function updateStats<T extends AnyParamConstructor<any>>(
             $set: {
               lastId: lastId,
               ...(method === "$set" ? { value: value } : {}),
+            },
+            $unset: {
+              flag: "",
             },
             ...(method === "$inc"
               ? {
