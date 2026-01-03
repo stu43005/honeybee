@@ -2,6 +2,7 @@ import fastifyExpress from "@fastify/express";
 import type { Job } from "agenda";
 import {
   ExtraData,
+  SortOrder,
   VideoStatus,
   VideoType,
   type Channel as HolodexChannel,
@@ -74,7 +75,7 @@ export async function runCrawler() {
       await VideoModel.updateFromHolodex(stream);
     }
   });
-  agenda.every("5 minutes", JOB_HOLODEX_UPDATE_LIVE);
+  agenda.every("10 minutes", JOB_HOLODEX_UPDATE_LIVE);
 
   const JOB_HOLODEX_UPDATE_PAST = "crawler holodex update past";
   agenda.define(JOB_HOLODEX_UPDATE_PAST, async (job: Job): Promise<void> => {
@@ -101,8 +102,9 @@ export async function runCrawler() {
       await VideoModel.updateFromHolodex(stream);
     }
   });
-  agenda.every("10 minutes", JOB_HOLODEX_UPDATE_PAST);
+  agenda.every("20 minutes", JOB_HOLODEX_UPDATE_PAST);
 
+  /*
   const JOB_HOLODEX_OUTDATE_VIDEO = "crawler holodex outdate video";
   agenda.define(JOB_HOLODEX_OUTDATE_VIDEO, async (job: Job): Promise<void> => {
     const needUpdate = await VideoModel.findLiveVideos()
@@ -138,30 +140,36 @@ export async function runCrawler() {
     }
   });
   agenda.every("10 minutes", JOB_HOLODEX_OUTDATE_VIDEO);
+  */
 
   const JOB_HOLODEX_UPDATE_CHANNELS = "crawler holodex update channels";
   agenda.define(
     JOB_HOLODEX_UPDATE_CHANNELS,
     {
-      lockLifetime: moment.duration(10, "minutes").asMilliseconds(),
+      lockLifetime: moment.duration(1, "hour").asMilliseconds(),
     },
     async (job: Job): Promise<void> => {
       let offset = 0;
-      const limit = 50;
+      const limit = 100;
       while (true) {
         const channels: HolodexChannel[] = await holoapi.getChannels({
           org: HOLODEX_FETCH_ORG,
           type: "vtuber",
           limit,
           offset,
+          sort: "suborg",
+          order: SortOrder.Ascending,
         });
         for (const channel of channels) {
           await ChannelModel.updateFromHolodex(channel);
         }
         if (channels.length < limit) break;
         offset += channels.length;
-        await setTimeout(moment.duration(5, "minutes").asMilliseconds());
-        await job.touch();
+
+        for (let i = 0; i < 10; i++) {
+          await setTimeout(moment.duration(1, "minutes").asMilliseconds());
+          await job.touch();
+        }
       }
     }
   );
@@ -180,7 +188,7 @@ export async function runCrawler() {
               },
               {
                 holodexCrawledAt: {
-                  $lt: moment.tz("UTC").subtract(20, "minutes").toDate(),
+                  $lt: moment.tz("UTC").subtract(1, "day").toDate(),
                 },
               },
             ],
@@ -233,6 +241,7 @@ export async function runCrawler() {
           console.log(`Subscribing: [${channel.id}] ${channel.name}`);
           ytNotifier.subscribe(channel.id);
           await setTimeout(250);
+          await job.touch();
         }
       }
     );
