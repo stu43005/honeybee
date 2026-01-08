@@ -14,6 +14,7 @@ export const SCRAPE_DURATION_VIDEOID = "scrape_duration";
 export const VideoStatsFlags = Object.freeze({
   VideoStatsUserTotalProcessed: 0,
   VideoScalerProcessed: 1,
+  ChatsArchiveProcessed: 2,
 });
 
 @modelOptions({ schemaOptions: { collection: "videostats" } })

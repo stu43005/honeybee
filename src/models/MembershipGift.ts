@@ -1,11 +1,13 @@
 import {
   getModelForClass,
+  index,
   modelOptions,
   prop,
 } from "@typegoose/typegoose";
 import type { MessageAuthorType } from "../interfaces";
 
 @modelOptions({ schemaOptions: { collection: "membershipgifts" } })
+@index({ originVideoId: 1, timestamp: 1 })
 export class MembershipGift {
   @prop({ required: true, unique: true })
   public id!: string;

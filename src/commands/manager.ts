@@ -1,3 +1,4 @@
+import chatsArchive from "../components/chats-archive";
 import cleanup from "../components/cleanup";
 import trackOperator from "../components/track-operator";
 import videoScaler from "../components/video-scaler";
@@ -19,4 +20,5 @@ export async function runManager() {
   webhookPrepare(app);
   videoStats(app);
   videoScaler(app);
+  chatsArchive(app);
 }

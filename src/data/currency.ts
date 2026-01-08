@@ -1003,10 +1003,10 @@ export const currencyMap: CurrencyMap = {
     rounding: 0.0,
   },
   TWD: {
-    symbol: "$",
+    symbol: "NT$",
     code: "TWD",
     symbol_native: "$",
-    decimal_digits: 2,
+    decimal_digits: 0,
     rounding: 0.0,
   },
   TZS: {

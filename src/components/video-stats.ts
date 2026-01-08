@@ -1,5 +1,6 @@
 import { mongoose, type ReturnModelType } from "@typegoose/typegoose";
 import type { AnyParamConstructor } from "@typegoose/typegoose/lib/types";
+import moment from "moment";
 import type { AccumulatorOperator, FilterQuery, PipelineStage } from "mongoose";
 import assert from "node:assert";
 import { MessageType, VideoStatsType } from "../interfaces";
@@ -127,7 +128,7 @@ export default function videoStats(app: Application) {
                   type: VideoStatsType.MessageTotal,
                   messageType: type.messageType,
                   updatedAt: {
-                    $gte: new Date(Date.now() - 60 * 60 * 1000),
+                    $gte: moment.tz("UTC").subtract(1, "hour").toDate(),
                   },
                 },
                 VideoStatsFlags.VideoStatsUserTotalProcessed

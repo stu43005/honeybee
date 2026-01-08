@@ -32,6 +32,8 @@ spec:
                 secretKeyRef:
                   name: honeybee-mongodb
                   key: MONGO_URI
+            - name: CHAT_ARCHIVE_DIR
+              value: /data/chats-archive
           resources: {}
           ports:
             - name: http-port
@@ -48,6 +50,13 @@ spec:
               port: http-port
             failureThreshold: 30
             periodSeconds: 10
+          volumeMounts:
+            - name: chats-archive-storage
+              mountPath: /data/chats-archive
+      volumes:
+        - name: chats-archive-storage
+          persistentVolumeClaim:
+            claimName: chats-archive-pvc
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname

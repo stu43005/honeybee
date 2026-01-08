@@ -14,3 +14,4 @@ resources:
   - servicemonitor.yaml
   - webhook.yaml
   - worker.yaml
+  - chats-archive-pvc.yaml

@@ -22,7 +22,7 @@ async function videoScale() {
       type: VideoStatsType.MessageTotal,
       messageType: MessageType.Chat,
       updatedAt: {
-        $gte: new Date(Date.now() - 10 * 60 * 1000),
+        $gte: moment.tz("UTC").subtract(10, "minutes").toDate(),
       },
     },
     VideoStatsFlags.VideoScalerProcessed

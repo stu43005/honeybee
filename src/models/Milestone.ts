@@ -1,5 +1,6 @@
 import {
   getModelForClass,
+  index,
   modelOptions,
   prop,
   Severity,
@@ -10,6 +11,7 @@ import type { MessageAuthorType } from "../interfaces";
   options: { allowMixed: Severity.ALLOW },
   schemaOptions: { collection: "milestones" },
 })
+@index({ originVideoId: 1, timestamp: 1 })
 export class Milestone {
   @prop({ required: true, unique: true })
   public id!: string;
