@@ -601,9 +601,15 @@ async function genIndexFile() {
 }
 
 async function videoCard(ws: Writable, video: DocumentType<Video>) {
-  const videoStats = await VideoStatsModel.findOne({
+  const videoStats = await VideoStatsModel.find({
     videoId: video.id,
-    type: VideoStatsType.MessageTotal,
+    type: {
+      $in: [
+        VideoStatsType.MessageTotal,
+        VideoStatsType.PurchaseAmountTotal,
+        VideoStatsType.PurchaseAmountJpyTotal,
+      ]
+    },
     messageType: {
       $in: [
         MessageType.SuperChat,
@@ -615,9 +621,20 @@ async function videoCard(ws: Writable, video: DocumentType<Video>) {
       ],
     },
   });
-  if (!videoStats) {
+  if (!videoStats.length) {
     return;
   }
+
+  const totalSuperChatAmountJpy = videoStats.filter(
+    (stat) =>
+      stat.type === VideoStatsType.PurchaseAmountJpyTotal
+  ).reduce((sum, stat) => sum + stat.value, 0);
+  const totalMembers = videoStats.filter(
+    (stat) => stat.type === VideoStatsType.MessageTotal && stat.messageType === MessageType.Membership
+  ).reduce((sum, stat) => sum + stat.value, 0);
+  const totalGifts = videoStats.filter(
+    (stat) => stat.type === VideoStatsType.PurchaseAmountTotal && stat.messageType === MessageType.MembershipGiftPurchase
+  ).reduce((sum, stat) => sum + stat.value, 0);
 
   const channel = await video.getChannel();
   let statusText = "";
@@ -658,7 +675,7 @@ async function videoCard(ws: Writable, video: DocumentType<Video>) {
             </div>
             <div class="col">
               <div class="card-body" style="padding-left: 0;">
-                <h5 class="card-title" style="font-size: 1rem; line-height: 1.25rem; max-height: 2.5rem; white-space: normal; overflow: hidden; text-overflow: ellipsis; word-break: break-all; word-break: break-word; hyphens: auto;"><a href="${getVideoPath(
+                <h5 class="card-title" style="font-size: 1rem; line-height: 1.25rem; max-height: 2.5rem; white-space: normal; overflow: hidden; text-overflow: ellipsis; word-break: break-all; word-break: break-word; hyphens: auto; -webkit-line-clamp: 2; -webkit-box-orient: vertical;"><a href="${getVideoPath(
                   video
                 )}">${video.title}</a></h5>
                 <p class="card-text" style="font-size: .875rem; margin-bottom: 0;">${
@@ -667,6 +684,9 @@ async function videoCard(ws: Writable, video: DocumentType<Video>) {
                 <p class="card-text"><small class="text-body-secondary">${statusText}</small></p>
               </div>
             </div>
+          </div>
+          <div class="card-footer text-body-secondary text-center" style="font-size: 0.875rem;">
+            SC: ${formatCurrency(totalSuperChatAmountJpy, "JPY")}, Members: ${totalMembers.toLocaleString()}, Gifts: ${totalGifts.toLocaleString()}
           </div>
         </div>
       </div>
