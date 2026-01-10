@@ -1,11 +1,13 @@
-import { type DocumentType } from "@typegoose/typegoose";
+import { mongoose, type DocumentType } from "@typegoose/typegoose";
 import type { Job } from "agenda";
+import { VideoStatus } from "holodex.js";
 import moment from "moment";
 import type { Cursor } from "mongoose";
 import assert from "node:assert";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import type { Writable } from "node:stream";
 import { CHAT_ARCHIVE_DIR, MAX_HOURS_BEFORE_CLEANUP } from "../constants";
 import { currencyMap } from "../data/currency";
 import { MessageType, VideoStatsType } from "../interfaces";
@@ -22,6 +24,7 @@ import SuperStickerModel, { type SuperSticker } from "../models/SuperSticker";
 import VideoModel, { type Video } from "../models/Video";
 import VideoStatsModel, { VideoStatsFlags } from "../models/VideoStats";
 import type { Application } from "../modules/application";
+import { MONGO_URI } from "../modules/db";
 import type { AgendaModule } from "../modules/schedule";
 
 export default function chatsArchive(app: Application) {
@@ -31,10 +34,13 @@ export default function chatsArchive(app: Application) {
   if (CHAT_ARCHIVE_DIR) {
     agenda.define("chats archive", archiveAllChats);
     agenda.every("1 minutes", "chats archive");
+
+    agenda.define("chats archive index", genIndexFile);
+    agenda.every("1 hours", "chats archive index");
   }
 }
 
-async function archiveAllChats(job: Job) {
+async function archiveAllChats(job?: Job) {
   const stats = await VideoStatsModel.getVideoIdsWithoutFlag(
     {
       type: VideoStatsType.MessageTotal,
@@ -68,18 +74,18 @@ async function archiveAllChats(job: Job) {
     } catch (error) {
       console.error(`Failed to archive chats for video ${videoId}:`, error);
     }
-    await job.touch();
+    await job?.touch();
   }
+}
+
+function getVideoPath(video: DocumentType<Video>) {
+  const date = moment(video.availableAt).tz("Asia/Tokyo").format("YYYYMMDD");
+  return path.join(video.channelId, `${date}_${video.id}.html`);
 }
 
 function getOutputFilePath(video: DocumentType<Video>) {
   assert(CHAT_ARCHIVE_DIR, "CHAT_ARCHIVE_DIR is not defined.");
-  const date = moment(video.availableAt).tz("Asia/Tokyo").format("YYYYMMDD");
-  return path.join(
-    CHAT_ARCHIVE_DIR,
-    video.channelId,
-    `${date}_${video.id}.html`
-  );
+  return path.join(CHAT_ARCHIVE_DIR, getVideoPath(video));
 }
 
 async function archiveVideo(videoId: string) {
@@ -107,7 +113,9 @@ async function archiveVideo(videoId: string) {
 
   const outputFilePath = getOutputFilePath(video);
   await fsp.mkdir(path.dirname(outputFilePath), { recursive: true });
-  const ws = fs.createWriteStream(`${outputFilePath}.tmp`, { encoding: "utf-8" });
+  const ws = fs.createWriteStream(`${outputFilePath}.tmp`, {
+    encoding: "utf-8",
+  });
   ws.write(`<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -163,7 +171,7 @@ async function archiveVideo(videoId: string) {
 <tr><td>
   <h1><a href="${VideoModel.getUrl(video)}">${video.title}</a></h1>
   <img class="video-thumbnail small" src="${
-    VideoModel.getVideoThumbnails(video, false).maxres
+    VideoModel.getVideoThumbnails(video).maxres
   }" onclick="this.classList.toggle('small')" />
 </td></tr>
 <tr><td>
@@ -497,4 +505,182 @@ async function* multiCursorOrderedPeek<T>(...cursors: Array<Cursor<T, any>>) {
     // Advance the cursor that provided the minimum item
     minItem.current = await minItem.cursor.next();
   }
+}
+
+async function genIndexFile() {
+  assert(CHAT_ARCHIVE_DIR, "CHAT_ARCHIVE_DIR is not defined.");
+  const outputFilePath = path.join(CHAT_ARCHIVE_DIR, `index.html`);
+  await fsp.mkdir(path.dirname(outputFilePath), { recursive: true });
+  const ws = fs.createWriteStream(`${outputFilePath}.tmp`, {
+    encoding: "utf-8",
+  });
+
+  ws.write(`<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chat Archives Index</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB" crossorigin="anonymous">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+    }
+    th, td {
+      border: 1px solid #ddd;
+      padding: 8px;
+    }
+    th {
+      background-color: #f2f2f2;
+    }
+  </style>
+</head>
+<body>
+<ul class="nav nav-tabs" role="tablist">
+  <li class="nav-item" role="presentation">
+    <button class="nav-link active" id="live-tab" data-bs-toggle="tab" data-bs-target="#live-tab-pane" type="button" role="tab" aria-controls="live-tab-pane" aria-selected="true">Live / Upcoming</button>
+  </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link" id="past-tab" data-bs-toggle="tab" data-bs-target="#past-tab-pane" type="button" role="tab" aria-controls="past-tab-pane" aria-selected="false">Past</button>
+  </li>
+</ul>
+<div class="tab-content">
+  <div class="tab-pane fade show active" id="live-tab-pane" role="tabpanel" aria-labelledby="live-tab" tabindex="0">
+    <div class="container"><div class="row row-cols-1 row-cols-md-4 g-4">
+`);
+
+  for await (const video of VideoModel.findLiveVideos(48)
+    .sort({ availableAt: 1 })
+    .populate("channel")
+    .setOptions({ readPreference: "secondaryPreferred" })) {
+    if (
+      video.status === VideoStatus.Live &&
+      !video.actualStart &&
+      video.scheduledStart &&
+      moment.tz("UTC").isAfter(moment(video.scheduledStart).add(2, "days"))
+    )
+      continue;
+
+    await videoCard(ws, video);
+    // await archiveVideo(video.id);
+  }
+
+  ws.write(`    </div></div>
+  </div>
+  <div class="tab-pane fade" id="past-tab-pane" role="tabpanel" aria-labelledby="past-tab" tabindex="0">
+    <div class="container"><div class="row row-cols-1 row-cols-md-4 g-4">
+`);
+
+  for await (const video of VideoModel.findRecentlyEndedVideos(48)
+    .sort({ availableAt: -1 })
+    .populate("channel")
+    .setOptions({ readPreference: "secondaryPreferred" })) {
+    if (
+      video.status === VideoStatus.Missing &&
+      video.scheduledStart &&
+      moment.tz("UTC").isBefore(video.scheduledStart)
+    )
+      continue;
+    await videoCard(ws, video);
+    // await archiveVideo(video.id);
+  }
+
+  ws.end(`    </div></div>
+  </div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.min.js" integrity="sha384-G/EV+4j2dNv+tEPo3++6LCgdCROaejBqfUeNjuKAiuXbjrxilcCdDz6ZAVfHWe1Y" crossorigin="anonymous"></script>
+</body>
+</html>
+`);
+
+  await fsp.rename(`${outputFilePath}.tmp`, outputFilePath);
+}
+
+async function videoCard(ws: Writable, video: DocumentType<Video>) {
+  const videoStats = await VideoStatsModel.findOne({
+    videoId: video.id,
+    type: VideoStatsType.MessageTotal,
+    messageType: {
+      $in: [
+        MessageType.SuperChat,
+        MessageType.SuperSticker,
+        MessageType.Membership,
+        MessageType.MembershipGift,
+        MessageType.MembershipGiftPurchase,
+        MessageType.Milestone,
+      ],
+    },
+  });
+  if (!videoStats) {
+    return;
+  }
+
+  const channel = await video.getChannel();
+  let statusText = "";
+  switch (video.status) {
+    case VideoStatus.Upcoming:
+      if (video.scheduledStart) {
+        statusText = `Start at <time datetime="${video.scheduledStart.toISOString()}">${moment(
+          video.scheduledStart
+        )
+          .tz("Asia/Tokyo")
+          .format("YYYY-MM-DD HH:mm")}</time>`;
+      } else {
+        statusText = "Upcoming";
+      }
+      break;
+    case VideoStatus.Live:
+      statusText = `<span style="color: red; font-weight: 500;">Live Now</span>`;
+      break;
+    case VideoStatus.Past:
+    case VideoStatus.Missing:
+      statusText = `Published at <time datetime="${video.availableAt.toISOString()}">${moment(
+        video.availableAt
+      )
+        .tz("Asia/Tokyo")
+        .format("YYYY-MM-DD HH:mm")}</time>`;
+      break;
+  }
+  ws.write(`      <div class="col">
+        <div class="card">
+          <a href="${getVideoPath(video)}"><img src="${
+    VideoModel.getVideoThumbnails(video).medium
+  }" class="card-img-top" alt="Video Thumbnail" loading="lazy" /></a>
+          <div class="row g-0 align-items-center">
+            <div class="col-md-auto">
+              <img src="${
+                channel.avatarUrl
+              }" alt="Channel Thumbnail" style="height: 48px; width: 48px; border-radius: 50%; margin: 8px;" loading="lazy" />
+            </div>
+            <div class="col">
+              <div class="card-body" style="padding-left: 0;">
+                <h5 class="card-title" style="font-size: 1rem; line-height: 1.25rem; max-height: 2.5rem; white-space: normal; overflow: hidden; text-overflow: ellipsis; word-break: break-all; word-break: break-word; hyphens: auto;"><a href="${getVideoPath(
+                  video
+                )}">${video.title}</a></h5>
+                <p class="card-text" style="font-size: .875rem; margin-bottom: 0;">${
+                  channel.name
+                }</p>
+                <p class="card-text"><small class="text-body-secondary">${statusText}</small></p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+`);
+}
+
+// main
+if (require.main === module) {
+  (async () => {
+    assert(MONGO_URI, "MONGO_URI should be defined.");
+    await mongoose.connect(MONGO_URI);
+    // await archiveAllChats();
+    await genIndexFile();
+    await mongoose.disconnect();
+    process.exit(0);
+  })();
 }
