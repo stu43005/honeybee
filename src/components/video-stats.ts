@@ -10,6 +10,8 @@ import MembershipModel from "../models/Membership";
 import MembershipGiftModel from "../models/MembershipGift";
 import MembershipGiftPurchaseModel from "../models/MembershipGiftPurchase";
 import MilestoneModel from "../models/Milestone";
+import PollModel from "../models/Poll";
+import RaidModel from "../models/Raid";
 import RemoveChatActionModel from "../models/RemoveChatAction";
 import SuperChatModel from "../models/SuperChat";
 import SuperStickerModel from "../models/SuperSticker";
@@ -72,11 +74,17 @@ const actionTypes: MessageTypeModel[] = [
     messageType: MessageType.RemoveChatAction,
     model: RemoveChatActionModel,
   },
+  {
+    messageType: MessageType.Poll,
+    model: PollModel,
+  },
+  {
+    messageType: MessageType.Raid,
+    model: RaidModel,
+  },
   // bannerAction: BannerAction,
   // modeChange: ModeChange,
   // placeholder: Placeholder,
-  // poll: Poll,
-  // raid: Raid,
   // errorLog: ErrorLog,
 ];
 
