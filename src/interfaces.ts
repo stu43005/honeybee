@@ -19,6 +19,8 @@ export enum MessageType {
   // Actions
   BanAction = "banAction",
   RemoveChatAction = "removeChatAction",
+  Poll = "poll",
+  Raid = "raid",
 }
 
 export enum MessageAuthorType {
