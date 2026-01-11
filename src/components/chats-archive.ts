@@ -10,7 +10,7 @@ import path from "node:path";
 import type { Writable } from "node:stream";
 import { CHAT_ARCHIVE_DIR, MAX_HOURS_BEFORE_CLEANUP } from "../constants";
 import { currencyMap } from "../data/currency";
-import { MessageType, VideoStatsType } from "../interfaces";
+import { MessageAuthorType, MessageType, VideoStatsType } from "../interfaces";
 import ChatModel, { type Chat } from "../models/Chat";
 import MembershipModel, { type Membership } from "../models/Membership";
 import MembershipGiftModel, {
@@ -47,16 +47,26 @@ async function archiveAllChats(job?: Job) {
   const stats = await VideoStatsModel.getVideoIdsWithoutFlag(
     {
       type: VideoStatsType.MessageTotal,
-      messageType: {
-        $in: [
-          MessageType.SuperChat,
-          MessageType.SuperSticker,
-          MessageType.Membership,
-          MessageType.MembershipGift,
-          MessageType.MembershipGiftPurchase,
-          MessageType.Milestone,
-        ],
-      },
+      $or: [
+        {
+          messageType: {
+            $in: [
+              MessageType.SuperChat,
+              MessageType.SuperSticker,
+              MessageType.Membership,
+              MessageType.MembershipGift,
+              MessageType.MembershipGiftPurchase,
+              MessageType.Milestone,
+            ],
+          },
+        },
+        {
+          messageType: MessageType.Chat,
+          authorType: {
+            $in: [MessageAuthorType.Owner, MessageAuthorType.Moderator],
+          },
+        },
+      ],
       updatedAt: {
         $gte: moment
           .tz("UTC")
