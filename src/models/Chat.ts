@@ -8,6 +8,22 @@ import type { MessageAuthorType } from "../interfaces";
 
 @modelOptions({ schemaOptions: { collection: "chats" } })
 @index({ originVideoId: 1, timestamp: 1 })
+@index(
+  { originVideoId: 1, isOwner: 1, timestamp: 1 },
+  {
+    partialFilterExpression: {
+      isOwner: true,
+    },
+  }
+)
+@index(
+  { originVideoId: 1, isModerator: 1, timestamp: 1 },
+  {
+    partialFilterExpression: {
+      isModerator: true,
+    },
+  }
+)
 export class Chat {
   @prop({ required: true, unique: true })
   public id!: string;

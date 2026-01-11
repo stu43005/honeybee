@@ -2,7 +2,7 @@ import { mongoose, type DocumentType } from "@typegoose/typegoose";
 import type { Job } from "agenda";
 import { VideoStatus } from "holodex.js";
 import moment from "moment";
-import type { Cursor } from "mongoose";
+import type { Cursor, mongo } from "mongoose";
 import assert from "node:assert";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -11,6 +11,7 @@ import type { Writable } from "node:stream";
 import { CHAT_ARCHIVE_DIR, MAX_HOURS_BEFORE_CLEANUP } from "../constants";
 import { currencyMap } from "../data/currency";
 import { MessageType, VideoStatsType } from "../interfaces";
+import ChatModel, { type Chat } from "../models/Chat";
 import MembershipModel, { type Membership } from "../models/Membership";
 import MembershipGiftModel, {
   type MembershipGift,
@@ -19,6 +20,8 @@ import MembershipGiftPurchaseModel, {
   type MembershipGiftPurchase,
 } from "../models/MembershipGiftPurchase";
 import MilestoneModel, { type Milestone } from "../models/Milestone";
+import PollModel, { type Poll } from "../models/Poll";
+import RaidModel, { type Raid } from "../models/Raid";
 import SuperChatModel, { type SuperChat } from "../models/SuperChat";
 import SuperStickerModel, { type SuperSticker } from "../models/SuperSticker";
 import VideoModel, { type Video } from "../models/Video";
@@ -36,7 +39,7 @@ export default function chatsArchive(app: Application) {
     agenda.every("1 minutes", "chats archive");
 
     agenda.define("chats archive index", genIndexFile);
-    agenda.every("1 hours", "chats archive index");
+    agenda.every("10 minutes", "chats archive index");
   }
 }
 
@@ -140,6 +143,8 @@ async function archiveVideo(videoId: string) {
     #chats-table tr.row {
       display: none;
     }
+    #chats-table.owner tr.owner,
+    #chats-table.moderator tr.moderator,
     #chats-table.memberships tr.memberships,
     #chats-table.milestones tr.milestones,
     #chats-table.membershipgifts tr.membershipgifts,
@@ -157,7 +162,9 @@ async function archiveVideo(videoId: string) {
     #chats-table.superstickers.significance-4 tr.superstickers.significance-4,
     #chats-table.superstickers.significance-5 tr.superstickers.significance-5,
     #chats-table.superstickers.significance-6 tr.superstickers.significance-6,
-    #chats-table.superstickers.significance-7 tr.superstickers.significance-7 {
+    #chats-table.superstickers.significance-7 tr.superstickers.significance-7,
+    #chats-table.polls tr.polls,
+    #chats-table.raids tr.raids {
       display: table-row;
     }
     .wordless {
@@ -225,6 +232,8 @@ async function archiveVideo(videoId: string) {
 </table>
 <hr />
 <div id="toggle-controls">
+  <label><input type="checkbox" id="toggle-owner" />owner<span class="count"></span></label>
+  <label><input type="checkbox" id="toggle-moderator" />moderator<span class="count"></span></label><br/>
   <label><input type="checkbox" id="toggle-memberships" />membership<span class="count"></span></label>
   <label><input type="checkbox" id="toggle-milestones" />milestone<span class="count"></span></label><br/>
   <label><input type="checkbox" id="toggle-membershipgifts" />membershipGift<span class="count"></span></label>
@@ -238,7 +247,9 @@ async function archiveVideo(videoId: string) {
   <label><input type="checkbox" id="toggle-significance-4" checked /><div style="display: inline-block; width: 16px; height: 16px; background-color: yellow;"></div><span class="count"></span></label>
   <label><input type="checkbox" id="toggle-significance-5" checked /><div style="display: inline-block; width: 16px; height: 16px; background-color: orange;"></div><span class="count"></span></label>
   <label><input type="checkbox" id="toggle-significance-6" checked /><div style="display: inline-block; width: 16px; height: 16px; background-color: magenta;"></div><span class="count"></span></label>
-  <label><input type="checkbox" id="toggle-significance-7" checked /><div style="display: inline-block; width: 16px; height: 16px; background-color: red;"></div><span class="count"></span></label>
+  <label><input type="checkbox" id="toggle-significance-7" checked /><div style="display: inline-block; width: 16px; height: 16px; background-color: red;"></div><span class="count"></span></label><br/>
+  <label><input type="checkbox" id="toggle-polls" />poll<span class="count"></span></label>
+  <label><input type="checkbox" id="toggle-raids" />raid<span class="count"></span></label>
 </div>
 <hr />
 <table id="chats-table" border="1">
@@ -253,6 +264,20 @@ async function archiveVideo(videoId: string) {
 </tr>
 `);
 
+  const ownerChatCursor = ChatModel.find({
+    originVideoId: videoId,
+    isOwner: true,
+  })
+    .sort({ timestamp: 1 })
+    .setOptions({ readPreference: "secondaryPreferred" })
+    .cursor();
+  const moderatorChatCursor = ChatModel.find({
+    originVideoId: videoId,
+    isModerator: true,
+  })
+    .sort({ timestamp: 1 })
+    .setOptions({ readPreference: "secondaryPreferred" })
+    .cursor();
   const superChatCursor = SuperChatModel.find({ originVideoId: videoId })
     .sort({ timestamp: 1 })
     .setOptions({ readPreference: "secondaryPreferred" })
@@ -281,54 +306,79 @@ async function archiveVideo(videoId: string) {
     .sort({ timestamp: 1 })
     .setOptions({ readPreference: "secondaryPreferred" })
     .cursor();
+  const pollCursor = PollModel.find({ originVideoId: videoId })
+    .sort({ updatedAt: 1 })
+    .setOptions({ readPreference: "secondaryPreferred" })
+    .cursor();
+  const raidCursor = RaidModel.find({ originVideoId: videoId })
+    .sort({ timestamp: 1 })
+    .setOptions({ readPreference: "secondaryPreferred" })
+    .cursor();
   let no = 0;
   for await (const doc of multiCursorOrderedPeek<
     DocumentType<
+      | Chat
       | SuperChat
       | SuperSticker
       | Membership
       | MembershipGift
       | MembershipGiftPurchase
       | Milestone
+      | Poll
+      | Raid
     >
   >(
+    ownerChatCursor,
+    moderatorChatCursor,
     superChatCursor,
     superStickerCursor,
     membershipCursor,
     membershipGiftCursor,
     membershipGiftPurchaseCursor,
-    milestoneCursor
+    milestoneCursor,
+    pollCursor,
+    raidCursor
   )) {
     no++;
-    const displayTime = moment(doc.timestamp)
-      .tz("Asia/Tokyo")
-      .format("YYYY-MM-DD HH:mm:ss");
+    const classNames = [
+      "row",
+      doc.collection.name,
+      ...("significance" in doc && doc.significance
+        ? [`significance-${doc.significance}`]
+        : []),
+      ...("isOwner" in doc && doc.isOwner ? ["owner"] : []),
+      ...("isModerator" in doc && doc.isModerator ? ["moderator"] : []),
+    ];
     const authorPhoto =
       "authorPhoto" in doc && doc.authorPhoto
         ? `<img src="${doc.authorPhoto}" style="height: 48px; border-radius: 50%;" loading="lazy" alt="author photo" /> `
         : "";
-    const timeSecond = VideoModel.getTimeSeconds(video, doc.timestamp);
+    const timestamp = getTimestamp(doc);
+    let time = formatTimestamp(video, timestamp);
 
-    ws.write(`<tr id="${doc._id}" class="row ${doc.collection.name} ${
-      "significance" in doc && doc.significance
-        ? `significance-${doc.significance}`
-        : ""
-    }">
+    ws.write(`<tr id="${doc._id}" class="${classNames.join(" ")}">
   <td style="text-align: right;">${no}</td>
-  <td>${
-    timeSecond ? `<a href="${VideoModel.getUrl(video, timeSecond)}">` : ""
-  }<time datetime="${doc.timestamp.toISOString()}">${displayTime}</time>${
-      timeSecond ? "</a>" : ""
-    }</td>
 `);
     switch (doc.collection.name) {
+      case "chats": {
+        const chat = doc as DocumentType<Chat>;
+        ws.write(`  <td>${time}</td>
+  <td></td>
+  <td></td>
+  <td>${authorPhoto}</td>
+  <td>${chat.authorName ?? ""}</td>
+  <td>${chat.message}</td>
+`);
+        break;
+      }
       case "superchats": {
         const superChat = doc as DocumentType<SuperChat>;
-        ws.write(`  <td style="text-align: right;">${
-          superChat.currency !== "JPY"
-            ? `${formatCurrency(superChat.amount, superChat.currency)}<br/>`
-            : ""
-        }${formatCurrency(superChat.jpyAmount, "JPY")}</td>
+        ws.write(`  <td>${time}</td>
+  <td style="text-align: right;">${
+    superChat.currency !== "JPY"
+      ? `${formatCurrency(superChat.amount, superChat.currency)}<br/>`
+      : ""
+  }${formatCurrency(superChat.jpyAmount, "JPY")}</td>
   <td style="background-color: ${superChat.color};">　</td>
   <td>${authorPhoto}</td>
   <td>${superChat.authorName ?? ""}</td>
@@ -340,14 +390,12 @@ async function archiveVideo(videoId: string) {
       }
       case "superstickers": {
         const superSticker = doc as DocumentType<SuperSticker>;
-        ws.write(`  <td style="text-align: right;">${
-          superSticker.currency !== "JPY"
-            ? `${formatCurrency(
-                superSticker.amount,
-                superSticker.currency
-              )}<br/>`
-            : ""
-        }${formatCurrency(superSticker.jpyAmount, "JPY")}</td>
+        ws.write(`  <td>${time}</td>
+  <td style="text-align: right;">${
+    superSticker.currency !== "JPY"
+      ? `${formatCurrency(superSticker.amount, superSticker.currency)}<br/>`
+      : ""
+  }${formatCurrency(superSticker.jpyAmount, "JPY")}</td>
   <td style="background-color: ${superSticker.color};">　</td>
   <td>${authorPhoto}</td>
   <td>${superSticker.authorName ?? ""}</td>
@@ -359,7 +407,8 @@ async function archiveVideo(videoId: string) {
       }
       case "memberships": {
         const membership = doc as DocumentType<Membership>;
-        ws.write(`  <td></td>
+        ws.write(`  <td>${time}</td>
+  <td></td>
   <td style="background-color: #00984f;">　</td>
   <td>${authorPhoto}</td>
   <td>${membership.authorName ?? ""}</td>
@@ -369,7 +418,8 @@ async function archiveVideo(videoId: string) {
       }
       case "membershipgifts": {
         const membershipGift = doc as DocumentType<MembershipGift>;
-        ws.write(`  <td></td>
+        ws.write(`  <td>${time}</td>
+  <td></td>
   <td style="background-color: #00984f;">　</td>
   <td>${authorPhoto}</td>
   <td>${membershipGift.authorName ?? ""}</td>
@@ -380,7 +430,8 @@ async function archiveVideo(videoId: string) {
       case "membershipgiftpurchases": {
         const membershipGiftPurchase =
           doc as DocumentType<MembershipGiftPurchase>;
-        ws.write(`  <td></td>
+        ws.write(`  <td>${time}</td>
+  <td></td>
   <td style="background-color: #00984f;">　</td>
   <td>${authorPhoto}</td>
   <td>${membershipGiftPurchase.authorName ?? ""}</td>
@@ -392,13 +443,53 @@ async function archiveVideo(videoId: string) {
       }
       case "milestones": {
         const milestone = doc as DocumentType<Milestone>;
-        ws.write(`  <td></td>
+        ws.write(`  <td>${time}</td>
+  <td></td>
   <td style="background-color: #00984f;">　</td>
   <td>${authorPhoto}</td>
   <td>${milestone.authorName ?? ""}</td>
   <td>${
     milestone.message ?? `<span class="wordless">(wordless milestone)</span>`
   }</td>
+`);
+        break;
+      }
+      case "polls": {
+        const poll = doc as DocumentType<Poll>;
+        if (poll.createdAt) {
+          time = formatTimestamp(video, poll.createdAt) + " ~<br/>" + time;
+        }
+        ws.write(`  <td>${time}</td>
+  <td></td>
+  <td></td>
+  <td></td>
+  <td>Poll</td>
+  <td>${poll.voteCount ? `${poll.voteCount} votes<br/>` : ""}${
+          poll.question ?? "(empty question)"
+        }<br/>${poll.choices
+          .map(
+            (choice) =>
+              "- " +
+              choice.text +
+              (choice.voteRatio
+                ? ` (${Math.floor(choice.voteRatio * 1000) / 10}%)`
+                : "")
+          )
+          .join("<br/>")}</td>
+`);
+        break;
+      }
+      case "raids": {
+        const raid = doc as DocumentType<Raid>;
+        const sourcePhoto = raid.sourcePhoto
+          ? `<img src="${raid.sourcePhoto}" style="height: 48px; border-radius: 50%;" loading="lazy" alt="author photo" /> `
+          : "";
+        ws.write(`  <td>${time}</td>
+  <td></td>
+  <td></td>
+  <td>${sourcePhoto}</td>
+  <td>${raid.sourceName ?? ""}</td>
+  <td>${raid.sourceName ?? ""} and their viewers just joined. Say hello!</td>
 `);
         break;
       }
@@ -429,7 +520,7 @@ document.querySelectorAll('#toggle-controls input[type="checkbox"]').forEach(fun
       const giftCount = Array.from(document.querySelectorAll('#chats-table tr.' + className + ' .gift-count')).reduce(function(acc, span) {
         return acc + parseInt(span.textContent);
       }, 0);
-      countSpan.textContent = ' (count: ' + rowCount + ', amount: ' + giftCount + ')';
+      countSpan.textContent = ' (count: ' + rowCount + ', total: ' + giftCount + ')';
     } else {
       countSpan.textContent = ' (' + rowCount + ')';
     }
@@ -469,16 +560,50 @@ function formatCurrency(
   });
 }
 
+function formatTimestamp(video: DocumentType<Video>, timestamp: Date) {
+  const timeSecond = VideoModel.getTimeSeconds(video, timestamp);
+  const displayTime = moment(timestamp)
+    .tz("Asia/Tokyo")
+    .format("YYYY-MM-DD HH:mm:ss");
+  return (
+    (timeSecond ? `<a href="${VideoModel.getUrl(video, timeSecond)}">` : "") +
+    `<time datetime="${timestamp.toISOString()}">${displayTime}</time>` +
+    (timeSecond ? "</a>" : "")
+  );
+}
+
+function getTimestamp(current: DocumentType<object>): Date;
+function getTimestamp(current: DocumentType<object> | null): Date | null;
+function getTimestamp(current: DocumentType<object> | null): Date | null {
+  if (!current) return null;
+  if ("timestamp" in current && current.timestamp instanceof Date) {
+    return current.timestamp;
+  }
+  if ("updatedAt" in current && current.updatedAt instanceof Date) {
+    return current.updatedAt;
+  }
+  if ("createdAt" in current && current.createdAt instanceof Date) {
+    return current.createdAt;
+  }
+  return (current._id as mongo.BSON.ObjectId).getTimestamp();
+}
+
 /**
  * Merge multiple cursors ordered by timestamp field.
  */
-async function* multiCursorOrderedPeek<T>(...cursors: Array<Cursor<T, any>>) {
-  const items: Array<{ cursor: Cursor<T, any>; current: T | null }> =
-    cursors.map((cursor) => ({ cursor, current: null }));
+async function* multiCursorOrderedPeek<T extends DocumentType<object>>(
+  ...cursors: Array<Cursor<T, any>>
+) {
+  const items: Array<{
+    cursor: Cursor<T, any>;
+    current: T | null;
+    timestamp: Date | null;
+  }> = cursors.map((cursor) => ({ cursor, current: null, timestamp: null }));
 
   // Initial fetch
   for (const item of items) {
     item.current = await item.cursor.next();
+    item.timestamp = getTimestamp(item.current);
   }
 
   while (true) {
@@ -488,7 +613,8 @@ async function* multiCursorOrderedPeek<T>(...cursors: Array<Cursor<T, any>>) {
       if (item.current) {
         if (
           !minItem ||
-          (item.current as any).timestamp < (minItem.current as any).timestamp
+          !minItem.timestamp ||
+          (item.timestamp && item.timestamp < minItem.timestamp)
         ) {
           minItem = item;
         }
@@ -504,6 +630,7 @@ async function* multiCursorOrderedPeek<T>(...cursors: Array<Cursor<T, any>>) {
 
     // Advance the cursor that provided the minimum item
     minItem.current = await minItem.cursor.next();
+    minItem.timestamp = getTimestamp(minItem.current);
   }
 }
 
@@ -566,7 +693,7 @@ async function genIndexFile() {
       continue;
 
     await videoCard(ws, video);
-    // await archiveVideo(video.id);
+    if (require.main === module) await archiveVideo(video.id);
   }
 
   ws.write(`    </div></div>
@@ -586,7 +713,7 @@ async function genIndexFile() {
     )
       continue;
     await videoCard(ws, video);
-    // await archiveVideo(video.id);
+    if (require.main === module) await archiveVideo(video.id);
   }
 
   ws.end(`    </div></div>
@@ -608,7 +735,7 @@ async function videoCard(ws: Writable, video: DocumentType<Video>) {
         VideoStatsType.MessageTotal,
         VideoStatsType.PurchaseAmountTotal,
         VideoStatsType.PurchaseAmountJpyTotal,
-      ]
+      ],
     },
     messageType: {
       $in: [
@@ -625,16 +752,23 @@ async function videoCard(ws: Writable, video: DocumentType<Video>) {
     return;
   }
 
-  const totalSuperChatAmountJpy = videoStats.filter(
-    (stat) =>
-      stat.type === VideoStatsType.PurchaseAmountJpyTotal
-  ).reduce((sum, stat) => sum + stat.value, 0);
-  const totalMembers = videoStats.filter(
-    (stat) => stat.type === VideoStatsType.MessageTotal && stat.messageType === MessageType.Membership
-  ).reduce((sum, stat) => sum + stat.value, 0);
-  const totalGifts = videoStats.filter(
-    (stat) => stat.type === VideoStatsType.PurchaseAmountTotal && stat.messageType === MessageType.MembershipGiftPurchase
-  ).reduce((sum, stat) => sum + stat.value, 0);
+  const totalSuperChatAmountJpy = videoStats
+    .filter((stat) => stat.type === VideoStatsType.PurchaseAmountJpyTotal)
+    .reduce((sum, stat) => sum + stat.value, 0);
+  const totalMembers = videoStats
+    .filter(
+      (stat) =>
+        stat.type === VideoStatsType.MessageTotal &&
+        stat.messageType === MessageType.Membership
+    )
+    .reduce((sum, stat) => sum + stat.value, 0);
+  const totalGifts = videoStats
+    .filter(
+      (stat) =>
+        stat.type === VideoStatsType.PurchaseAmountTotal &&
+        stat.messageType === MessageType.MembershipGiftPurchase
+    )
+    .reduce((sum, stat) => sum + stat.value, 0);
 
   const channel = await video.getChannel();
   let statusText = "";
@@ -686,7 +820,10 @@ async function videoCard(ws: Writable, video: DocumentType<Video>) {
             </div>
           </div>
           <div class="card-footer text-body-secondary text-center" style="font-size: 0.875rem;">
-            SC: ${formatCurrency(totalSuperChatAmountJpy, "JPY")}, Members: ${totalMembers.toLocaleString()}, Gifts: ${totalGifts.toLocaleString()}
+            SC: ${formatCurrency(
+              totalSuperChatAmountJpy,
+              "JPY"
+            )}, Members: ${totalMembers.toLocaleString()}, Gifts: ${totalGifts.toLocaleString()}
           </div>
         </div>
       </div>

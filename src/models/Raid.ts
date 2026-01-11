@@ -9,6 +9,7 @@ import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
 @modelOptions({ schemaOptions: { collection: "raids" } })
 @index({ originVideoId: 1, sourceName: 1 }, { unique: true })
 @index({ updatedAt: 1 })
+@index({ originVideoId: 1, timestamp: 1 })
 export class Raid extends TimeStamps {
   /**
    * incoming raid id

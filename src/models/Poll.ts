@@ -20,6 +20,7 @@ export class PollChoice {
   schemaOptions: { collection: "polls" },
 })
 @index({ updatedAt: 1 })
+@index({ originVideoId: 1, updatedAt: 1 })
 export class Poll extends TimeStamps {
   @prop({ required: true, unique: true })
   public id!: string;
