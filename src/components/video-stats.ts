@@ -154,6 +154,10 @@ export default function videoStats(app: Application) {
                   .map(({ videoId }) => videoId)
               );
 
+              if (updateUsersVideoIds.size === 0) {
+                return;
+              }
+
               await updateStats(
                 VideoStatsType.UsersTotal,
                 type.messageType,
