@@ -12,6 +12,7 @@ import RemoveChatAction from "../models/RemoveChatAction";
 import SuperChat from "../models/SuperChat";
 import SuperSticker from "../models/SuperSticker";
 import Video, { LiveStatus } from "../models/Video";
+import VideoUserStats from "../models/VideoUserStats";
 import WebhookResult from "../models/WebhookResult";
 import type { Application } from "../modules/application";
 import type { AgendaModule } from "../modules/schedule";
@@ -37,6 +38,7 @@ async function cleanVideos(videoIds: string[]) {
   await MembershipGift.deleteMany({ originVideoId: { $in: videoIds } });
   await MembershipGiftPurchase.deleteMany({ originVideoId: { $in: videoIds } });
   await Chat.deleteMany({ originVideoId: { $in: videoIds } });
+  await VideoUserStats.deleteMany({ videoId: { $in: videoIds } });
   await Video.updateMany(
     { id: { $in: videoIds } },
     { $set: { hbCleanedAt: new Date() } }
