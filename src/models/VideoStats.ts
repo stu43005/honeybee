@@ -23,6 +23,7 @@ export const VideoStatsFlags = Object.freeze({
   { unique: true }
 )
 @index({ type: 1, messageType: 1, lastId: -1 })
+@index({ type: 1, updatedAt: -1, messageType: 1, authorType: 1 })
 export class VideoStats extends TimeStamps {
   @prop({ required: true })
   public videoId!: string;

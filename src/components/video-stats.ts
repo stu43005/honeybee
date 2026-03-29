@@ -20,6 +20,7 @@ import VideoStatsModel, {
   VideoStatsFlags,
   type VideoStats,
 } from "../models/VideoStats";
+import VideoUserStatsModel from "../models/VideoUserStats";
 import type { Application } from "../modules/application";
 import type { AgendaModule } from "../modules/schedule";
 
@@ -118,6 +119,15 @@ export default function videoStats(app: Application) {
     })),
     ...messageTypes
       .filter((type) => type.calcUsersTotal)
+      .map((type) => ({
+        name: `video stats - ${VideoStatsType.UsersSync} - ${type.messageType}`,
+        interval: "1 minute",
+        async job() {
+          await syncVideoUserStats(type.messageType, type.model);
+        },
+      })),
+    ...messageTypes
+      .filter((type) => type.calcUsersTotal)
       .flatMap((type) =>
         Array.from({ length: usersTotalSegments }, (_, i) => i).map(
           (segment) => ({
@@ -161,24 +171,16 @@ export default function videoStats(app: Application) {
               await updateStats(
                 VideoStatsType.UsersTotal,
                 type.messageType,
-                type.model,
+                VideoUserStatsModel,
                 {
                   match: {
-                    originVideoId: {
+                    videoId: {
                       $in: Array.from(updateUsersVideoIds),
                     },
-                  },
-                  groupBy: {
-                    _id: {
-                      authorChannelId: "$authorChannelId",
-                      videoId: "$originVideoId",
-                    },
-                    authorType: {
-                      $last: "$authorType",
-                    },
+                    messageType: type.messageType,
                   },
                   labels: {
-                    videoId: "$_id.videoId",
+                    videoId: "$videoId",
                     authorType: "$authorType",
                   },
                   value: { $sum: 1 },
@@ -274,6 +276,126 @@ function hashStringToSegment(str: string, segment: number): number {
     hash |= 0; // Convert to 32bit integer
   }
   return Math.abs(hash) % segment;
+}
+
+async function syncVideoUserStats<T extends AnyParamConstructor<any>>(
+  messageType: MessageType,
+  model: ReturnModelType<T>
+) {
+  const start = performance.now();
+
+  const lastRecord = await VideoStatsModel.findOne(
+    {
+      type: VideoStatsType.UsersSync,
+      messageType: messageType,
+    },
+    {
+      lastId: 1,
+    },
+    {
+      readPreference: "secondaryPreferred",
+    }
+  ).sort({ lastId: -1 });
+  let lastId = lastRecord?.lastId;
+
+  const newDocs = await model.aggregate<{
+    videoId: string;
+    authorChannelId: string;
+    authorType: string;
+    lastId: mongoose.mongo.ObjectId;
+  }>(
+    [
+      {
+        $match: {
+          ...(lastId ? { _id: { $gt: lastId } } : null),
+        },
+      },
+      { $sort: { _id: 1 } },
+      { $limit: 300_000 },
+      {
+        $group: {
+          _id: {
+            videoId: "$originVideoId",
+            authorChannelId: "$authorChannelId",
+          },
+          authorType: { $last: "$authorType" },
+          lastId: { $last: "$_id" },
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          videoId: "$_id.videoId",
+          authorChannelId: "$_id.authorChannelId",
+          authorType: 1,
+          lastId: 1,
+        },
+      },
+    ],
+    { readPreference: "secondaryPreferred" }
+  );
+
+  if (newDocs.length > 0) {
+    // Upsert into videouserstats
+    const userBulk = newDocs.map<mongoose.mongo.AnyBulkWriteOperation>(
+      (doc) => ({
+        updateOne: {
+          filter: {
+            videoId: doc.videoId,
+            messageType: messageType,
+            authorChannelId: doc.authorChannelId,
+          },
+          update: {
+            $setOnInsert: {
+              videoId: doc.videoId,
+              messageType: messageType,
+              authorChannelId: doc.authorChannelId,
+            },
+            $set: {
+              authorType: doc.authorType,
+            },
+          },
+          upsert: true,
+        },
+      })
+    );
+    await VideoUserStatsModel.bulkWrite(userBulk, { ordered: false });
+
+    // Find global max lastId
+    lastId = newDocs[0].lastId;
+    for (const doc of newDocs) {
+      if (doc.lastId.toString() > lastId.toString()) {
+        lastId = doc.lastId;
+      }
+    }
+  }
+
+  const durationMs = performance.now() - start;
+
+  // Save lastId and duration to videostats
+  await VideoStatsModel.bulkWrite([
+    {
+      updateOne: {
+        filter: {
+          videoId: SCRAPE_DURATION_VIDEOID,
+          type: VideoStatsType.UsersSync,
+          messageType: messageType,
+        },
+        update: {
+          $setOnInsert: {
+            videoId: SCRAPE_DURATION_VIDEOID,
+            type: VideoStatsType.UsersSync,
+            messageType: messageType,
+          },
+          $set: {
+            lastId: lastId,
+            value: durationMs / 1000,
+          },
+        },
+        upsert: true,
+      },
+    },
+  ]);
 }
 
 type LabelName = Exclude<

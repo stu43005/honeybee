@@ -59,6 +59,7 @@ export enum VideoStatsType {
   PurchaseAmountJpyTotal = "purchase_amount_jpy_total",
   PurchaseAmountTotal = "purchase_amount_total",
   ActionsTotal = "actions_total",
+  UsersSync = "users_sync",
   UsersTotal = "users_total",
 }
 
