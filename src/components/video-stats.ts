@@ -4,6 +4,7 @@ import moment from "moment";
 import type { AccumulatorOperator, FilterQuery, PipelineStage } from "mongoose";
 import assert from "node:assert";
 import { MessageType, VideoStatsType } from "../interfaces";
+import VideoModel from "../models/Video";
 import BanActionModel from "../models/BanAction";
 import ChatModel from "../models/Chat";
 import MembershipModel from "../models/Membership";
@@ -103,7 +104,7 @@ export default function videoStats(app: Application) {
       name: `video stats - ${VideoStatsType.MessageTotal} - ${type.messageType}`,
       interval: "1 minute",
       async job() {
-        await updateStats(
+        const records = await updateStats(
           VideoStatsType.MessageTotal,
           type.messageType,
           type.model,
@@ -115,6 +116,9 @@ export default function videoStats(app: Application) {
             value: { $sum: 1 },
           }
         );
+        if (type.messageType === MessageType.Membership) {
+          await incVideoHbStats(records, "totalMembers");
+        }
       },
     })),
     ...messageTypes
@@ -202,7 +206,7 @@ export default function videoStats(app: Application) {
         name: `video stats - ${VideoStatsType.PurchaseAmountJpyTotal} - ${type.messageType}`,
         interval: "1 minute",
         async job() {
-          await updateStats(
+          const records = await updateStats(
             VideoStatsType.PurchaseAmountJpyTotal,
             type.messageType,
             type.model,
@@ -215,6 +219,7 @@ export default function videoStats(app: Application) {
               value: { $sum: "$jpyAmount" },
             }
           );
+          await incVideoHbStats(records, "totalSuperChatAmountJpy");
         },
       })),
     ...messageTypes
@@ -223,7 +228,7 @@ export default function videoStats(app: Application) {
         name: `video stats - ${VideoStatsType.PurchaseAmountTotal} - ${type.messageType}`,
         interval: "1 minute",
         async job() {
-          await updateStats(
+          const records = await updateStats(
             VideoStatsType.PurchaseAmountTotal,
             type.messageType,
             type.model,
@@ -236,6 +241,9 @@ export default function videoStats(app: Application) {
               value: { $sum: "$amount" },
             }
           );
+          if (type.messageType === MessageType.MembershipGiftPurchase) {
+            await incVideoHbStats(records, "totalGifts");
+          }
         },
       })),
     ...actionTypes.map((type) => ({
@@ -558,4 +566,138 @@ async function updateStats<T extends AnyParamConstructor<any>>(
     await VideoStatsModel.bulkWrite(bulk);
   }
   return records;
+}
+
+/**
+ * Aggregate updateStats records by videoId and $inc the specified hbStats field.
+ */
+export async function incVideoHbStats(
+  records: { _id: { videoId?: string }; value: number }[],
+  field: "totalSuperChatAmountJpy" | "totalMembers" | "totalGifts"
+) {
+  if (records.length === 0) return;
+
+  const videoTotals = new Map<string, number>();
+  for (const record of records) {
+    const videoId = record._id.videoId;
+    if (!videoId) continue;
+    videoTotals.set(videoId, (videoTotals.get(videoId) ?? 0) + record.value);
+  }
+
+  if (videoTotals.size === 0) return;
+
+  const bulk = Array.from(videoTotals, ([videoId, value]) => ({
+    updateOne: {
+      filter: { id: videoId },
+      update: { $inc: { [`hbStats.${field}`]: value } },
+    },
+  }));
+  await VideoModel.bulkWrite(bulk);
+}
+
+/**
+ * Recalculate hbStats (totalSuperChatAmountJpy, totalMembers, totalGifts) from VideoStats
+ * and $set them on Video documents.
+ */
+export async function recalcVideoHbStats(videoIds: string[]) {
+  if (videoIds.length === 0) return;
+
+  const results = await VideoStatsModel.aggregate<{
+    _id: string;
+    totalSuperChatAmountJpy: number;
+    totalMembers: number;
+    totalGifts: number;
+  }>(
+    [
+      {
+        $match: {
+          videoId: { $in: videoIds },
+          $or: [
+            {
+              type: VideoStatsType.PurchaseAmountJpyTotal,
+              messageType: {
+                $in: [MessageType.SuperChat, MessageType.SuperSticker],
+              },
+            },
+            {
+              type: VideoStatsType.MessageTotal,
+              messageType: MessageType.Membership,
+            },
+            {
+              type: VideoStatsType.PurchaseAmountTotal,
+              messageType: MessageType.MembershipGiftPurchase,
+            },
+          ],
+        },
+      },
+      {
+        $group: {
+          _id: "$videoId",
+          totalSuperChatAmountJpy: {
+            $sum: {
+              $cond: [
+                { $eq: ["$type", VideoStatsType.PurchaseAmountJpyTotal] },
+                "$value",
+                0,
+              ],
+            },
+          },
+          totalMembers: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $eq: ["$type", VideoStatsType.MessageTotal] },
+                    { $eq: ["$messageType", MessageType.Membership] },
+                  ],
+                },
+                "$value",
+                0,
+              ],
+            },
+          },
+          totalGifts: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $eq: ["$type", VideoStatsType.PurchaseAmountTotal] },
+                    {
+                      $eq: [
+                        "$messageType",
+                        MessageType.MembershipGiftPurchase,
+                      ],
+                    },
+                  ],
+                },
+                "$value",
+                0,
+              ],
+            },
+          },
+        },
+      },
+    ],
+    { readPreference: "secondaryPreferred" }
+  );
+
+  const resultMap = new Map(results.map((r) => [r._id, r]));
+
+  const bulk = videoIds.map((videoId) => {
+    const stats = resultMap.get(videoId);
+    return {
+      updateOne: {
+        filter: { id: videoId },
+        update: {
+          $set: {
+            "hbStats.totalSuperChatAmountJpy":
+              stats?.totalSuperChatAmountJpy ?? 0,
+            "hbStats.totalMembers": stats?.totalMembers ?? 0,
+            "hbStats.totalGifts": stats?.totalGifts ?? 0,
+          },
+        },
+      },
+    };
+  });
+  await VideoModel.bulkWrite(bulk);
 }

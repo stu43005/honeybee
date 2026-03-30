@@ -30,6 +30,15 @@ export class Stats {
 
   @prop({ required: true })
   errorCount!: number;
+
+  @prop()
+  totalSuperChatAmountJpy?: number;
+
+  @prop()
+  totalMembers?: number;
+
+  @prop()
+  totalGifts?: number;
 }
 
 export const LiveStatus = Object.freeze([

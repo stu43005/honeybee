@@ -30,6 +30,7 @@ import VideoStatsModel, { VideoStatsFlags } from "../models/VideoStats";
 import type { Application } from "../modules/application";
 import { MONGO_URI } from "../modules/db";
 import type { AgendaModule } from "../modules/schedule";
+import { recalcVideoHbStats } from "./video-stats";
 
 export default function chatsArchive(app: Application) {
   const { agenda } = app.get<AgendaModule>("agenda") ?? {};
@@ -706,8 +707,9 @@ async function genIndexFile() {
       continue;
 
     channelIds.add(video.channelId);
-    await videoCard(ws, video);
-    if (require.main === module) await archiveVideo(video.id);
+    const isMain = require.main === module;
+    await videoCard(ws, video, "", isMain);
+    if (isMain) await archiveVideo(video.id);
   }
 
   ws.write(`    </div></div>
@@ -727,8 +729,9 @@ async function genIndexFile() {
     )
       continue;
     channelIds.add(video.channelId);
-    await videoCard(ws, video);
-    if (require.main === module) await archiveVideo(video.id);
+    const isMain = require.main === module;
+    await videoCard(ws, video, "", isMain);
+    if (isMain) await archiveVideo(video.id);
   }
 
   ws.end(`    </div></div>
@@ -803,7 +806,7 @@ async function genChannelIndexFile(channelId: string) {
     uploadedVideo: { $ne: true },
   })
     .sort({ availableAt: -1 })
-    .limit(200)
+    .limit(100)
     .populate("channel")
     .setOptions({ readPreference: "secondaryPreferred" })) {
     const before = ws.bytesWritten;
@@ -824,48 +827,16 @@ async function genChannelIndexFile(channelId: string) {
   await fsp.rename(`${outputFilePath}.tmp`, outputFilePath);
 }
 
-async function videoCard(ws: Writable, video: DocumentType<Video>, basePath = "") {
-  const videoStats = await VideoStatsModel.find({
-    videoId: video.id,
-    type: {
-      $in: [
-        VideoStatsType.MessageTotal,
-        VideoStatsType.PurchaseAmountTotal,
-        VideoStatsType.PurchaseAmountJpyTotal,
-      ],
-    },
-    messageType: {
-      $in: [
-        MessageType.SuperChat,
-        MessageType.SuperSticker,
-        MessageType.Membership,
-        MessageType.MembershipGift,
-        MessageType.MembershipGiftPurchase,
-        MessageType.Milestone,
-      ],
-    },
-  });
-  if (!videoStats.length) {
-    return;
+async function videoCard(ws: Writable, video: DocumentType<Video>, basePath = "", backfill = false) {
+  if (backfill) {
+    await recalcVideoHbStats([video.id]);
+    const updated = await VideoModel.findByVideoId(video.id);
+    if (updated) video = updated;
   }
 
-  const totalSuperChatAmountJpy = videoStats
-    .filter((stat) => stat.type === VideoStatsType.PurchaseAmountJpyTotal)
-    .reduce((sum, stat) => sum + stat.value, 0);
-  const totalMembers = videoStats
-    .filter(
-      (stat) =>
-        stat.type === VideoStatsType.MessageTotal &&
-        stat.messageType === MessageType.Membership
-    )
-    .reduce((sum, stat) => sum + stat.value, 0);
-  const totalGifts = videoStats
-    .filter(
-      (stat) =>
-        stat.type === VideoStatsType.PurchaseAmountTotal &&
-        stat.messageType === MessageType.MembershipGiftPurchase
-    )
-    .reduce((sum, stat) => sum + stat.value, 0);
+  const totalSuperChatAmountJpy = video.hbStats?.totalSuperChatAmountJpy ?? 0;
+  const totalMembers = video.hbStats?.totalMembers ?? 0;
+  const totalGifts = video.hbStats?.totalGifts ?? 0;
 
   const channel = await video.getChannel();
   let statusText = "";

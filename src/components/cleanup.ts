@@ -3,6 +3,7 @@ import mongoose, { mongo } from "mongoose";
 import assert from "node:assert";
 import { MAX_HOURS_BEFORE_CLEANUP } from "../constants";
 import { HoneybeeStatus, VideoStatsType } from "../interfaces";
+import { recalcVideoHbStats } from "./video-stats";
 import BanAction from "../models/BanAction";
 import Chat from "../models/Chat";
 import Membership from "../models/Membership";
@@ -132,6 +133,7 @@ async function cleanEndedStreams() {
 
   if (toRemoveVideoIds.length > 0) {
     await cleanVideos(toRemoveVideoIds);
+    await recalcVideoHbStats(toRemoveVideoIds);
   }
 }
 
