@@ -41,7 +41,7 @@ export default function chatsArchive(app: Application) {
     agenda.every("1 minutes", "chats archive");
 
     agenda.define("chats archive index", genIndexFile);
-    agenda.every("1 minutes", "chats archive index");
+    agenda.every("10 minutes", "chats archive index");
   }
 }
 
@@ -809,9 +809,10 @@ async function genChannelIndexFile(channelId: string) {
     .limit(100)
     .populate("channel")
     .setOptions({ readPreference: "secondaryPreferred" })) {
-    const before = ws.bytesWritten;
-    await videoCard(ws, video, "../");
-    if (ws.bytesWritten > before) count++;
+    const isMain = require.main === module;
+    await videoCard(ws, video, "../", isMain);
+    if (isMain) await archiveVideo(video.id);
+    count++;
   }
 
   ws.end(`  </div>

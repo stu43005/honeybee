@@ -14,6 +14,7 @@ __nock-fixtures__
 TODO
 *.code-workspace
 .DS_Store
+docs/superpowers/
 
 # Created by https://www.toptal.com/developers/gitignore/api/node
 # Edit at https://www.toptal.com/developers/gitignore?templates=node
