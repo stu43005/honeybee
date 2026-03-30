@@ -10,7 +10,7 @@ import path from "node:path";
 import type { Writable } from "node:stream";
 import { CHAT_ARCHIVE_DIR, MAX_HOURS_BEFORE_CLEANUP } from "../constants";
 import { currencyMap } from "../data/currency";
-import { MessageAuthorType, MessageType, VideoStatsType } from "../interfaces";
+import { HoneybeeStatus, MessageAuthorType, MessageType, VideoStatsType } from "../interfaces";
 import ChannelModel from "../models/Channel";
 import ChatModel, { type Chat } from "../models/Chat";
 import MembershipModel, { type Membership } from "../models/Membership";
@@ -798,9 +798,12 @@ async function genChannelIndexFile(channelId: string) {
 `);
 
   let count = 0;
-  for await (const video of VideoModel.find({ channelId })
+  for await (const video of VideoModel.find({
+    channelId,
+    uploadedVideo: { $ne: true },
+  })
     .sort({ availableAt: -1 })
-    .limit(1000)
+    .limit(200)
     .populate("channel")
     .setOptions({ readPreference: "secondaryPreferred" })) {
     const before = ws.bytesWritten;
