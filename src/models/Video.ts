@@ -75,6 +75,7 @@ export const IsNotShortQuery = Object.freeze({
   }
 )
 @index({ updatedAt: 1 })
+@index({ channelId: 1, availableAt: -1 })
 @index(
   { hbCleanedAt: 1, actualEnd: 1, hbEnd: 1 },
   {

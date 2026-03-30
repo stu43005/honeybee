@@ -11,6 +11,7 @@ import type { Writable } from "node:stream";
 import { CHAT_ARCHIVE_DIR, MAX_HOURS_BEFORE_CLEANUP } from "../constants";
 import { currencyMap } from "../data/currency";
 import { MessageAuthorType, MessageType, VideoStatsType } from "../interfaces";
+import ChannelModel from "../models/Channel";
 import ChatModel, { type Chat } from "../models/Chat";
 import MembershipModel, { type Membership } from "../models/Membership";
 import MembershipGiftModel, {
@@ -39,7 +40,7 @@ export default function chatsArchive(app: Application) {
     agenda.every("1 minutes", "chats archive");
 
     agenda.define("chats archive index", genIndexFile);
-    agenda.every("10 minutes", "chats archive index");
+    agenda.every("1 minutes", "chats archive index");
   }
 }
 
@@ -690,6 +691,8 @@ async function genIndexFile() {
     <div class="container"><div class="row row-cols-1 row-cols-md-4 g-4">
 `);
 
+  const channelIds = new Set<string>();
+
   for await (const video of VideoModel.findLiveVideos(48)
     .sort({ availableAt: 1 })
     .populate("channel")
@@ -702,6 +705,7 @@ async function genIndexFile() {
     )
       continue;
 
+    channelIds.add(video.channelId);
     await videoCard(ws, video);
     if (require.main === module) await archiveVideo(video.id);
   }
@@ -722,6 +726,7 @@ async function genIndexFile() {
       moment.tz("UTC").isBefore(video.scheduledStart)
     )
       continue;
+    channelIds.add(video.channelId);
     await videoCard(ws, video);
     if (require.main === module) await archiveVideo(video.id);
   }
@@ -735,9 +740,88 @@ async function genIndexFile() {
 `);
 
   await fsp.rename(`${outputFilePath}.tmp`, outputFilePath);
+
+  // Generate per-channel index files
+  for (const channelId of channelIds) {
+    try {
+      await genChannelIndexFile(channelId);
+    } catch (error) {
+      console.error(`Failed to generate channel index for ${channelId}:`, error);
+    }
+  }
 }
 
-async function videoCard(ws: Writable, video: DocumentType<Video>) {
+async function genChannelIndexFile(channelId: string) {
+  assert(CHAT_ARCHIVE_DIR, "CHAT_ARCHIVE_DIR is not defined.");
+  const outputFilePath = path.join(CHAT_ARCHIVE_DIR, channelId, "index.html");
+  await fsp.mkdir(path.dirname(outputFilePath), { recursive: true });
+
+  const channel = await ChannelModel.findByChannelId(channelId);
+  if (!channel) return;
+
+  const ws = fs.createWriteStream(`${outputFilePath}.tmp`, {
+    encoding: "utf-8",
+  });
+
+  ws.write(`<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${channel.name} - Video Archive</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB" crossorigin="anonymous">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+    }
+    th, td {
+      border: 1px solid #ddd;
+      padding: 8px;
+    }
+    th {
+      background-color: #f2f2f2;
+    }
+  </style>
+</head>
+<body>
+<div class="container">
+  <div class="d-flex align-items-center my-3">
+    <img src="${channel.avatarUrl}" alt="Channel Avatar" style="height: 48px; width: 48px; border-radius: 50%; margin-right: 12px;" />
+    <h1 class="mb-0">${channel.name}</h1>
+  </div>
+  <hr />
+  <div class="row row-cols-1 row-cols-md-4 g-4">
+`);
+
+  let count = 0;
+  for await (const video of VideoModel.find({ channelId })
+    .sort({ availableAt: -1 })
+    .limit(1000)
+    .populate("channel")
+    .setOptions({ readPreference: "secondaryPreferred" })) {
+    const before = ws.bytesWritten;
+    await videoCard(ws, video, "../");
+    if (ws.bytesWritten > before) count++;
+  }
+
+  ws.end(`  </div>
+</div>
+</body>
+</html>
+`);
+
+  if (count === 0) {
+    await fsp.unlink(`${outputFilePath}.tmp`);
+    return;
+  }
+  await fsp.rename(`${outputFilePath}.tmp`, outputFilePath);
+}
+
+async function videoCard(ws: Writable, video: DocumentType<Video>, basePath = "") {
   const videoStats = await VideoStatsModel.find({
     videoId: video.id,
     type: {
@@ -808,7 +892,7 @@ async function videoCard(ws: Writable, video: DocumentType<Video>) {
   }
   ws.write(`      <div class="col">
         <div class="card">
-          <a href="${getVideoPath(video)}"><img src="${
+          <a href="${basePath}${getVideoPath(video)}"><img src="${
     VideoModel.getVideoThumbnails(video).medium
   }" class="card-img-top" alt="Video Thumbnail" loading="lazy" /></a>
           <div class="row g-0 align-items-center">
@@ -819,12 +903,12 @@ async function videoCard(ws: Writable, video: DocumentType<Video>) {
             </div>
             <div class="col">
               <div class="card-body" style="padding-left: 0;">
-                <h5 class="card-title" style="font-size: 1rem; line-height: 1.25rem; max-height: 2.5rem; white-space: normal; overflow: hidden; text-overflow: ellipsis; word-break: break-all; word-break: break-word; hyphens: auto; -webkit-line-clamp: 2; -webkit-box-orient: vertical;"><a href="${getVideoPath(
+                <h5 class="card-title" style="font-size: 1rem; line-height: 1.25rem; max-height: 2.5rem; white-space: normal; overflow: hidden; text-overflow: ellipsis; word-break: break-all; word-break: break-word; hyphens: auto; -webkit-line-clamp: 2; -webkit-box-orient: vertical;"><a href="${basePath}${getVideoPath(
                   video
                 )}">${video.title}</a></h5>
-                <p class="card-text" style="font-size: .875rem; margin-bottom: 0;">${
+                <p class="card-text" style="font-size: .875rem; margin-bottom: 0;"><a href="${basePath}${video.channelId}/index.html">${
                   channel.name
-                }</p>
+                }</a></p>
                 <p class="card-text"><small class="text-body-secondary">${statusText}</small></p>
               </div>
             </div>
