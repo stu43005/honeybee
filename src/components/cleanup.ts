@@ -2,6 +2,8 @@ import moment from "moment-timezone";
 import mongoose, { mongo } from "mongoose";
 import assert from "node:assert";
 import { MAX_HOURS_BEFORE_CLEANUP } from "../constants";
+import { HoneybeeStatus, VideoStatsType } from "../interfaces";
+import BanAction from "../models/BanAction";
 import Chat from "../models/Chat";
 import Membership from "../models/Membership";
 import MembershipGift from "../models/MembershipGift";
@@ -12,6 +14,7 @@ import RemoveChatAction from "../models/RemoveChatAction";
 import SuperChat from "../models/SuperChat";
 import SuperSticker from "../models/SuperSticker";
 import Video, { LiveStatus } from "../models/Video";
+import VideoStats from "../models/VideoStats";
 import VideoUserStats from "../models/VideoUserStats";
 import WebhookResult from "../models/WebhookResult";
 import type { Application } from "../modules/application";
@@ -31,6 +34,7 @@ export default function cleanup(app: Application) {
 async function cleanVideos(videoIds: string[]) {
   await Placeholder.deleteMany({ originVideoId: { $in: videoIds } });
   await RemoveChatAction.deleteMany({ originVideoId: { $in: videoIds } });
+  await BanAction.deleteMany({ originVideoId: { $in: videoIds } });
   await Membership.deleteMany({ originVideoId: { $in: videoIds } });
   await Milestone.deleteMany({ originVideoId: { $in: videoIds } });
   await SuperChat.deleteMany({ originVideoId: { $in: videoIds } });
@@ -47,15 +51,62 @@ async function cleanVideos(videoIds: string[]) {
 }
 
 async function cleanEndedStreams() {
-  const chats = await Chat.aggregate<{
-    _id: { videoId: string };
+  const cleanupThresholdTime = moment
+    .tz("UTC")
+    .subtract(MAX_HOURS_BEFORE_CLEANUP, "hour")
+    .toDate();
+
+  // Step 1: Find candidate videos from Video collection directly
+  const videos = await Video.find(
+    {
+      hbCleanedAt: null,
+      hbStatus: { $ne: HoneybeeStatus.Created },
+      status: { $nin: LiveStatus },
+      $or: [
+        { actualEnd: { $lt: cleanupThresholdTime } },
+        { hbEnd: { $lt: cleanupThresholdTime } },
+        // Fallback: neither actualEnd nor hbEnd exist (e.g. worker crashed)
+        {
+          actualEnd: { $exists: false },
+          hbEnd: { $exists: false },
+          updatedAt: { $lt: cleanupThresholdTime },
+        },
+      ],
+    },
+    {
+      id: 1,
+      status: 1,
+      availableAt: 1,
+      publishedAt: 1,
+      actualEnd: 1,
+      hbEnd: 1,
+      hbIgnore: 1,
+    },
+    {
+      readPreference: "secondaryPreferred",
+    }
+  );
+
+  if (videos.length === 0) return;
+
+  const candidateVideoIds = videos.map((v) => v.id);
+
+  // Step 2: Get last activity time from VideoStats for candidates
+  const statsRecords = await VideoStats.aggregate<{
+    _id: string;
     lastTime: Date;
   }>(
     [
       {
+        $match: {
+          type: VideoStatsType.MessageTotal,
+          videoId: { $in: candidateVideoIds },
+        },
+      },
+      {
         $group: {
-          _id: { videoId: "$originVideoId" },
-          lastTime: { $last: "$timestamp" },
+          _id: "$videoId",
+          lastTime: { $max: "$updatedAt" },
         },
       },
     ],
@@ -63,55 +114,24 @@ async function cleanEndedStreams() {
       readPreference: "secondaryPreferred",
     }
   );
-  const videoIds = Array.from(new Set([...chats.map((r) => r._id.videoId)]));
 
-  const videos = await Video.find(
-    {
-      id: { $in: videoIds },
-    },
-    {
-      id: 1,
-      status: 1,
-      actualEnd: 1,
-      hbStatus: 1,
-      hbEnd: 1,
-      hbCleanedAt: 1,
-    },
-    {
-      readPreference: "secondaryPreferred",
-    }
-  );
+  // Step 3: Filter videos that are safe to clean
+  const toRemoveVideoIds = videos
+    .filter((video) => {
+      if (video.hbIgnore) return true;
+      const statsRecord = statsRecords.find((r) => r._id === video.id);
+      return (
+        (!video.availableAt || video.availableAt < cleanupThresholdTime) &&
+        (!video.publishedAt || video.publishedAt < cleanupThresholdTime) &&
+        (!video.actualEnd || video.actualEnd < cleanupThresholdTime) &&
+        (!video.hbEnd || video.hbEnd < cleanupThresholdTime) &&
+        (!statsRecord || statsRecord.lastTime < cleanupThresholdTime)
+      );
+    })
+    .map((video) => video.id);
 
-  const cleanupThresholdTime = moment
-    .tz("UTC")
-    .subtract(MAX_HOURS_BEFORE_CLEANUP, "hour");
-  const toRemoveVideoIds = new Set<string>([
-    // The status of the video is already past or missing, and the last chat have exceeded 1 hour ago
-    ...videos
-      .filter((video) => {
-        if (video.hbIgnore) return true;
-        const videoChat = chats.find((chat) => chat._id.videoId === video.id);
-        return (
-          !LiveStatus.includes(video.status) &&
-          (!video.availableAt ||
-            moment(video.availableAt).isBefore(cleanupThresholdTime)) &&
-          (!video.publishedAt ||
-            moment(video.publishedAt).isBefore(cleanupThresholdTime)) &&
-          (!video.actualEnd ||
-            moment(video.actualEnd).isBefore(cleanupThresholdTime)) &&
-          (!video.hbEnd ||
-            moment(video.hbEnd).isBefore(cleanupThresholdTime)) &&
-          (!videoChat ||
-            moment(videoChat.lastTime).isBefore(cleanupThresholdTime))
-        );
-      })
-      .map((video) => video.id),
-    // video does not exist (may have been cleaned)
-    ...videoIds.filter((id) => !videos.find((video) => video.id === id)),
-  ]);
-
-  if (toRemoveVideoIds.size) {
-    await cleanVideos(Array.from(toRemoveVideoIds));
+  if (toRemoveVideoIds.length > 0) {
+    await cleanVideos(toRemoveVideoIds);
   }
 }
 

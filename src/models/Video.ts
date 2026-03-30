@@ -75,6 +75,16 @@ export const IsNotShortQuery = Object.freeze({
   }
 )
 @index({ updatedAt: 1 })
+@index(
+  { hbCleanedAt: 1, actualEnd: 1, hbEnd: 1 },
+  {
+    partialFilterExpression: {
+      hbCleanedAt: null,
+      hbStatus: { $nin: [HoneybeeStatus.Created] },
+      status: { $nin: LiveStatus },
+    },
+  }
+)
 export class Video extends TimeStamps {
   @prop({ required: true, unique: true })
   public id!: string;
