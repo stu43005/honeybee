@@ -52,6 +52,7 @@ import {
 } from "../modules/currency-convert";
 import { MongodbModule } from "../modules/db";
 import { QueueModule } from "../modules/queue";
+import { youtubeRateLimiter } from "../modules/rate-limiter";
 import { groupBy, pipeSignal, setIfDefine } from "../util";
 
 const { MongoError, MongoBulkWriteError } = mongoose.mongo;
@@ -860,6 +861,9 @@ async function handleJob(
 
   async function updateVideoStats() {
     try {
+      if (isReplay) return; // do not update stats for replay mode
+      if (replica > 1) return; // only update stats in the first replica
+      await youtubeRateLimiter.acquire();
       await VideoModel.updateFromMasterchat(mc);
     } catch (err) {
       if (err instanceof AbortError || axios.isCancel(err)) {
@@ -892,7 +896,7 @@ async function handleJob(
     // replay chat does not need to calculate replica
     if (isReplay) return;
 
-    for await (const _ of setInterval(30_000, null, {
+    for await (const _ of setInterval(60_000, null, {
       signal: cancelController.signal,
     })) {
       try {
@@ -931,7 +935,7 @@ async function handleJob(
   })().catch(() => void 0);
 
   try {
-    await updateVideoStats();
+    updateVideoStats();
 
     // iterate over live chat
     for await (const { actions } of mc.iterate({
