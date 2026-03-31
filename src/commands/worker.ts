@@ -7,7 +7,7 @@ import {
   stringify,
   YTEmojiRun,
 } from "@stu43005/masterchat";
-import axios from "axios";
+import axios, { isAxiosError } from "axios";
 import BeeQueue from "bee-queue";
 import moment from "moment-timezone";
 import mongoose from "mongoose";
@@ -868,6 +868,9 @@ async function handleJob(
     } catch (err) {
       if (err instanceof AbortError || axios.isCancel(err)) {
         // ignore
+      } else if (isAxiosError(err)) {
+        // only log the error message instead of the whole error object to avoid logging sensitive info like API key
+        videoLog(`<!> [STATS UPDATE ERROR] ${err}`);
       } else {
         videoLog("<!> [STATS UPDATE ERROR]", err);
       }
