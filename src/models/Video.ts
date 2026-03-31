@@ -25,10 +25,10 @@ import ChannelModel, { Channel } from "./Channel";
 import type { Raid } from "./Raid";
 
 export class Stats {
-  @prop({ required: true })
+  @prop({ required: true, default: 0 })
   handled!: number;
 
-  @prop({ required: true })
+  @prop({ required: true, default: 0 })
   errorCount!: number;
 
   @prop()
