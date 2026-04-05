@@ -174,6 +174,70 @@ export class Channel extends TimeStamps {
     return this.find(this.SubscribedQuery);
   }
 
+  public static waitForCrawl(
+    this: ReturnModelType<typeof Channel>,
+    channelId: string,
+    options?: { timeoutMs?: number; signal?: AbortSignal }
+  ): Promise<DocumentType<Channel> | null> {
+    const self = this;
+    const timeoutMs = options?.timeoutMs ?? 600_000;
+    const signal = options?.signal;
+
+    const p = (async () => {
+      const deadline = Date.now() + timeoutMs;
+      const backoffSchedule = [5_000, 10_000, 15_000, 20_000, 25_000, 30_000];
+      let attempt = 0;
+      let latest: DocumentType<Channel> | null = null;
+
+      while (true) {
+        if (signal?.aborted) {
+          throw new Error("waitForCrawl aborted");
+        }
+
+        latest = await self.findByChannelId(channelId);
+        if (latest?.crawledAt) {
+          return latest;
+        }
+
+        if (Date.now() >= deadline) {
+          return latest;
+        }
+
+        const delay = backoffSchedule[Math.min(attempt, backoffSchedule.length - 1)];
+        const remaining = deadline - Date.now();
+        const waitMs = Math.min(delay, remaining);
+        if (waitMs <= 0) {
+          return latest;
+        }
+
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            signal?.removeEventListener("abort", onAbort);
+            resolve();
+          }, waitMs);
+          const onAbort = () => {
+            clearTimeout(timer);
+            reject(new Error("waitForCrawl aborted"));
+          };
+          if (signal) {
+            signal.addEventListener("abort", onAbort, { once: true });
+            if (signal.aborted) {
+              onAbort();
+            }
+          }
+        });
+        attempt++;
+      }
+    })();
+
+    // Pre-attach a no-op catch so that if this promise rejects before the caller
+    // attaches its own handler, Node.js does not fire unhandledRejection.
+    // The rejection will still propagate to the caller's await/catch as normal.
+    p.catch(() => {});
+
+    return p;
+  }
+
   //#endregion find methods
 
   //#region update methods
