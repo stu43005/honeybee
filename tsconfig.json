@@ -1,5 +1,5 @@
 {
-  "exclude": ["tests", "lib"],
+  "exclude": ["tests", "lib", "**/*.spec.ts", "**/*.test.ts"],
   "compilerOptions": {
     /* Visit https://aka.ms/tsconfig.json to read more about this file */
     "target": "es2021",
