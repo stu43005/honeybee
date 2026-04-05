@@ -126,12 +126,10 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
       description: `Post when tracked channels sends a message on thare owned channel`,
       transform: (track) => {
         if (track.trackChannels.length === 0) return null;
-        const trackChannels = Array.from(
-          new Set([...track.trackChannels, ...track.chatFollowlist])
-        );
+        const withoutNormalChats = track.enabledFeatures.includes("withoutNormalChats");
         return {
           colls: [
-            "chats",
+            ...(withoutNormalChats ? [] : ["chats"]),
             "superchats",
             "superstickers",
             "memberships",
@@ -140,7 +138,7 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
             "membershipgifts",
           ],
           match: {
-            authorChannelId: { $in: trackChannels },
+            authorChannelId: getChannelIdFilter(track),
             originChannelId: getChannelIdFilter(track),
             isReplay: { $ne: true },
           },
@@ -152,9 +150,10 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
       description: `Post when tracked channels sends a message on other channels`,
       transform: (track) => {
         if (track.trackChannels.length === 0) return null;
+        const withoutNormalChats = track.enabledFeatures.includes("withoutNormalChats");
         return {
           colls: [
-            "chats",
+            ...(withoutNormalChats ? [] : ["chats"]),
             "superchats",
             "superstickers",
             "memberships",
@@ -176,14 +175,16 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
       transform: (track) => {
         if (track.trackChannels.length === 0) return null;
         const chats = track.enabledFeatures.includes("chats");
-        const chatBlocklist = [
+        const followedChats = track.enabledFeatures.includes("followedChats");
+        const withoutNormalChats = track.enabledFeatures.includes("withoutNormalChats");
+        const chatBlocklist = new Set([
           ...(chats ? track.trackChannels : []),
-          ...(chats ? track.chatFollowlist : []),
+          ...(followedChats ? track.chatFollowlist : []),
           ...track.chatBlocklist,
-        ];
+        ]);
         return {
           colls: [
-            "chats",
+            ...(withoutNormalChats ? [] : ["chats"]),
             "superchats",
             "superstickers",
             "memberships",
@@ -192,8 +193,8 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
             "membershipgifts",
           ],
           match: {
-            ...(chatBlocklist.length > 0
-              ? { authorChannelId: { $nin: chatBlocklist } }
+            ...(chatBlocklist.size > 0
+              ? { authorChannelId: { $nin: Array.from(chatBlocklist) } }
               : {}),
             originChannelId: getChannelIdFilter(track),
             isModerator: true,
@@ -202,6 +203,38 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
           templatePreset: "discord-embed-chats",
         };
       },
+    },
+    followedChats: {
+      description: `Post when followed sender sends a message on tracked channel`,
+      transform: (track) => {
+        if (track.trackChannels.length === 0) return null;
+        const withoutNormalChats = track.enabledFeatures.includes("withoutNormalChats");
+        const chatFollowlist = new Set(track.chatFollowlist);
+        if (track.enabledFeatures.includes("chats")) {
+          track.trackChannels.forEach((channelId) => chatFollowlist.delete(channelId));
+        }
+        if (chatFollowlist.size === 0) return null;
+        return {
+          colls: [
+            ...(withoutNormalChats ? [] : ["chats"]),
+            "superchats",
+            "superstickers",
+            "memberships",
+            "milestones",
+            "membershipgiftpurchases",
+            "membershipgifts",
+          ],
+          match: {
+            authorChannelId: { $in: Array.from(chatFollowlist) },
+            originChannelId: getChannelIdFilter(track),
+            isReplay: { $ne: true },
+          },
+          templatePreset: "discord-embed-chats",
+        };
+      },
+    },
+    withoutNormalChats: {
+      description: `[Option] Don't post normal chats, only superchats, memberships, etc.`,
     },
     polls: {
       description: `Post when tracked channels create a poll`,

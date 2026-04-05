@@ -243,6 +243,7 @@ export class Track extends TimeStamps {
         },
         $addToSet: {
           chatFollowlist: userId,
+          enabledFeatures: "followedChats",
         },
       },
       {
