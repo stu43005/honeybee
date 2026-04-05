@@ -582,6 +582,26 @@ export class TrackCommand implements Command {
         },
       ],
     });
+
+    if (!channel.crawledAt) {
+      try {
+        const updated = await ChannelModel.waitForCrawl(channelId);
+        if (updated?.crawledAt) {
+          const warning = updated.deleted
+            ? " ⚠️ This channel may not exist on YouTube."
+            : "";
+          await intr.editReply({
+            embeds: [
+              {
+                description: `Blocked ${updated.getHyperlink()} (${channelId}) from chat.${warning}`,
+              },
+            ],
+          });
+        }
+      } catch (err) {
+        console.error("[track block-moderator] waitForCrawl/editReply failed:", err);
+      }
+    }
   }
 
   private async unblockModerator(
