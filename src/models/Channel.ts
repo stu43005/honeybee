@@ -175,6 +175,18 @@ export class Channel extends TimeStamps {
     return this.find(this.SubscribedQuery);
   }
 
+  /**
+   * Polls `findByChannelId(channelId)` until the document has a non-null
+   * `crawledAt`, or the timeout elapses. Returns the latest snapshot on
+   * timeout (which may still have `crawledAt: null`), or `null` if no
+   * document exists. Throws if `signal` is aborted.
+   *
+   * @param options.timeoutMs Total wait budget in ms. Default: 600_000 (10 min).
+   * @param options.signal AbortSignal to cancel the wait.
+   * @param options.backoffSchedule Internal test seam — delays between polls.
+   *   Production callers should leave this unset to use the default
+   *   5s→10s→15s→20s→25s→30s schedule.
+   */
   public static async waitForCrawl(
     this: ReturnModelType<typeof Channel>,
     channelId: string,
