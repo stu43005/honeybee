@@ -201,6 +201,9 @@ export class Channel extends TimeStamps {
     const backoffSchedule = options?.backoffSchedule ?? [
       5_000, 10_000, 15_000, 20_000, 25_000, 30_000,
     ];
+    if (backoffSchedule.length === 0) {
+      throw new Error("backoffSchedule must contain at least one delay");
+    }
     const deadline = Date.now() + timeoutMs;
     let attempt = 0;
     let latest: DocumentType<Channel> | null = null;

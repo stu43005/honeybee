@@ -167,6 +167,30 @@ export class TrackCommand implements Command {
     }
   }
 
+  private async editReplyAfterCrawl(
+    intr: ChatInputCommandInteraction,
+    channelId: string,
+    buildDescription: (
+      channel: NonNullable<Awaited<ReturnType<typeof ChannelModel.waitForCrawl>>>,
+      warning: string
+    ) => string,
+    logContext: string
+  ): Promise<void> {
+    try {
+      const updated = await ChannelModel.waitForCrawl(channelId);
+      if (updated?.crawledAt) {
+        const warning = updated.deleted
+          ? " ⚠️ This channel may not exist on YouTube."
+          : "";
+        await intr.editReply({
+          embeds: [{ description: buildDescription(updated, warning) }],
+        });
+      }
+    } catch (err) {
+      console.error(`[${logContext}] waitForCrawl/editReply failed:`, err);
+    }
+  }
+
   private async getChannelWebhook(
     intr: ChatInputCommandInteraction,
     track: DocumentType<Track> | null,
@@ -242,23 +266,13 @@ export class TrackCommand implements Command {
     });
 
     if (!channel.crawledAt) {
-      try {
-        const updated = await ChannelModel.waitForCrawl(channelId);
-        if (updated?.crawledAt) {
-          const warning = updated.deleted
-            ? " ⚠️ This channel may not exist on YouTube."
-            : "";
-          await intr.editReply({
-            embeds: [
-              {
-                description: `Now tracking ${updated.getHyperlink()} (${channelId}).${warning}`,
-              },
-            ],
-          });
-        }
-      } catch (err) {
-        console.error("[track add] waitForCrawl/editReply failed:", err);
-      }
+      await this.editReplyAfterCrawl(
+        intr,
+        channelId,
+        (updated, warning) =>
+          `Now tracking ${updated.getHyperlink()} (${channelId}).${warning}`,
+        "track add"
+      );
     }
   }
 
@@ -584,23 +598,13 @@ export class TrackCommand implements Command {
     });
 
     if (!channel.crawledAt) {
-      try {
-        const updated = await ChannelModel.waitForCrawl(channelId);
-        if (updated?.crawledAt) {
-          const warning = updated.deleted
-            ? " ⚠️ This channel may not exist on YouTube."
-            : "";
-          await intr.editReply({
-            embeds: [
-              {
-                description: `Blocked ${updated.getHyperlink()} (${channelId}) from chat.${warning}`,
-              },
-            ],
-          });
-        }
-      } catch (err) {
-        console.error("[track block-moderator] waitForCrawl/editReply failed:", err);
-      }
+      await this.editReplyAfterCrawl(
+        intr,
+        channelId,
+        (updated, warning) =>
+          `Blocked ${updated.getHyperlink()} (${channelId}) from chat.${warning}`,
+        "track block-moderator"
+      );
     }
   }
 
@@ -716,23 +720,13 @@ export class TrackCommand implements Command {
     });
 
     if (!channel.crawledAt) {
-      try {
-        const updated = await ChannelModel.waitForCrawl(channelId);
-        if (updated?.crawledAt) {
-          const warning = updated.deleted
-            ? " ⚠️ This channel may not exist on YouTube."
-            : "";
-          await intr.editReply({
-            embeds: [
-              {
-                description: `Following ${updated.getHyperlink()} (${channelId}) in chat.${warning}`,
-              },
-            ],
-          });
-        }
-      } catch (err) {
-        console.error("[track follow-sender] waitForCrawl/editReply failed:", err);
-      }
+      await this.editReplyAfterCrawl(
+        intr,
+        channelId,
+        (updated, warning) =>
+          `Following ${updated.getHyperlink()} (${channelId}) in chat.${warning}`,
+        "track follow-sender"
+      );
     }
   }
 
