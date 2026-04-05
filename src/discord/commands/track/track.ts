@@ -240,6 +240,26 @@ export class TrackCommand implements Command {
         },
       ],
     });
+
+    if (!channel.crawledAt) {
+      try {
+        const updated = await ChannelModel.waitForCrawl(channelId);
+        if (updated?.crawledAt) {
+          const warning = updated.deleted
+            ? " ⚠️ This channel may not exist on YouTube."
+            : "";
+          await intr.editReply({
+            embeds: [
+              {
+                description: `Now tracking ${updated.getHyperlink()} (${channelId}).${warning}`,
+              },
+            ],
+          });
+        }
+      } catch (err) {
+        console.error("[track add] waitForCrawl/editReply failed:", err);
+      }
+    }
   }
 
   private async removeTrackChannel(
