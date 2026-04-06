@@ -542,7 +542,9 @@ function getMessage(parameters: Record<string, any>) {
     return `獲得了 ${parameters.senderName} 送出的會籍`;
   }
   if (parameters.collection === "membershipgiftpurchases") {
-    return `送出了 ${parameters.amount} 個「${parameters.channelName}」的會籍`;
+    return parameters.channelName
+      ? `送出了 ${parameters.amount} 個「${parameters.channelName}」的會籍`
+      : `送出了 ${parameters.amount} 個會籍`;
   }
   if (parameters.collection === "superstickers") {
     return `[Sticker]:${parameters.text}:`;
