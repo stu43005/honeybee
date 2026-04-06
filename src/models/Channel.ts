@@ -146,6 +146,7 @@ export class Channel extends TimeStamps {
             { organization: { $regex: name, $options: "i" } },
             { group: { $regex: name, $options: "i" } },
             { id: { $regex: name, $options: "i" } },
+            { customUrl: { $regex: name, $options: "i" } },
           ],
         },
       ])
