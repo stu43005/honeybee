@@ -48,6 +48,9 @@ export class Channel extends TimeStamps {
   public englishName!: string;
 
   @prop()
+  public customUrl?: string;
+
+  @prop()
   public description?: string;
 
   @prop({ index: true })
