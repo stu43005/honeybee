@@ -128,7 +128,7 @@ async function handleJob(
   assert(video, "Unable to find the video.");
   assert(video.getReplicas() >= replica, "Stop replica");
   const { channelId } = video;
-  const { name: channelName, avatarUrl: channelAvatarUrl } =
+  const { name: channelName, avatarUrl: channelAvatarUrl, customUrl: channelHandle } =
     await video.getChannel();
 
   if (video.hbIgnore) {
@@ -707,7 +707,7 @@ async function handleJob(
                 sourcePhoto: action.sourcePhoto,
                 originVideoId: mc.videoId,
                 originChannelId: mc.channelId,
-                originName: channelName,
+                originName: channelHandle ?? channelName,
                 originPhoto: channelAvatarUrl,
                 timestamp: new Date(),
               };
@@ -734,7 +734,7 @@ async function handleJob(
                 outgoingTargetId: action.targetId,
                 sourceVideoId: mc.videoId,
                 sourceChannelId: mc.channelId,
-                sourceName: channelName,
+                sourceName: channelHandle ?? channelName,
                 sourcePhoto: channelAvatarUrl,
                 originVideoId: action.targetVideoId,
                 // originChannelId: ,
