@@ -181,6 +181,30 @@ export async function updateVideoFromYoutube(
   return result;
 }
 
+function applyYoutubeChannelInfo(
+  channel: DocumentType<Channel>,
+  ytInfo: youtube_v3.Schema$Channel
+): void {
+  if (ytInfo.snippet?.title) channel.name = ytInfo.snippet.title;
+  if (ytInfo.snippet?.customUrl)
+    channel.customUrl = ytInfo.snippet.customUrl;
+  if (ytInfo.snippet?.description)
+    channel.description = ytInfo.snippet.description;
+  if (ytInfo.snippet?.thumbnails?.high?.url)
+    channel.avatarUrl = ytInfo.snippet.thumbnails.high.url;
+  if (ytInfo.brandingSettings?.image?.bannerExternalUrl)
+    channel.bannerUrl = ytInfo.brandingSettings.image.bannerExternalUrl;
+  if (ytInfo.snippet?.publishedAt)
+    channel.publishedAt = new Date(ytInfo.snippet.publishedAt);
+  if (ytInfo.statistics?.viewCount)
+    channel.viewCount = Number(ytInfo.statistics.viewCount);
+  if (ytInfo.statistics?.videoCount)
+    channel.videoCount = Number(ytInfo.statistics.videoCount);
+  if (ytInfo.statistics?.subscriberCount)
+    channel.subscriberCount = Number(ytInfo.statistics.subscriberCount);
+  if (channel.deleted) channel.deleted = false;
+}
+
 export async function updateChannelFromYoutube(
   targetChannels: string[]
 ): Promise<DocumentType<Channel>[]> {
@@ -205,24 +229,7 @@ export async function updateChannelFromYoutube(
       (ytChannelItem) => ytChannelItem.id === targetChannel
     );
     if (ytInfo) {
-      if (ytInfo.snippet?.title) channel.name = ytInfo.snippet.title;
-      if (ytInfo.snippet?.customUrl)
-        channel.customUrl = ytInfo.snippet.customUrl;
-      if (ytInfo.snippet?.description)
-        channel.description = ytInfo.snippet.description;
-      if (ytInfo.snippet?.thumbnails?.high?.url)
-        channel.avatarUrl = ytInfo.snippet.thumbnails.high.url;
-      if (ytInfo.brandingSettings?.image?.bannerExternalUrl)
-        channel.bannerUrl = ytInfo.brandingSettings.image.bannerExternalUrl;
-      if (ytInfo.snippet?.publishedAt)
-        channel.publishedAt = new Date(ytInfo.snippet.publishedAt);
-      if (ytInfo.statistics?.viewCount)
-        channel.viewCount = Number(ytInfo.statistics.viewCount);
-      if (ytInfo.statistics?.videoCount)
-        channel.videoCount = Number(ytInfo.statistics.videoCount);
-      if (ytInfo.statistics?.subscriberCount)
-        channel.subscriberCount = Number(ytInfo.statistics.subscriberCount);
-      if (channel.deleted) channel.deleted = false;
+      applyYoutubeChannelInfo(channel, ytInfo);
     } else {
       channel.deleted = true;
     }
@@ -232,6 +239,29 @@ export async function updateChannelFromYoutube(
   }
 
   return result;
+}
+
+export async function updateChannelByHandle(
+  handle: string
+): Promise<DocumentType<Channel> | null> {
+  const youtube = getYoutubeApi();
+  const response = await youtube.channels.list({
+    part: ["snippet", "contentDetails", "statistics", "brandingSettings"],
+    forHandle: handle,
+    hl: "ja",
+    maxResults: 1,
+  });
+  const ytInfo = response?.data?.items?.[0];
+  if (!ytInfo?.id) return null;
+
+  const channel =
+    (await ChannelModel.findByChannelId(ytInfo.id)) ??
+    new ChannelModel({ id: ytInfo.id });
+
+  applyYoutubeChannelInfo(channel, ytInfo);
+  channel.crawledAt = new Date();
+  await channel.save();
+  return channel;
 }
 
 export function validateChannelId(channelId: string): boolean {
