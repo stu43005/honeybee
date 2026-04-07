@@ -47,7 +47,7 @@ export class Channel extends TimeStamps {
   @prop()
   public englishName!: string;
 
-  @prop()
+  @prop({ index: true })
   public customUrl?: string;
 
   @prop()
@@ -130,6 +130,13 @@ export class Channel extends TimeStamps {
     channelId: string
   ) {
     return this.findOne({ id: channelId });
+  }
+
+  public static findByHandle(
+    this: ReturnModelType<typeof Channel>,
+    handle: string
+  ) {
+    return this.findOne({ customUrl: handle.toLowerCase() });
   }
 
   public static findByName(
