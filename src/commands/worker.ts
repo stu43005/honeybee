@@ -120,10 +120,14 @@ const insertOptions = { ordered: false };
 
 async function resolveRaidName(name: string): Promise<string> {
   if (!name.startsWith("@")) return name;
-  const channel = await ChannelModel.findByHandle(name);
-  if (channel) return channel.name;
-  const fetched = await updateChannelByHandle(name);
-  if (fetched) return fetched.name;
+  try {
+    const channel = await ChannelModel.findByHandle(name);
+    if (channel) return channel.name;
+    const fetched = await updateChannelByHandle(name);
+    if (fetched) return fetched.name;
+  } catch {
+    // best-effort: return raw name on any failure
+  }
   return name;
 }
 
