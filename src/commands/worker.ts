@@ -53,6 +53,8 @@ import {
 import { MongodbModule } from "../modules/db";
 import { QueueModule } from "../modules/queue";
 import { youtubeRateLimiter } from "../modules/rate-limiter";
+import ChannelModel from "../models/Channel";
+import { updateChannelByHandle } from "../modules/youtube";
 import { groupBy, pipeSignal, setIfDefine } from "../util";
 
 const { MongoError, MongoBulkWriteError } = mongoose.mongo;
@@ -116,6 +118,15 @@ const stringifyOptions = {
 };
 const insertOptions = { ordered: false };
 
+async function resolveRaidName(name: string): Promise<string> {
+  if (!name.startsWith("@")) return name;
+  const channel = await ChannelModel.findByHandle(name);
+  if (channel) return channel.name;
+  const fetched = await updateChannelByHandle(name);
+  if (fetched) return fetched.name;
+  return name;
+}
+
 async function handleJob(
   job: BeeQueue.Job<HoneybeeJob>,
   globalSignal: AbortSignal
@@ -128,7 +139,7 @@ async function handleJob(
   assert(video, "Unable to find the video.");
   assert(video.getReplicas() >= replica, "Stop replica");
   const { channelId } = video;
-  const { name: channelName, avatarUrl: channelAvatarUrl, customUrl: channelHandle } =
+  const { name: channelName, avatarUrl: channelAvatarUrl } =
     await video.getChannel();
 
   if (video.hbIgnore) {
@@ -697,21 +708,23 @@ async function handleJob(
           }
           case "addIncomingRaidBannerAction": {
             if (isReplay) break;
-            const payload: Raid[] = groupedActions[type].map((action) => {
-              return {
-                id: action.actionId,
-                targetId: action.targetId,
-                // sourceVideoId: ,
-                // sourceChannelId: ,
-                sourceName: action.sourceName,
-                sourcePhoto: action.sourcePhoto,
-                originVideoId: mc.videoId,
-                originChannelId: mc.channelId,
-                originName: channelHandle ?? channelName,
-                originPhoto: channelAvatarUrl,
-                timestamp: new Date(),
-              };
-            });
+            const payload: Raid[] = await Promise.all(
+              groupedActions[type].map(async (action) => {
+                return {
+                  id: action.actionId,
+                  targetId: action.targetId,
+                  // sourceVideoId: ,
+                  // sourceChannelId: ,
+                  sourceName: await resolveRaidName(action.sourceName),
+                  sourcePhoto: action.sourcePhoto,
+                  originVideoId: mc.videoId,
+                  originChannelId: mc.channelId,
+                  originName: channelName,
+                  originPhoto: channelAvatarUrl,
+                  timestamp: new Date(),
+                };
+              })
+            );
             await RaidModel.bulkWrite(
               payload.map((raid) => ({
                 updateOne: {
@@ -728,21 +741,23 @@ async function handleJob(
           }
           case "addOutgoingRaidBannerAction": {
             if (isReplay) break;
-            const payload: Raid[] = groupedActions[type].map((action) => {
-              return {
-                outgoingId: action.actionId,
-                outgoingTargetId: action.targetId,
-                sourceVideoId: mc.videoId,
-                sourceChannelId: mc.channelId,
-                sourceName: channelHandle ?? channelName,
-                sourcePhoto: channelAvatarUrl,
-                originVideoId: action.targetVideoId,
-                // originChannelId: ,
-                originName: action.targetName,
-                originPhoto: action.targetPhoto,
-                timestamp: new Date(),
-              };
-            });
+            const payload: Raid[] = await Promise.all(
+              groupedActions[type].map(async (action) => {
+                return {
+                  outgoingId: action.actionId,
+                  outgoingTargetId: action.targetId,
+                  sourceVideoId: mc.videoId,
+                  sourceChannelId: mc.channelId,
+                  sourceName: channelName,
+                  sourcePhoto: channelAvatarUrl,
+                  originVideoId: action.targetVideoId,
+                  // originChannelId: ,
+                  originName: await resolveRaidName(action.targetName),
+                  originPhoto: action.targetPhoto,
+                  timestamp: new Date(),
+                };
+              })
+            );
             await RaidModel.bulkWrite(
               payload.map((raid) => ({
                 updateOne: {
