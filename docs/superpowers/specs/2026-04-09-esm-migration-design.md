@@ -107,6 +107,14 @@ import { __dirname } from '../utils/esm.js';
 const dir = __dirname(import.meta);
 ```
 
+Replace `require.main === module` pattern (used in `src/components/chats-archive.ts`):
+```ts
+import { isMain } from '../utils/esm.js';
+if (isMain(import.meta)) {
+  // direct execution logic
+}
+```
+
 ### importAllModels Dynamic Loading
 
 `src/modules/db.ts` — change `require()` to `import()`:
