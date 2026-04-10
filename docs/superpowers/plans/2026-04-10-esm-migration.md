@@ -136,7 +136,7 @@ Read the current `package.json`. Then change the following:
 - Insert `"type": "module"` after `"version": "0.0.0"`.
 - Change `"main": "lib/index.js"` → `"main": "dist/index.js"`.
 - In `"bin"`, change both paths from `"lib/index.js"` → `"dist/index.js"`.
-- Update `"scripts"` to:
+- Update `"scripts"` to (note: `build`/`clean` still use `shx` here; Task 4 removes `shx` and rewrites those two scripts to use Node built-ins. Doing it in one sweep here would cause the build to break between Task 3 and Task 4 because tsc hasn't been swapped for the NodeNext tsconfig yet):
 
 ```json
 "scripts": {
@@ -194,21 +194,42 @@ git commit -m "chore(pkg): enable ESM, target Node 24, output to dist"
 
 - [ ] **Step 1: Remove obsolete dev deps**
 
-```bash
-npm uninstall ts-node
-```
-
-Expected: `ts-node` removed from `devDependencies` and `package-lock.json`.
-
-- [ ] **Step 2: Install new dev dependencies (TypeScript 6, ESLint 9, Prettier, types)**
+Remove `ts-node` (no longer needed under ESM + tsc compilation) and `shx` (Node 24's `fs.chmodSync` plus plain `rm -rf` in cross-env shells make shx redundant; the build script in Task 3 still references `shx chmod`/`shx rm` so we will update those after removal):
 
 ```bash
-npm install --save-dev typescript@^6.0.0 @types/node@^24.0.0 eslint@^9.0.0 @eslint/js@^9.0.0 typescript-eslint@^8.0.0 eslint-config-prettier@^9.0.0 prettier@^3.0.0
+npm uninstall ts-node shx
 ```
 
-Expected: all packages resolve and install. If TypeScript 6 is not yet released at execution time, fall back to `typescript@latest`.
+Expected: both removed from `devDependencies` and `package-lock.json`.
 
-- [ ] **Step 3: Verify installed versions**
+- [ ] **Step 2: Update build/clean scripts to drop shx**
+
+Edit `package.json` to replace the build and clean scripts (the other scripts from Task 3 remain unchanged):
+
+```json
+"build": "tsc && node -e \"require('node:fs').chmodSync('dist/index.js', 0o755)\"",
+"clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+```
+
+These use Node's built-in `fs` APIs so no extra dependency is needed. They work identically on macOS, Linux, and Windows.
+
+- [ ] **Step 3: Install new dev dependencies (TypeScript 6, ESLint 9, Prettier, types)**
+
+```bash
+npm install --save-dev typescript@latest @types/node@^24.0.0 eslint@^9.0.0 @eslint/js@^9.0.0 typescript-eslint@^8.0.0 eslint-config-prettier@^9.0.0 prettier@^3.0.0
+```
+
+Using `typescript@latest` to get the latest 6.x release at execution time. After install, Step 4 asserts the resolved major version is `>=6`.
+
+Expected: all packages resolve and install with zero errors.
+
+- [ ] **Step 4: Verify installed versions and assert TS6**
+
+```bash
+npx tsc --version
+```
+
+Expected: output begins with `Version 6.` (e.g. `Version 6.0.2`). If it does not, re-run Step 3 pinning a specific TS6 version (e.g. `typescript@~6.0.0`) and re-verify.
 
 ```bash
 npm ls typescript @types/node eslint prettier typescript-eslint 2>&1 | head -20
@@ -216,11 +237,11 @@ npm ls typescript @types/node eslint prettier typescript-eslint 2>&1 | head -20
 
 Expected: versions shown, no "missing" errors.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add package.json package-lock.json
-git commit -m "chore(deps): upgrade to TS6, add ESLint 9 + Prettier, bump @types/node"
+git commit -m "chore(deps): upgrade to TS6, add ESLint 9 + Prettier, drop ts-node + shx"
 ```
 
 ---
@@ -727,6 +748,7 @@ export default tseslint.config(
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
+  ...tseslint.configs.recommendedTypeChecked,
   {
     languageOptions: {
       parserOptions: {
@@ -738,6 +760,8 @@ export default tseslint.config(
   prettier
 );
 ```
+
+Note: `recommendedTypeChecked` enables the type-aware rule subset of `typescript-eslint`, matching spec §4's "recommended / recommended-type-checked" directive. This makes use of `projectService: true` set below.
 
 Note: `import.meta.dirname` is natively available in Node.js 24. This config file is evaluated by Node (not bundled by TypeScript), so it lives alongside the `"type": "module"` package and runs as pure ESM.
 
@@ -802,8 +826,10 @@ git commit -m "chore(format): write explicit Prettier config"
 
 **Files:**
 - Delete: `jest.config.js`
-- Create: `jest.config.ts`
+- Create: `jest.config.mjs`
 - Modify: `src/models/Channel.spec.ts` (if ts2esm missed it because tsconfig excluded `*.spec.ts`)
+
+**Why `.mjs` and not `.ts`:** Jest 29 loads `jest.config.ts` via `ts-node`, but Task 4 uninstalls `ts-node`. Writing the config as `jest.config.mjs` keeps it native ESM, requires no transpiler, and gets type hints via a JSDoc `@type` annotation.
 
 - [ ] **Step 1: Delete old jest.config.js**
 
@@ -811,14 +837,13 @@ git commit -m "chore(format): write explicit Prettier config"
 rm jest.config.js
 ```
 
-- [ ] **Step 2: Create jest.config.ts**
+- [ ] **Step 2: Create jest.config.mjs**
 
-Create `jest.config.ts` with:
+Create `jest.config.mjs` with:
 
-```ts
-import type { Config } from "jest";
-
-const config: Config = {
+```js
+/** @type {import('jest').Config} */
+const config = {
   preset: "ts-jest/presets/default-esm",
   testEnvironment: "node",
   testMatch: ["**/tests/**/*.ts?(x)", "**/?(*.)+(spec|test).ts?(x)"],
@@ -840,7 +865,7 @@ const config: Config = {
 export default config;
 ```
 
-Note: the `moduleNameMapper` entry is required so Jest can resolve `./foo.js` import specifiers back to the `./foo.ts` source files during testing.
+Note: the `moduleNameMapper` entry is required so Jest can resolve `./foo.js` import specifiers back to the `./foo.ts` source files during testing. The `@type` JSDoc annotation gives editors autocompletion without needing a TypeScript compiler to load the config.
 
 - [ ] **Step 3: Fix import paths in Channel.spec.ts**
 
@@ -865,7 +890,7 @@ Expected: Jest boots, runs `Channel.spec.ts`, passes (or prints domain-specific 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add jest.config.ts src/models/Channel.spec.ts
+git add jest.config.mjs src/models/Channel.spec.ts
 git rm jest.config.js 2>/dev/null || true
 git commit -m "chore(jest): migrate Jest config to ESM (ts-jest ESM preset)"
 ```
@@ -949,20 +974,17 @@ git commit -m "chore(docker): use Node 24 + npm, output to dist"
 
 - [ ] **Step 1: Edit docker-compose.yml**
 
-Delete the entire `# Kafka-compatible data streaming pipeline` block and the `# MongoDB Kafka Connector` `connect` service block — lines covering the `redpanda:` service and the `connect:` service.
+Perform the following edits in `docker-compose.yml`:
 
-Also in the `scheduler:` and `worker:` service blocks, change any `volumes` entry referencing `./lib` to `./dist`:
+1. **Delete the `redpanda:` service block** (the block that starts with `# Kafka-compatible data streaming pipeline` and the `redpanda:` key, through all its `command`, `volumes`, and `ports` lines). Redpanda exists solely to back the kafka-connect pipeline — with `connect` gone, redpanda has no consumers.
 
-```yaml
-volumes:
-  - "./dist:/app/dist"
-```
+2. **Delete the `connect:` service block** (starts with `# MongoDB Kafka Connector` comment and the `connect:` key, through all its `environment` lines). This also removes the only reference to the `KAFKA_CONNECT_IMAGE` env var in this file.
 
-(Remove the `# - "./node_modules:/app/node_modules"` comment too if it is stale; otherwise leave untouched.)
+3. **Update the `scheduler:` service `volumes` block**: change `"./lib:/app/lib"` to `"./dist:/app/dist"`. Delete the stale commented line `# - "./node_modules:/app/node_modules"`.
 
-Also change the reference to `KAFKA_CONNECT_IMAGE` environment variable by removing the now-dead `connect` service.
+4. **Update the `worker:` service `volumes` block**: change `"./lib:/app/lib"` to `"./dist:/app/dist"`.
 
-If the `redpanda` service is also dead code after removing `connect`, remove it as well (the scheduler/worker do not reference it directly in dev).
+After these edits, the file must contain only: `mongo`, `redis`, `scheduler`, `worker` services.
 
 - [ ] **Step 2: Edit docker-compose.production.yml**
 
@@ -1063,11 +1085,15 @@ git commit -m "ci: remove kafka-connect build matrix entry"
 
 - [ ] **Step 1: Grep for stale references**
 
+Search all repo-root config/doc files plus `k8s/` manifests for the three stale patterns:
+
 ```bash
-grep -rn "kafka-connect\|yarn\b\|\blib/\|/lib\b" Makefile README.md .github/ docker-compose*.yml 2>&1 | grep -v "^Binary"
+grep -rn "kafka-connect\|yarn\b\|\blib/\|/lib\b" \
+  Makefile README.md package.json Dockerfile .dockerignore \
+  .github/ docker-compose*.yml k8s/ 2>&1 | grep -v "^Binary"
 ```
 
-Expected: list of any remaining references.
+Expected: list of any remaining references. Files that do not exist (e.g. `.dockerignore`) produce "No such file" warnings which are safe to ignore.
 
 - [ ] **Step 2: For each hit, decide and fix**
 
@@ -1075,12 +1101,14 @@ Expected: list of any remaining references.
 - `lib/` → `dist/`
 - `kafka-connect` → remove the line/block
 
-Leave references that are intentionally historical (e.g. in a CHANGELOG) alone. The honeybee `README.md` may need a yarn→npm sweep.
+Leave references that are intentionally historical (e.g. in a CHANGELOG) alone.
 
-- [ ] **Step 3: Re-grep to confirm**
+- [ ] **Step 3: Re-grep to confirm (same patterns, same scope as Step 1)**
 
 ```bash
-grep -rn "kafka-connect\|yarn\b" Makefile README.md .github/ docker-compose*.yml 2>&1 | grep -v "^Binary"
+grep -rn "kafka-connect\|yarn\b\|\blib/\|/lib\b" \
+  Makefile README.md package.json Dockerfile .dockerignore \
+  .github/ docker-compose*.yml k8s/ 2>&1 | grep -v "^Binary"
 ```
 
 Expected: empty (modulo intentional historical mentions).
