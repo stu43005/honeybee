@@ -5,7 +5,7 @@ import {
   prop,
   Severity,
 } from "@typegoose/typegoose";
-import type { MessageAuthorType } from "../interfaces";
+import type { MessageAuthorType } from "../interfaces.js";
 
 @modelOptions({
   options: { allowMixed: Severity.ALLOW },

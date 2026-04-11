@@ -1,4 +1,4 @@
-import { castBool } from "./util";
+import { castBool } from "./util.js";
 
 export const SHUTDOWN_TIMEOUT = 30 * 1000;
 export const IGNORE_FREE_CHAT = castBool(process.env.IGNORE_FREE_CHAT ?? false);

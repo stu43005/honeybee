@@ -1,10 +1,10 @@
 import { mongoose, type ReturnModelType } from "@typegoose/typegoose";
-import type { AnyParamConstructor } from "@typegoose/typegoose/lib/types";
+import type { AnyParamConstructor } from "@typegoose/typegoose/lib/types.js";
 import { mongo } from "mongoose";
 import assert from "node:assert";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import type { Module } from "./module";
+import type { Module } from "./module.js";
 
 export const MONGO_URI = process.env.MONGO_URI;
 

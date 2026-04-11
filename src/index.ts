@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 
 import yargs from "yargs";
-import { runCrawler } from "./commands/crawler";
-import { runDiscordBot } from "./commands/discord-bot";
-import { metrics } from "./commands/metrics";
-import { runScheduler } from "./commands/scheduler";
-import { runWebhook } from "./commands/webhook";
-import { runWorker } from "./commands/worker";
-import { runManager } from "./commands/manager";
+import { runCrawler } from "./commands/crawler.js";
+import { runDiscordBot } from "./commands/discord-bot.js";
+import { metrics } from "./commands/metrics.js";
+import { runScheduler } from "./commands/scheduler.js";
+import { runWebhook } from "./commands/webhook.js";
+import { runWorker } from "./commands/worker.js";
+import { runManager } from "./commands/manager.js";
 
 process.on("unhandledRejection", (err) => {
   console.log("CLI got unhandledRejection", err);

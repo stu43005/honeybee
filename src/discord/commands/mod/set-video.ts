@@ -2,8 +2,8 @@ import {
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
 } from "discord.js";
-import VideoModel, { type Video } from "../../../models/Video";
-import type { Command } from "../command";
+import VideoModel, { type Video } from "../../../models/Video.js";
+import type { Command } from "../command.js";
 
 export class SetVideoCommand implements Command {
   public metadata = new SlashCommandBuilder()

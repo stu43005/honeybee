@@ -1,7 +1,7 @@
 import type { FlattenMaps } from "mongoose";
-import type { Track } from "../models/Track";
-import { IsNotShortQuery, IsShortQuery } from "../models/Video";
-import type { Webhook } from "../models/Webhook";
+import type { Track } from "../models/Track.js";
+import { IsNotShortQuery, IsShortQuery } from "../models/Video.js";
+import type { Webhook } from "../models/Webhook.js";
 
 type TrackFeaturesConfig = {
   description?: string;

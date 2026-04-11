@@ -2,9 +2,9 @@ import {
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
 } from "discord.js";
-import ChannelModel, { type Channel } from "../../../models/Channel";
-import { updateChannelFromYoutube, validateChannelId } from "../../../modules/youtube";
-import type { Command } from "../command";
+import ChannelModel, { type Channel } from "../../../models/Channel.js";
+import { updateChannelFromYoutube, validateChannelId } from "../../../modules/youtube.js";
+import type { Command } from "../command.js";
 
 export class SetChannelCommand implements Command {
   public metadata = new SlashCommandBuilder()

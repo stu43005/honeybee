@@ -3,11 +3,11 @@ import assert from "node:assert";
 import http from "node:http";
 import https from "node:https";
 import { setTimeout } from "node:timers/promises";
-import { matchPresets } from "../data/webhook";
-import WebhookModel from "../models/Webhook";
-import type { Application } from "../modules/application";
-import { documentLog } from "../modules/db";
-import type { AgendaModule } from "../modules/schedule";
+import { matchPresets } from "../data/webhook.js";
+import WebhookModel from "../models/Webhook.js";
+import type { Application } from "../modules/application.js";
+import { documentLog } from "../modules/db.js";
+import type { AgendaModule } from "../modules/schedule.js";
 
 export default function webhookPrepare(app: Application) {
   const { agenda } = app.get<AgendaModule>("agenda") ?? {};

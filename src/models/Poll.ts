@@ -5,7 +5,7 @@ import {
   modelOptions,
   prop,
 } from "@typegoose/typegoose";
-import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
+import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses.js";
 
 export class PollChoice {
   @prop({ required: true })

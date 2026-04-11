@@ -2,11 +2,11 @@ import type { DocumentType } from "@typegoose/typegoose";
 import { DefaultRestOptions, Routes } from "discord.js";
 import type { FlattenMaps } from "mongoose";
 import assert from "node:assert";
-import { configredWebhookFields, trackFeatures } from "../data/track";
-import TrackModel, { type Track } from "../models/Track";
-import WebhookModel, { type Webhook } from "../models/Webhook";
-import type { Application } from "../modules/application";
-import type { AgendaModule } from "../modules/schedule";
+import { configredWebhookFields, trackFeatures } from "../data/track.js";
+import TrackModel, { type Track } from "../models/Track.js";
+import WebhookModel, { type Webhook } from "../models/Webhook.js";
+import type { Application } from "../modules/application.js";
+import type { AgendaModule } from "../modules/schedule.js";
 
 export default function trackOperator(app: Application) {
   const { agenda } = app.get<AgendaModule>("agenda") ?? {};

@@ -5,7 +5,7 @@ import {
   prop,
   type ReturnModelType,
 } from "@typegoose/typegoose";
-import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
+import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses.js";
 
 @modelOptions({ schemaOptions: { collection: "currencyexchange" } })
 @index({ fromCurrency: 1, toCurrency: 1 }, { unique: true })

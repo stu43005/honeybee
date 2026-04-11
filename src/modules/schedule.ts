@@ -1,7 +1,7 @@
 import Agenda from "agenda";
 import assert from "assert";
-import { MONGO_URI } from "./db";
-import type { Module } from "./module";
+import { MONGO_URI } from "./db.js";
+import type { Module } from "./module.js";
 
 export class AgendaModule implements Module {
   name = "agenda";

@@ -4,15 +4,15 @@ import { Gauge, Registry } from "prom-client";
 import {
   METRICS_MAX_ENDED_HOURS,
   METRICS_MAX_UPCOMING_HOURS,
-} from "../constants";
-import { VideoStatsType } from "../interfaces";
-import ChannelModel from "../models/Channel";
-import VideoModel, { type Video } from "../models/Video";
-import VideoStatsModel, { SCRAPE_DURATION_VIDEOID } from "../models/VideoStats";
-import { Application } from "../modules/application";
-import { MongodbModule } from "../modules/db";
-import { QueueModule } from "../modules/queue";
-import { throttleWithReturnValue } from "../util";
+} from "../constants.js";
+import { VideoStatsType } from "../interfaces.js";
+import ChannelModel from "../models/Channel.js";
+import VideoModel, { type Video } from "../models/Video.js";
+import VideoStatsModel, { SCRAPE_DURATION_VIDEOID } from "../models/VideoStats.js";
+import { Application } from "../modules/application.js";
+import { MongodbModule } from "../modules/db.js";
+import { QueueModule } from "../modules/queue.js";
+import { throttleWithReturnValue } from "../util.js";
 
 export async function metrics() {
   const app = new Application();

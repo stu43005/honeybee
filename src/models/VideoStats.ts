@@ -5,9 +5,9 @@ import {
   prop,
   type ReturnModelType,
 } from "@typegoose/typegoose";
-import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
+import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses.js";
 import { mongo, type FilterQuery } from "mongoose";
-import { MessageAuthorType, MessageType, VideoStatsType } from "../interfaces";
+import { MessageAuthorType, MessageType, VideoStatsType } from "../interfaces.js";
 
 export const SCRAPE_DURATION_VIDEOID = "scrape_duration";
 

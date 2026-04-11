@@ -16,17 +16,17 @@ import {
   HOLODEX_FETCH_ORG,
   HOLODEX_MAX_UPCOMING_HOURS,
   YOUTUBE_PUBSUB_SECRET,
-} from "../constants";
-import ChannelModel from "../models/Channel";
-import VideoModel from "../models/Video";
-import { Application } from "../modules/application";
-import { MongodbModule } from "../modules/db";
-import { getHolodex } from "../modules/holodex";
-import { AgendaModule } from "../modules/schedule";
+} from "../constants.js";
+import ChannelModel from "../models/Channel.js";
+import VideoModel from "../models/Video.js";
+import { Application } from "../modules/application.js";
+import { MongodbModule } from "../modules/db.js";
+import { getHolodex } from "../modules/holodex.js";
+import { AgendaModule } from "../modules/schedule.js";
 import {
   updateChannelFromYoutube,
   updateVideoFromYoutube,
-} from "../modules/youtube";
+} from "../modules/youtube.js";
 
 export async function runCrawler() {
   const holoapi = getHolodex();
