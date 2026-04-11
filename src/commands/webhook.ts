@@ -7,7 +7,7 @@ import {
   type RouteLike,
 } from "discord.js";
 import jsonTemplates, { type JsonTemplate } from "json-templates";
-import { groupBy, isEqual } from "lodash";
+import { groupBy, isEqual } from "lodash-es";
 import { mongo } from "mongoose";
 import http from "node:http";
 import https from "node:https";
