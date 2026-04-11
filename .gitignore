@@ -1,7 +1,7 @@
 /k8s/output
 /cache
 /tmp
-/lib
+/dist
 /keys
 .envrc
 .env*
