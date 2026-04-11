@@ -2,17 +2,22 @@
   "name": "honeybee",
   "description": "a distributed YouTube live chat and moderation events collector",
   "version": "0.0.0",
+  "type": "module",
   "author": "Yasuaki Uechi <y@uechi.io> (https://uechi.io/)",
   "scripts": {
-    "build": "tsc && shx chmod +x lib/index.js",
-    "clean": "shx rm -rf lib",
+    "build": "tsc && shx chmod +x dist/index.js",
+    "clean": "shx rm -rf dist",
     "dev": "tsc -w",
-    "test": "jest"
+    "test": "NODE_OPTIONS='--experimental-vm-modules' jest",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "format": "prettier --write src/",
+    "format:check": "prettier --check src/"
   },
-  "main": "lib/index.js",
+  "main": "dist/index.js",
   "bin": {
-    "honeybee": "lib/index.js",
-    "hb": "lib/index.js"
+    "honeybee": "dist/index.js",
+    "hb": "dist/index.js"
   },
   "dependencies": {
     "@fastify/express": "^2.3.0",
@@ -73,7 +78,7 @@
     "honeybee"
   ],
   "engines": {
-    "node": ">= 16.6"
+    "node": ">=24"
   },
   "private": true
 }
