@@ -23,7 +23,7 @@ export type WatcherResultDocument<
   T extends AnyParamConstructor<mongoose.AnyObject> =
     AnyParamConstructor<mongoose.AnyObject>,
 > = {
-  documentKey: mongo.WithId<{}>;
+  documentKey: mongo.WithId<object>;
   fullDocument: DocumentType<InstanceType<T>>;
   operationType: OperationType;
   ns: {

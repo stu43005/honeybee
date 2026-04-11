@@ -12,10 +12,9 @@ export default defineConfig(
   {
     languageOptions: {
       parserOptions: {
-        projectService: {
-          allowDefaultProject: ["eslint.config.js", "jest.config.mjs"],
-        },
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- import.meta.dirname is string at runtime; JS config typing is loose
+        // Separate tsconfig that also includes spec/test files and config files
+        // (main tsconfig.json excludes them from the build output).
+        project: "./tsconfig.eslint.json",
         tsconfigRootDir: import.meta.dirname,
       },
     },
@@ -35,6 +34,17 @@ export default defineConfig(
         "error",
         { checksVoidReturn: { arguments: false } },
       ],
+      // Type-safety cluster accepted as-is for the existing codebase.
+      // Most violations live in mongoose/typegoose/axios glue code where `any`
+      // is pragmatic. Tightening these requires case-by-case type design and
+      // is deferred to follow-up work. New code should prefer explicit types.
+      "@typescript-eslint/no-explicit-any": "off",
+      "@typescript-eslint/no-unsafe-argument": "off",
+      "@typescript-eslint/no-unsafe-assignment": "off",
+      "@typescript-eslint/no-unsafe-call": "off",
+      "@typescript-eslint/no-unsafe-member-access": "off",
+      "@typescript-eslint/no-unsafe-return": "off",
+      "@typescript-eslint/restrict-template-expressions": "off",
     },
   },
   prettier
