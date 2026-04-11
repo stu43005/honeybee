@@ -1,13 +1,6 @@
 #!/usr/bin/env node
 
 import yargs from "yargs";
-import { runCrawler } from "./commands/crawler.js";
-import { runDiscordBot } from "./commands/discord-bot.js";
-import { metrics } from "./commands/metrics.js";
-import { runScheduler } from "./commands/scheduler.js";
-import { runWebhook } from "./commands/webhook.js";
-import { runWorker } from "./commands/worker.js";
-import { runManager } from "./commands/manager.js";
 
 process.on("unhandledRejection", (err) => {
   console.log("CLI got unhandledRejection", err);
@@ -19,18 +12,39 @@ process.on("uncaughtException", async (err) => {
   process.exit(1);
 });
 
-process.on("SIGINT", (err) => {
+process.on("SIGINT", () => {
   console.log("Keyboard interrupt");
   process.exit(0);
 });
 
 yargs(process.argv.slice(2))
   .scriptName("honeybee")
-  .command("scheduler", "start scheduler", runScheduler)
-  .command("worker", "start worker", runWorker)
-  .command("discord-bot", "start discord bot", runDiscordBot)
-  .command("webhook", "start webhook service", runWebhook)
-  .command("crawler", "start crawler", runCrawler)
-  .command("manager", "start manager", runManager)
-  .command("metrics", "Prometheus metrics endpoint", metrics)
+  .command("scheduler", "start scheduler", {}, async () => {
+    const { runScheduler } = await import("./commands/scheduler.js");
+    await runScheduler();
+  })
+  .command("worker", "start worker", {}, async () => {
+    const { runWorker } = await import("./commands/worker.js");
+    await runWorker();
+  })
+  .command("discord-bot", "start discord bot", {}, async () => {
+    const { runDiscordBot } = await import("./commands/discord-bot.js");
+    await runDiscordBot();
+  })
+  .command("webhook", "start webhook service", {}, async () => {
+    const { runWebhook } = await import("./commands/webhook.js");
+    await runWebhook();
+  })
+  .command("crawler", "start crawler", {}, async () => {
+    const { runCrawler } = await import("./commands/crawler.js");
+    await runCrawler();
+  })
+  .command("manager", "start manager", {}, async () => {
+    const { runManager } = await import("./commands/manager.js");
+    await runManager();
+  })
+  .command("metrics", "Prometheus metrics endpoint", {}, async () => {
+    const { metrics } = await import("./commands/metrics.js");
+    await metrics();
+  })
   .demandCommand(1).argv;
