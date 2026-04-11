@@ -4,6 +4,8 @@ import { mongo } from "mongoose";
 import assert from "node:assert";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { __dirname } from "../utils/esm.js";
 import type { Module } from "./module.js";
 
 export const MONGO_URI = process.env.MONGO_URI;
@@ -65,7 +67,7 @@ export async function changeStreamCloseSignal(
 }
 
 export async function importAllModels(): Promise<void> {
-  const modelsDir = path.join(__dirname, "../models");
+  const modelsDir = path.join(__dirname(import.meta), "../models");
   for (const file of await fsp.readdir(modelsDir, { withFileTypes: true })) {
     if (
       file.isFile() &&
@@ -75,11 +77,10 @@ export async function importAllModels(): Promise<void> {
       !file.name.endsWith(".test.js") &&
       !file.name.endsWith(".test.ts")
     ) {
-      const importPath = path.join(
-        modelsDir,
-        path.basename(file.name, path.extname(file.name))
-      );
-      require(importPath);
+      const importPath = pathToFileURL(
+        path.join(modelsDir, file.name)
+      ).href;
+      await import(importPath);
     }
   }
 }
