@@ -28,6 +28,7 @@ import SuperStickerModel, { type SuperSticker } from "../models/SuperSticker.js"
 import VideoModel, { type Video } from "../models/Video.js";
 import VideoStatsModel, { VideoStatsFlags } from "../models/VideoStats.js";
 import type { Application } from "../modules/application.js";
+import { isMain } from "../utils/esm.js";
 import { MONGO_URI } from "../modules/db.js";
 import type { AgendaModule } from "../modules/schedule.js";
 import { recalcVideoHbStats } from "./video-stats.js";
@@ -707,9 +708,9 @@ async function genIndexFile() {
       continue;
 
     channelIds.add(video.channelId);
-    const isMain = require.main === module;
-    await videoCard(ws, video, "", isMain);
-    if (isMain) await archiveVideo(video.id);
+    const isDirect = isMain(import.meta);
+    await videoCard(ws, video, "", isDirect);
+    if (isDirect) await archiveVideo(video.id);
   }
 
   ws.write(`    </div></div>
@@ -729,9 +730,9 @@ async function genIndexFile() {
     )
       continue;
     channelIds.add(video.channelId);
-    const isMain = require.main === module;
-    await videoCard(ws, video, "", isMain);
-    if (isMain) await archiveVideo(video.id);
+    const isDirect = isMain(import.meta);
+    await videoCard(ws, video, "", isDirect);
+    if (isDirect) await archiveVideo(video.id);
   }
 
   ws.end(`    </div></div>
@@ -809,9 +810,9 @@ async function genChannelIndexFile(channelId: string) {
     .limit(100)
     .populate("channel")
     .setOptions({ readPreference: "secondaryPreferred" })) {
-    const isMain = require.main === module;
-    await videoCard(ws, video, "../", isMain);
-    if (isMain) await archiveVideo(video.id);
+    const isDirect = isMain(import.meta);
+    await videoCard(ws, video, "../", isDirect);
+    if (isDirect) await archiveVideo(video.id);
     count++;
   }
 
@@ -900,7 +901,7 @@ async function videoCard(ws: Writable, video: DocumentType<Video>, basePath = ""
 }
 
 // main
-if (require.main === module) {
+if (isMain(import.meta)) {
   (async () => {
     assert(MONGO_URI, "MONGO_URI should be defined.");
     await mongoose.connect(MONGO_URI);
