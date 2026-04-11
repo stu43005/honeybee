@@ -2,7 +2,7 @@ import KeyvRedis from "@keyv/redis";
 import { createCache } from "cache-manager";
 import { CacheableMemory } from "cacheable";
 import { Keyv } from "keyv";
-import { REDIS_URI } from "../constants";
+import { REDIS_URI } from "../constants.js";
 
 type CacheOptions = {
   // cache-manager

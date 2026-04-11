@@ -12,7 +12,6 @@ jobs:
       matrix:
         app:
           - honeybee
-          - kafka-connect
         platforms:
           - linux/amd64
           # - linux/arm64
@@ -20,9 +19,6 @@ jobs:
           - app: honeybee
             file: Dockerfile
             context: .
-          - app: kafka-connect
-            file: kafka-connect/Dockerfile
-            context: kafka-connect
           - platforms: linux/amd64
             os: ubuntu-latest
           # - platforms: linux/arm64

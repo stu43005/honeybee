@@ -4,7 +4,7 @@ import {
   modelOptions,
   prop,
 } from "@typegoose/typegoose";
-import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
+import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses.js";
 
 @modelOptions({ schemaOptions: { collection: "raids" } })
 @index({ originVideoId: 1, sourceName: 1 }, { unique: true })

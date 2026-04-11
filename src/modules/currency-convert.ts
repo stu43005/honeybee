@@ -1,9 +1,9 @@
 import axios from "axios";
-import Decimal from "decimal.js";
+import { Decimal } from "decimal.js";
 import moment from "moment-timezone";
-import { currencyMap } from "../data/currency";
-import CurrencyExchange from "../models/CurrencyExchange";
-import { getCacheInstance } from "./cache";
+import { currencyMap } from "../data/currency.js";
+import CurrencyExchange from "../models/CurrencyExchange.js";
+import { getCacheInstance } from "./cache.js";
 
 const exchangeToJpyCache = getCacheInstance({
   ttl: moment.duration(1, "day").asMilliseconds(),

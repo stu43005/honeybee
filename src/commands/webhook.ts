@@ -7,7 +7,7 @@ import {
   type RouteLike,
 } from "discord.js";
 import jsonTemplates, { type JsonTemplate } from "json-templates";
-import { groupBy, isEqual } from "lodash";
+import { groupBy, isEqual } from "lodash-es";
 import { mongo } from "mongoose";
 import http from "node:http";
 import https from "node:https";
@@ -21,22 +21,22 @@ import {
   defaultUpdateUrl,
   fixLongText,
   templatePreset,
-} from "../data/webhook";
-import ChannelModel from "../models/Channel";
-import VideoModel, { Video } from "../models/Video";
-import WebhookModel, { type Webhook } from "../models/Webhook";
-import WebhookResultModel from "../models/WebhookResult";
-import { Application } from "../modules/application";
-import { getCacheInstance } from "../modules/cache";
-import { type WatcherResultDocument } from "../modules/collection-watcher";
+} from "../data/webhook.js";
+import ChannelModel from "../models/Channel.js";
+import VideoModel, { Video } from "../models/Video.js";
+import WebhookModel, { type Webhook } from "../models/Webhook.js";
+import WebhookResultModel from "../models/WebhookResult.js";
+import { Application } from "../modules/application.js";
+import { getCacheInstance } from "../modules/cache.js";
+import { type WatcherResultDocument } from "../modules/collection-watcher.js";
 import {
   documentLog,
   getModelByCollectionName,
   importAllModels,
   MongodbModule,
-} from "../modules/db";
-import { isMatching } from "../modules/matching";
-import { flatObjectKey, secondsToHms, setIfDefine } from "../util";
+} from "../modules/db.js";
+import { isMatching } from "../modules/matching.js";
+import { flatObjectKey, secondsToHms, setIfDefine } from "../util.js";
 
 const axiosInstance = axios.create({
   timeout: 4000,

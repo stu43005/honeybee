@@ -3,10 +3,10 @@ import { DefaultRestOptions, hyperlink, time } from "discord.js";
 import { VideoStatus } from "holodex.js";
 import moment from "moment-timezone";
 import path from "node:path";
-import ChannelModel, { Channel } from "../models/Channel";
-import { Video } from "../models/Video";
-import type { Webhook } from "../models/Webhook";
-import { abbreviate, secondsToHms, setIfDefine } from "../util";
+import ChannelModel, { Channel } from "../models/Channel.js";
+import { Video } from "../models/Video.js";
+import type { Webhook } from "../models/Webhook.js";
+import { abbreviate, secondsToHms, setIfDefine } from "../util.js";
 
 export function checkIsDiscordWebhookUrl(url: string): boolean {
   return url.startsWith(DefaultRestOptions.api + "/webhooks/");

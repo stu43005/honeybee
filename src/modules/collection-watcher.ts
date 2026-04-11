@@ -1,5 +1,5 @@
 import { type DocumentType, type ReturnModelType } from "@typegoose/typegoose";
-import type { AnyParamConstructor } from "@typegoose/typegoose/lib/types";
+import type { AnyParamConstructor } from "@typegoose/typegoose/lib/types.js";
 import mongoose, { mongo, type FilterQuery } from "mongoose";
 import EventEmitter from "node:events";
 import { setTimeout } from "node:timers/promises";

@@ -8,29 +8,30 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import type { Writable } from "node:stream";
-import { CHAT_ARCHIVE_DIR, MAX_HOURS_BEFORE_CLEANUP } from "../constants";
-import { currencyMap } from "../data/currency";
-import { HoneybeeStatus, MessageAuthorType, MessageType, VideoStatsType } from "../interfaces";
-import ChannelModel from "../models/Channel";
-import ChatModel, { type Chat } from "../models/Chat";
-import MembershipModel, { type Membership } from "../models/Membership";
+import { CHAT_ARCHIVE_DIR, MAX_HOURS_BEFORE_CLEANUP } from "../constants.js";
+import { currencyMap } from "../data/currency.js";
+import { HoneybeeStatus, MessageAuthorType, MessageType, VideoStatsType } from "../interfaces.js";
+import ChannelModel from "../models/Channel.js";
+import ChatModel, { type Chat } from "../models/Chat.js";
+import MembershipModel, { type Membership } from "../models/Membership.js";
 import MembershipGiftModel, {
   type MembershipGift,
-} from "../models/MembershipGift";
+} from "../models/MembershipGift.js";
 import MembershipGiftPurchaseModel, {
   type MembershipGiftPurchase,
-} from "../models/MembershipGiftPurchase";
-import MilestoneModel, { type Milestone } from "../models/Milestone";
-import PollModel, { type Poll } from "../models/Poll";
-import RaidModel, { type Raid } from "../models/Raid";
-import SuperChatModel, { type SuperChat } from "../models/SuperChat";
-import SuperStickerModel, { type SuperSticker } from "../models/SuperSticker";
-import VideoModel, { type Video } from "../models/Video";
-import VideoStatsModel, { VideoStatsFlags } from "../models/VideoStats";
-import type { Application } from "../modules/application";
-import { MONGO_URI } from "../modules/db";
-import type { AgendaModule } from "../modules/schedule";
-import { recalcVideoHbStats } from "./video-stats";
+} from "../models/MembershipGiftPurchase.js";
+import MilestoneModel, { type Milestone } from "../models/Milestone.js";
+import PollModel, { type Poll } from "../models/Poll.js";
+import RaidModel, { type Raid } from "../models/Raid.js";
+import SuperChatModel, { type SuperChat } from "../models/SuperChat.js";
+import SuperStickerModel, { type SuperSticker } from "../models/SuperSticker.js";
+import VideoModel, { type Video } from "../models/Video.js";
+import VideoStatsModel, { VideoStatsFlags } from "../models/VideoStats.js";
+import type { Application } from "../modules/application.js";
+import { isMain } from "../utils/esm.js";
+import { MONGO_URI } from "../modules/db.js";
+import type { AgendaModule } from "../modules/schedule.js";
+import { recalcVideoHbStats } from "./video-stats.js";
 
 export default function chatsArchive(app: Application) {
   const { agenda } = app.get<AgendaModule>("agenda") ?? {};
@@ -707,9 +708,9 @@ async function genIndexFile() {
       continue;
 
     channelIds.add(video.channelId);
-    const isMain = require.main === module;
-    await videoCard(ws, video, "", isMain);
-    if (isMain) await archiveVideo(video.id);
+    const isDirect = isMain(import.meta);
+    await videoCard(ws, video, "", isDirect);
+    if (isDirect) await archiveVideo(video.id);
   }
 
   ws.write(`    </div></div>
@@ -729,9 +730,9 @@ async function genIndexFile() {
     )
       continue;
     channelIds.add(video.channelId);
-    const isMain = require.main === module;
-    await videoCard(ws, video, "", isMain);
-    if (isMain) await archiveVideo(video.id);
+    const isDirect = isMain(import.meta);
+    await videoCard(ws, video, "", isDirect);
+    if (isDirect) await archiveVideo(video.id);
   }
 
   ws.end(`    </div></div>
@@ -809,9 +810,9 @@ async function genChannelIndexFile(channelId: string) {
     .limit(100)
     .populate("channel")
     .setOptions({ readPreference: "secondaryPreferred" })) {
-    const isMain = require.main === module;
-    await videoCard(ws, video, "../", isMain);
-    if (isMain) await archiveVideo(video.id);
+    const isDirect = isMain(import.meta);
+    await videoCard(ws, video, "../", isDirect);
+    if (isDirect) await archiveVideo(video.id);
     count++;
   }
 
@@ -900,7 +901,7 @@ async function videoCard(ws: Writable, video: DocumentType<Video>, basePath = ""
 }
 
 // main
-if (require.main === module) {
+if (isMain(import.meta)) {
   (async () => {
     assert(MONGO_URI, "MONGO_URI should be defined.");
     await mongoose.connect(MONGO_URI);

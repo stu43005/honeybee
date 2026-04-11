@@ -22,12 +22,12 @@ import {
   allTrackFeatures,
   defaultTrackFeatures,
   trackFeatures,
-} from "../../../data/track";
-import ChannelModel from "../../../models/Channel";
-import TrackModel, { type Track, type TrackKey } from "../../../models/Track";
-import { validateChannelId } from "../../../modules/youtube";
-import type { Command } from "../command";
-import { getTrackKey } from "./fns";
+} from "../../../data/track.js";
+import ChannelModel from "../../../models/Channel.js";
+import TrackModel, { type Track, type TrackKey } from "../../../models/Track.js";
+import { validateChannelId } from "../../../modules/youtube.js";
+import type { Command } from "../command.js";
+import { getTrackKey } from "./fns.js";
 
 export class TrackCommand implements Command {
   public metadata = new SlashCommandBuilder()

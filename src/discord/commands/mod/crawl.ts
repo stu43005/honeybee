@@ -6,9 +6,9 @@ import {
   unorderedList,
   type ChatInputCommandInteraction,
 } from "discord.js";
-import { Video } from "../../../models/Video";
-import { updateVideoFromYoutube } from "../../../modules/youtube";
-import type { Command } from "../command";
+import { Video } from "../../../models/Video.js";
+import { updateVideoFromYoutube } from "../../../modules/youtube.js";
+import type { Command } from "../command.js";
 
 export class CrawlCommand implements Command {
   public metadata = new SlashCommandBuilder()

@@ -11,10 +11,10 @@ import {
   type Interaction,
   type RESTPutAPIApplicationCommandsJSONBody,
 } from "discord.js";
-import { commands } from "../discord/commands";
-import type { AppCommand } from "../discord/commands/command";
-import { Application } from "../modules/application";
-import { MongodbModule } from "../modules/db";
+import { commands } from "../discord/commands/index.js";
+import type { AppCommand } from "../discord/commands/command.js";
+import { Application } from "../modules/application.js";
+import { MongodbModule } from "../modules/db.js";
 
 const DISCORD_ID = process.env.DISCORD_ID!;
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN!;

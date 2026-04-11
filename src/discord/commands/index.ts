@@ -1,8 +1,8 @@
-import type { AppCommand } from "./command";
-import { CrawlCommand } from "./mod/crawl";
-import { SetChannelCommand } from "./mod/set-channel";
-import { SetVideoCommand } from "./mod/set-video";
-import { TrackCommand } from "./track/track";
+import type { AppCommand } from "./command.js";
+import { CrawlCommand } from "./mod/crawl.js";
+import { SetChannelCommand } from "./mod/set-channel.js";
+import { SetVideoCommand } from "./mod/set-video.js";
+import { TrackCommand } from "./track/track.js";
 
 export const commands: AppCommand[] = [
   new CrawlCommand(),

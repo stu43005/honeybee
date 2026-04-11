@@ -6,13 +6,13 @@ import {
   type DocumentType,
   type ReturnModelType,
 } from "@typegoose/typegoose";
-import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
+import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses.js";
 import { hyperlink } from "discord.js";
 import { Channel as HolodexChannel } from "holodex.js";
 import type { FilterQuery, FlattenMaps } from "mongoose";
 import { setTimeout as sleep } from "node:timers/promises";
-import { HOLODEX_ALL_VTUBERS, HOLODEX_FETCH_ORG } from "../constants";
-import { setIfDefine } from "../util";
+import { HOLODEX_ALL_VTUBERS, HOLODEX_FETCH_ORG } from "../constants.js";
+import { setIfDefine } from "../util.js";
 
 @modelOptions({ schemaOptions: { collection: "channels" } })
 @index(

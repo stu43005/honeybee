@@ -1,12 +1,12 @@
-import chatsArchive from "../components/chats-archive";
-import cleanup from "../components/cleanup";
-import trackOperator from "../components/track-operator";
-import videoScaler from "../components/video-scaler";
-import videoStats from "../components/video-stats";
-import webhookPrepare from "../components/webhook-prepare";
-import { Application } from "../modules/application";
-import { MongodbModule } from "../modules/db";
-import { AgendaModule } from "../modules/schedule";
+import chatsArchive from "../components/chats-archive.js";
+import cleanup from "../components/cleanup.js";
+import trackOperator from "../components/track-operator.js";
+import videoScaler from "../components/video-scaler.js";
+import videoStats from "../components/video-stats.js";
+import webhookPrepare from "../components/webhook-prepare.js";
+import { Application } from "../modules/application.js";
+import { MongodbModule } from "../modules/db.js";
+import { AgendaModule } from "../modules/schedule.js";
 
 export async function runManager() {
   const app = new Application();

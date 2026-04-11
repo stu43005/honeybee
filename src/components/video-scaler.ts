@@ -1,12 +1,12 @@
 import { isDocument } from "@typegoose/typegoose";
 import moment from "moment";
 import assert from "node:assert";
-import { MessageType, VideoStatsType } from "../interfaces";
-import ChatModel from "../models/Chat";
-import VideoModel from "../models/Video";
-import VideoStatsModel, { VideoStatsFlags } from "../models/VideoStats";
-import type { Application } from "../modules/application";
-import type { AgendaModule } from "../modules/schedule";
+import { MessageType, VideoStatsType } from "../interfaces.js";
+import ChatModel from "../models/Chat.js";
+import VideoModel from "../models/Video.js";
+import VideoStatsModel, { VideoStatsFlags } from "../models/VideoStats.js";
+import type { Application } from "../modules/application.js";
+import type { AgendaModule } from "../modules/schedule.js";
 
 export default function videoScaler(app: Application) {
   const { agenda } = app.get<AgendaModule>("agenda") ?? {};

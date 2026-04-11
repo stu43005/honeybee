@@ -1,10 +1,12 @@
 import { mongoose, type ReturnModelType } from "@typegoose/typegoose";
-import type { AnyParamConstructor } from "@typegoose/typegoose/lib/types";
+import type { AnyParamConstructor } from "@typegoose/typegoose/lib/types.js";
 import { mongo } from "mongoose";
 import assert from "node:assert";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import type { Module } from "./module";
+import { pathToFileURL } from "node:url";
+import { __dirname } from "../utils/esm.js";
+import type { Module } from "./module.js";
 
 export const MONGO_URI = process.env.MONGO_URI;
 
@@ -65,21 +67,18 @@ export async function changeStreamCloseSignal(
 }
 
 export async function importAllModels(): Promise<void> {
-  const modelsDir = path.join(__dirname, "../models");
+  const modelsDir = path.join(__dirname(import.meta), "../models");
   for (const file of await fsp.readdir(modelsDir, { withFileTypes: true })) {
     if (
       file.isFile() &&
-      !file.name.endsWith(".d.ts") &&
+      file.name.endsWith(".js") &&
       !file.name.endsWith(".spec.js") &&
-      !file.name.endsWith(".spec.ts") &&
-      !file.name.endsWith(".test.js") &&
-      !file.name.endsWith(".test.ts")
+      !file.name.endsWith(".test.js")
     ) {
-      const importPath = path.join(
-        modelsDir,
-        path.basename(file.name, path.extname(file.name))
-      );
-      require(importPath);
+      const importPath = pathToFileURL(
+        path.join(modelsDir, file.name)
+      ).href;
+      await import(importPath);
     }
   }
 }

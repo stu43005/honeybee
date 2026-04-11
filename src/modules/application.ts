@@ -1,5 +1,5 @@
-import { HttpServerModule } from "./http-server";
-import type { Module } from "./module";
+import { HttpServerModule } from "./http-server.js";
+import type { Module } from "./module.js";
 
 export class Application {
   private modules: Module[] = [];

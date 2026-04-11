@@ -9,7 +9,7 @@ import {
   type Ref,
   type ReturnModelType,
 } from "@typegoose/typegoose";
-import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
+import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses.js";
 import { Video as HolodexVideo, VideoStatus } from "holodex.js";
 import moment from "moment-timezone";
 import type { FlattenMaps } from "mongoose";
@@ -19,10 +19,10 @@ import {
   PrivacyStatus,
   UploadStatus,
   type HoneybeeResult,
-} from "../interfaces";
-import { setIfDefine } from "../util";
-import ChannelModel, { Channel } from "./Channel";
-import type { Raid } from "./Raid";
+} from "../interfaces.js";
+import { setIfDefine } from "../util.js";
+import ChannelModel, { Channel } from "./Channel.js";
+import type { Raid } from "./Raid.js";
 
 export class Stats {
   @prop({ required: true, default: 0 })

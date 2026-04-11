@@ -7,8 +7,8 @@ import {
   type Ref,
   type ReturnModelType,
 } from "@typegoose/typegoose";
-import { Base, TimeStamps } from "@typegoose/typegoose/lib/defaultClasses";
-import { Track } from "./Track";
+import { Base, TimeStamps } from "@typegoose/typegoose/lib/defaultClasses.js";
+import { Track } from "./Track.js";
 
 export interface Webhook extends Base {}
 

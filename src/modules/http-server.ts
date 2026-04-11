@@ -1,5 +1,5 @@
 import fastify, { type FastifyInstance } from "fastify";
-import type { Module } from "./module";
+import type { Module } from "./module.js";
 
 export class HttpServerModule implements Module {
   name = "http-server";

@@ -1,6 +1,6 @@
 import { HolodexApiClient } from "holodex.js";
 import assert from "node:assert";
-import { HOLODEX_API_KEY } from "../constants";
+import { HOLODEX_API_KEY } from "../constants.js";
 
 export function getHolodex() {
   assert(HOLODEX_API_KEY, "HOLODEX_API_KEY should be defined.");
