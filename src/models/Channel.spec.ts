@@ -1,6 +1,6 @@
 /// <reference types="jest" />
 import { afterEach, describe, expect, it, jest } from "@jest/globals";
-import ChannelModel from "./Channel";
+import ChannelModel from "./Channel.js";
 
 describe("Channel.waitForCrawl", () => {
   const tinySchedule = [1, 1, 1, 1, 1, 1] as const;
