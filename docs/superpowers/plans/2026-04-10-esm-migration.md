@@ -751,31 +751,31 @@ git commit -m "fix(esm): resolve remaining type errors after ESM migration"
 npm install --save-dev ts-jest@latest
 ```
 
-Expected: ts-jest updated to 29.4.9+ (TS6-compatible). This must happen before installing new p-queue/agenda because their installs resolve the TS6 peer graph.
+Expected: ts-jest updated to 29.4.9+ (TS6-compatible). This must happen before installing new p-queue/agenda because their installs resolve the TS6 peer graph. Without this, ERESOLVE errors against `typescript@">=4.3 <6"` will block subsequent installs (or force `--legacy-peer-deps`).
 
-- [ ] **Step 2: Upgrade p-queue and agenda**
-
-```bash
-npm install p-queue@latest agenda@latest
-```
-
-Expected: `package.json` dependencies show `p-queue: ^9.x.x` and `agenda: ^6.x.x`. Agenda v6 requires a separate backend package — Step 3 installs it.
-
-- [ ] **Step 3: Install @agendajs/mongo-backend (required by Agenda v6)**
+- [ ] **Step 2: Upgrade p-queue, agenda, and install Agenda v6 backend (combined)**
 
 ```bash
-npm install @agendajs/mongo-backend
+npm install p-queue@latest agenda@latest @agendajs/mongo-backend
 ```
 
-Expected: new dependency added. Agenda v6 ships no bundled backend; MongoDB is a separate package.
+Expected: `package.json` dependencies show `p-queue: ^9.x.x`, `agenda: ^6.x.x`, and a new `@agendajs/mongo-backend` entry. All three are resolved in a single lockfile pass. Note: `agenda` v6 ships no bundled backend — `@agendajs/mongo-backend` is the official MongoDB backend package (confirmed in `node_modules/agenda/dist/backends/index.d.ts` after Step 2).
 
-- [ ] **Step 4: Verify versions**
+- [ ] **Step 3: Verify versions** (the script uses `node --input-type=commonjs` because package.json now has `"type": "module"`, so `require()` is otherwise unavailable under `node -e`)
 
 ```bash
-node -e "const p=require('./package.json'); console.log('p-queue:', p.dependencies['p-queue']); console.log('agenda:', p.dependencies.agenda); console.log('@agendajs/mongo-backend:', p.dependencies['@agendajs/mongo-backend']); console.log('ts-jest:', p.devDependencies['ts-jest']);"
+node --input-type=commonjs -e "const p=require('./package.json'); console.log('p-queue:', p.dependencies['p-queue']); console.log('agenda:', p.dependencies.agenda); console.log('@agendajs/mongo-backend:', p.dependencies['@agendajs/mongo-backend']); console.log('ts-jest:', p.devDependencies['ts-jest']);"
 ```
 
-Expected output shows all four with the new version ranges.
+Expected: all four version strings printed (none `undefined`).
+
+- [ ] **Step 4: Spot type-check p-queue consumers to confirm dep-layer fix**
+
+```bash
+npx tsc --noEmit 2>&1 | grep -E "metrics\.ts|webhook\.ts|p-queue" | head
+```
+
+Expected: zero output for p-queue-related errors. Note: `schedule.ts` and `currency-convert.ts` will STILL have errors at this point — those are resolved in Task 12c (Agenda API migration) and Task 12d (decimal.js import form) respectively. That is expected and not a blocker for this task's commit.
 
 - [ ] **Step 5: Commit**
 
@@ -873,61 +873,129 @@ grep -rn "from \"agenda\"" src/ --include="*.ts"
 
 Expected: check each import. Any `import type { Job } from "agenda"` is still correct in v6 (Agenda re-exports Job from the core module). No changes required unless type resolution fails.
 
-- [ ] **Step 3: Verify .define()/.every()/.schedule() call sites are still valid**
+- [ ] **Step 3: Rewrite the 3-arg `.define(name, options, handler)` call sites (v6 parameter order swap)**
 
-Agenda v6 keeps the 2-arg `.define(name, handler)` and the options-last form `.define(name, handler, options)` (parameter swap). None of honeybee's call sites currently pass explicit `{ concurrency }` or similar options, so no call-site changes are needed.
-
-Spot-check by running:
+Agenda v6 swaps the parameter order of the 3-arg form. Honeybee has exactly **2** such call sites that pass an options object (with `lockLifetime`). Both must be rewritten to the new `.define(name, handler, options)` order. Verify the count with:
 
 ```bash
-grep -rn "\.define(" src/ --include="*.ts" | wc -l
+grep -rn "lockLifetime" src/ --include="*.ts"
 ```
 
-Expected: around 28 sites. Do NOT rewrite them — v6 is compatible with 2-arg calls.
+Expected: 2 hits — `src/components/video-stats.ts` and `src/commands/crawler.ts`.
 
-One edge case: `src/components/webhook-prepare.ts:17` uses `agenda.define(prepareAllWebhooks, async () => {...})` — passing a function reference as the name. In v5 this works because Agenda coerces to string via `fn.name`. v6 behavior is unchanged. Leave as-is.
+**Rewrite 1: `src/components/video-stats.ts` around line 269**
 
-- [ ] **Step 4: Type-check only the files affected by Agenda**
+Before:
+```ts
+  for (const cron of crons) {
+    agenda.define(
+      cron.name,
+      {
+        lockLifetime: 20 * 60 * 1000,
+      },
+      cron.job
+    );
+    agenda.every(cron.interval, cron.name);
+  }
+```
+
+After:
+```ts
+  for (const cron of crons) {
+    agenda.define(
+      cron.name,
+      cron.job,
+      {
+        lockLifetime: 20 * 60 * 1000,
+      }
+    );
+    agenda.every(cron.interval, cron.name);
+  }
+```
+
+**Rewrite 2: `src/commands/crawler.ts` around line 146**
+
+Before:
+```ts
+  const JOB_HOLODEX_UPDATE_CHANNELS = "crawler holodex update channels";
+  agenda.define(
+    JOB_HOLODEX_UPDATE_CHANNELS,
+    {
+      lockLifetime: moment.duration(1, "hour").asMilliseconds(),
+    },
+    async (job: Job): Promise<void> => {
+      // ... body unchanged ...
+    }
+  );
+```
+
+After:
+```ts
+  const JOB_HOLODEX_UPDATE_CHANNELS = "crawler holodex update channels";
+  agenda.define(
+    JOB_HOLODEX_UPDATE_CHANNELS,
+    async (job: Job): Promise<void> => {
+      // ... body unchanged ...
+    },
+    {
+      lockLifetime: moment.duration(1, "hour").asMilliseconds(),
+    }
+  );
+```
+
+Do NOT modify the handler body. Only swap the order of the `{ lockLifetime }` object and the handler function argument.
+
+All 26 other `.define(name, handler)` 2-arg call sites across `src/components/*.ts`, `src/commands/crawler.ts`, `src/commands/scheduler.ts`, etc. are **unaffected** — v6 is backward compatible for the 2-arg form. Do not touch them.
+
+One edge case: `src/components/webhook-prepare.ts:17` calls `agenda.define(prepareAllWebhooks, ...)` — `prepareAllWebhooks` is actually a `const` string (not a function reference); the naming is cosmetic. v6 behavior is unchanged. Leave as-is.
+
+- [ ] **Step 4: Type-check ALL files that could be affected by Agenda**
 
 ```bash
-npx tsc --noEmit 2>&1 | grep -E "schedule\.ts|crawler\.ts|scheduler\.ts|agenda"
+npx tsc --noEmit 2>&1 | grep -E "schedule\.ts|crawler\.ts|scheduler\.ts|video-stats\.ts|chats-archive\.ts|video-scaler\.ts|webhook-prepare\.ts|cleanup\.ts|track-operator\.ts|agenda"
 ```
 
-Expected: zero output. If there are still type errors (e.g., `Job` import path), fix them one at a time.
+Expected: zero output. If there are still type errors (e.g., `Job` import path differs in v6), fix them one at a time in the same commit.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/modules/schedule.ts
+git add src/modules/schedule.ts src/components/video-stats.ts src/commands/crawler.ts
 git commit -m "refactor(agenda): migrate to Agenda v6 API with MongoBackend"
 ```
 
-If Step 4 surfaced fixes in other files, include them in the same commit.
+If Step 4 surfaced fixes in additional files, include them in the same commit.
 
 ---
 
-## Task 12d: Fix remaining TS2351 errors (decimal.js)
+## Task 12d: Fix decimal.js import under NodeNext ESM
 
-**Context:** `decimal.js` is already at its latest version (10.6.0) and is a CJS package with a default export that NodeNext module resolution exposes as the module namespace, not a constructor. The fix is source-level: use `import Decimal from "decimal.js"` with `esModuleInterop: true` should work, BUT ts2esm or the NodeNext strictness may be rewriting it in a way that breaks the default import. Inspect the current import form and adjust.
+**Context:** `decimal.js` 10.6.0 is actually a **dual-package** with a modern `exports` map — NodeNext resolves to `decimal.mjs`, which contains BOTH `export default Decimal` and `export var Decimal`. Under NodeNext the default import should technically work, but TypeScript 6 + NodeNext sometimes reports TS2351 ("not constructable") on the default form depending on how the `.d.ts` synthesizes the export. The reliable cross-compiler fix — and the form the library author recommends in the decimal.mjs header — is the **named import**.
 
 **Files:**
 - Modify: `src/modules/currency-convert.ts`
 
-- [ ] **Step 1: Inspect the current import line**
+- [ ] **Step 1: Confirm the error reproduces**
 
 ```bash
-head -5 src/modules/currency-convert.ts
+npx tsc --noEmit 2>&1 | grep "currency-convert\|decimal" | head
 ```
 
-- [ ] **Step 2: Try default import first**
+Expected: at least one `TS2351: This expression is not constructable` error on `src/modules/currency-convert.ts`. If there is no error here (because Task 12b's dep upgrade happened to clear build caches and fix it), skip straight to Step 4 — no source change needed, commit a no-op or skip the task.
 
-Ensure the top of the file is:
+- [ ] **Step 2: Change the import to the named form**
 
+Currently line 2 of `src/modules/currency-convert.ts` is:
 ```ts
 import Decimal from "decimal.js";
 ```
 
-If it's `import * as Decimal from "decimal.js"`, change it to the default-import form. With `esModuleInterop: true` in tsconfig (already set in Task 5), this is the correct form for a CJS package exporting `module.exports = Decimal`.
+Change it to:
+```ts
+import { Decimal } from "decimal.js";
+```
+
+The `decimal.mjs` ESM entrypoint explicitly exports `Decimal` by name (`export var Decimal = P.constructor = clone(DEFAULTS)`), so the named import resolves directly to the class constructor and avoids any default-export synthesis ambiguity. No other change is needed — `new Decimal(...)` at line 143 works identically.
 
 - [ ] **Step 3: Type-check**
 
@@ -937,21 +1005,14 @@ npx tsc --noEmit 2>&1 | grep "currency-convert\|decimal"
 
 Expected: empty.
 
-- [ ] **Step 4: If default import still fails**, fall back to namespace default:
-
-```ts
-import DecimalNS from "decimal.js";
-const Decimal = DecimalNS.default ?? DecimalNS;
-```
-
-This handles the case where the CJS module's default export is wrapped.
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add src/modules/currency-convert.ts
-git commit -m "fix(currency): adjust decimal.js import for NodeNext ESM"
+git commit -m "fix(currency): use named import for decimal.js under NodeNext"
 ```
+
+If Step 1 revealed the error was already gone (no source change needed), skip this commit.
 
 ---
 
