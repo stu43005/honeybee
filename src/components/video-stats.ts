@@ -268,10 +268,10 @@ export default function videoStats(app: Application) {
   for (const cron of crons) {
     agenda.define(
       cron.name,
+      cron.job,
       {
         lockLifetime: 20 * 60 * 1000,
-      },
-      cron.job
+      }
     );
     agenda.every(cron.interval, cron.name);
   }

@@ -1,5 +1,6 @@
-import Agenda from "agenda";
-import assert from "assert";
+import { Agenda } from "agenda";
+import { MongoBackend } from "@agendajs/mongo-backend";
+import assert from "node:assert";
 import { MONGO_URI } from "./db.js";
 import type { Module } from "./module.js";
 
@@ -11,10 +12,9 @@ export class AgendaModule implements Module {
     assert(MONGO_URI, "MONGO_URI should be defined.");
 
     this.agenda = new Agenda({
-      db: {
+      backend: new MongoBackend({
         address: MONGO_URI,
-        // collection: isProd ? "agendaJobs" : `testJobs-${HOSTNAME}`,
-      },
+      }),
     });
 
     this.agenda.on("start", (job) => {
@@ -39,6 +39,6 @@ export class AgendaModule implements Module {
   }
 
   async close() {
-    return this.agenda.drain();
+    await this.agenda.drain();
   }
 }
