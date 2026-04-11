@@ -1,6 +1,6 @@
 .vscode
 /tmp
-/lib
+/dist
 /node_modules
 /data
 /keys
