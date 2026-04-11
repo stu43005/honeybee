@@ -24,7 +24,9 @@ import {
   type HoneybeeJob,
 } from "../interfaces.js";
 import BanActionModel, { type BanAction } from "../models/BanAction.js";
-import BannerActionModel, { type BannerAction } from "../models/BannerAction.js";
+import BannerActionModel, {
+  type BannerAction,
+} from "../models/BannerAction.js";
 import ChatModel, { type Chat } from "../models/Chat.js";
 import ErrorLogModel, { type ErrorLog } from "../models/ErrorLog.js";
 import MembershipModel, { type Membership } from "../models/Membership.js";
@@ -43,7 +45,9 @@ import RemoveChatActionModel, {
   type RemoveChatAction,
 } from "../models/RemoveChatAction.js";
 import SuperChatModel, { type SuperChat } from "../models/SuperChat.js";
-import SuperStickerModel, { type SuperSticker } from "../models/SuperSticker.js";
+import SuperStickerModel, {
+  type SuperSticker,
+} from "../models/SuperSticker.js";
 import VideoModel from "../models/Video.js";
 import { Application } from "../modules/application.js";
 import {
@@ -77,7 +81,7 @@ function emojiHandler(run: YTEmojiRun) {
 }
 
 function normalizeMembership(membership?: MCMembership) {
-  return membership ? membership.since ?? "new" : undefined;
+  return membership ? (membership.since ?? "new") : undefined;
 }
 
 function authorTypeLabelmap(
@@ -169,7 +173,7 @@ async function handleJob(
       }),
     }),
   });
-  let stats: HoneybeeStats = { handled: 0, errors: 0 };
+  const stats: HoneybeeStats = { handled: 0, errors: 0 };
 
   function videoLog(...obj: any) {
     console.log(`${videoId} ${channelId} ${replica} -`, ...obj);
@@ -957,7 +961,7 @@ async function handleJob(
   })().catch(() => void 0);
 
   try {
-    updateVideoStats();
+    void updateVideoStats();
 
     // iterate over live chat
     for await (const { actions } of mc.iterate({
@@ -1046,8 +1050,9 @@ export async function runWorker() {
   );
   app.use({
     name: "exit-signal",
-    async close(s) {
+    close(s) {
       exitController.abort(new Error(`Received ${s}`));
+      return Promise.resolve();
     },
   });
 

@@ -3,7 +3,10 @@ import {
   type ChatInputCommandInteraction,
 } from "discord.js";
 import ChannelModel, { type Channel } from "../../../models/Channel.js";
-import { updateChannelFromYoutube, validateChannelId } from "../../../modules/youtube.js";
+import {
+  updateChannelFromYoutube,
+  validateChannelId,
+} from "../../../modules/youtube.js";
 import type { Command } from "../command.js";
 
 export class SetChannelCommand implements Command {
@@ -56,7 +59,7 @@ export class SetChannelCommand implements Command {
 
     // Extract the keys of boolean properties of Channel
     type ChannelBooleanKeys = {
-      [K in keyof Channel]: Channel[K] & {} extends Boolean ? K : never;
+      [K in keyof Channel]: Channel[K] & {} extends boolean ? K : never;
     }[keyof Channel] & {};
     function setBoolean(key: ChannelBooleanKeys, valueKey: string) {
       const value = intr.options.getBoolean(valueKey);

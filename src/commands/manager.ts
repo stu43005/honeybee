@@ -14,7 +14,7 @@ export async function runManager() {
   app.use(new AgendaModule());
   await app.init();
   console.log("Manager started");
-  
+
   cleanup(app);
   trackOperator(app);
   webhookPrepare(app);

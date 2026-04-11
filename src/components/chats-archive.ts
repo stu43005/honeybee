@@ -10,7 +10,11 @@ import path from "node:path";
 import type { Writable } from "node:stream";
 import { CHAT_ARCHIVE_DIR, MAX_HOURS_BEFORE_CLEANUP } from "../constants.js";
 import { currencyMap } from "../data/currency.js";
-import { HoneybeeStatus, MessageAuthorType, MessageType, VideoStatsType } from "../interfaces.js";
+import {
+  MessageAuthorType,
+  MessageType,
+  VideoStatsType,
+} from "../interfaces.js";
 import ChannelModel from "../models/Channel.js";
 import ChatModel, { type Chat } from "../models/Chat.js";
 import MembershipModel, { type Membership } from "../models/Membership.js";
@@ -24,7 +28,9 @@ import MilestoneModel, { type Milestone } from "../models/Milestone.js";
 import PollModel, { type Poll } from "../models/Poll.js";
 import RaidModel, { type Raid } from "../models/Raid.js";
 import SuperChatModel, { type SuperChat } from "../models/SuperChat.js";
-import SuperStickerModel, { type SuperSticker } from "../models/SuperSticker.js";
+import SuperStickerModel, {
+  type SuperSticker,
+} from "../models/SuperSticker.js";
 import VideoModel, { type Video } from "../models/Video.js";
 import VideoStatsModel, { VideoStatsFlags } from "../models/VideoStats.js";
 import type { Application } from "../modules/application.js";
@@ -39,10 +45,10 @@ export default function chatsArchive(app: Application) {
 
   if (CHAT_ARCHIVE_DIR) {
     agenda.define("chats archive", archiveAllChats);
-    agenda.every("1 minutes", "chats archive");
+    void agenda.every("1 minutes", "chats archive");
 
     agenda.define("chats archive index", genIndexFile);
-    agenda.every("10 minutes", "chats archive index");
+    void agenda.every("10 minutes", "chats archive index");
   }
 }
 
@@ -80,7 +86,7 @@ async function archiveAllChats(job?: Job) {
     VideoStatsFlags.ChatsArchiveProcessed
   );
 
-  for await (const { videoId, statsId } of stats) {
+  for (const { videoId, statsId } of stats) {
     try {
       await archiveVideo(videoId);
       await VideoStatsModel.setFlag(
@@ -392,7 +398,7 @@ async function archiveVideo(videoId: string) {
       ? `${formatCurrency(superChat.amount, superChat.currency)}<br/>`
       : ""
   }${formatCurrency(superChat.jpyAmount, "JPY")}</td>
-  <td style="background-color: ${superChat.color};">　</td>
+  <td style="background-color: ${superChat.color};">\u3000</td>
   <td>${authorPhoto}</td>
   <td>${superChat.authorName ?? ""}</td>
   <td>${
@@ -409,12 +415,12 @@ async function archiveVideo(videoId: string) {
       ? `${formatCurrency(superSticker.amount, superSticker.currency)}<br/>`
       : ""
   }${formatCurrency(superSticker.jpyAmount, "JPY")}</td>
-  <td style="background-color: ${superSticker.color};">　</td>
+  <td style="background-color: ${superSticker.color};">\u3000</td>
   <td>${authorPhoto}</td>
   <td>${superSticker.authorName ?? ""}</td>
   <td><img src="${superSticker.image}" title="${
-          superSticker.text ?? ""
-        }" alt="sticker" /></td>
+    superSticker.text ?? ""
+  }" alt="sticker" /></td>
 `);
         break;
       }
@@ -422,7 +428,7 @@ async function archiveVideo(videoId: string) {
         const membership = doc as DocumentType<Membership>;
         ws.write(`  <td>${time}</td>
   <td></td>
-  <td style="background-color: #00984f;">　</td>
+  <td style="background-color: #00984f;">\u3000</td>
   <td>${authorPhoto}</td>
   <td>${membership.authorName ?? ""}</td>
   <td>Joined as a member (${membership.membership ?? "N/A"})</td>
@@ -433,7 +439,7 @@ async function archiveVideo(videoId: string) {
         const membershipGift = doc as DocumentType<MembershipGift>;
         ws.write(`  <td>${time}</td>
   <td></td>
-  <td style="background-color: #00984f;">　</td>
+  <td style="background-color: #00984f;">\u3000</td>
   <td>${authorPhoto}</td>
   <td>${membershipGift.authorName ?? ""}</td>
   <td>Received a membership gift from ${membershipGift.senderName ?? "N/A"}</td>
@@ -445,7 +451,7 @@ async function archiveVideo(videoId: string) {
           doc as DocumentType<MembershipGiftPurchase>;
         ws.write(`  <td>${time}</td>
   <td></td>
-  <td style="background-color: #00984f;">　</td>
+  <td style="background-color: #00984f;">\u3000</td>
   <td>${authorPhoto}</td>
   <td>${membershipGiftPurchase.authorName ?? ""}</td>
   <td>Purchased <span class="gift-count">${
@@ -458,7 +464,7 @@ async function archiveVideo(videoId: string) {
         const milestone = doc as DocumentType<Milestone>;
         ws.write(`  <td>${time}</td>
   <td></td>
-  <td style="background-color: #00984f;">　</td>
+  <td style="background-color: #00984f;">\u3000</td>
   <td>${authorPhoto}</td>
   <td>${milestone.authorName ?? ""}</td>
   <td>${
@@ -478,17 +484,17 @@ async function archiveVideo(videoId: string) {
   <td></td>
   <td>Poll</td>
   <td>${poll.voteCount ? `${poll.voteCount} votes<br/>` : ""}${
-          poll.question ?? "(empty question)"
-        }<br/>${poll.choices
-          .map(
-            (choice) =>
-              "- " +
-              choice.text +
-              (choice.voteRatio
-                ? ` (${Math.floor(choice.voteRatio * 1000) / 10}%)`
-                : "")
-          )
-          .join("<br/>")}</td>
+    poll.question ?? "(empty question)"
+  }<br/>${poll.choices
+    .map(
+      (choice) =>
+        "- " +
+        choice.text +
+        (choice.voteRatio
+          ? ` (${Math.floor(choice.voteRatio * 1000) / 10}%)`
+          : "")
+    )
+    .join("<br/>")}</td>
 `);
         break;
       }
@@ -750,7 +756,10 @@ async function genIndexFile() {
     try {
       await genChannelIndexFile(channelId);
     } catch (error) {
-      console.error(`Failed to generate channel index for ${channelId}:`, error);
+      console.error(
+        `Failed to generate channel index for ${channelId}:`,
+        error
+      );
     }
   }
 }
@@ -829,7 +838,12 @@ async function genChannelIndexFile(channelId: string) {
   await fsp.rename(`${outputFilePath}.tmp`, outputFilePath);
 }
 
-async function videoCard(ws: Writable, video: DocumentType<Video>, basePath = "", backfill = false) {
+async function videoCard(
+  ws: Writable,
+  video: DocumentType<Video>,
+  basePath = "",
+  backfill = false
+) {
   if (backfill) {
     await recalcVideoHbStats([video.id]);
     const updated = await VideoModel.findByVideoId(video.id);
@@ -869,8 +883,8 @@ async function videoCard(ws: Writable, video: DocumentType<Video>, basePath = ""
   ws.write(`      <div class="col">
         <div class="card">
           <a href="${basePath}${getVideoPath(video)}"><img src="${
-    VideoModel.getVideoThumbnails(video).medium
-  }" class="card-img-top" alt="Video Thumbnail" loading="lazy" /></a>
+            VideoModel.getVideoThumbnails(video).medium
+          }" class="card-img-top" alt="Video Thumbnail" loading="lazy" /></a>
           <div class="row g-0 align-items-center">
             <div class="col-md-auto">
               <img src="${
@@ -902,7 +916,7 @@ async function videoCard(ws: Writable, video: DocumentType<Video>, basePath = ""
 
 // main
 if (isMain(import.meta)) {
-  (async () => {
+  void (async () => {
     assert(MONGO_URI, "MONGO_URI should be defined.");
     await mongoose.connect(MONGO_URI);
     // await archiveAllChats();

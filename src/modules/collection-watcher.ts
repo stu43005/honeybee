@@ -20,7 +20,8 @@ export type WatcherIterateOptions = {
 };
 
 export type WatcherResultDocument<
-  T extends AnyParamConstructor<mongoose.AnyObject> = AnyParamConstructor<mongoose.AnyObject>
+  T extends AnyParamConstructor<mongoose.AnyObject> =
+    AnyParamConstructor<mongoose.AnyObject>,
 > = {
   documentKey: mongo.WithId<{}>;
   fullDocument: DocumentType<InstanceType<T>>;
@@ -32,7 +33,7 @@ export type WatcherResultDocument<
 };
 
 type CollectionWatcherEvents<
-  T extends AnyParamConstructor<mongoose.AnyObject>
+  T extends AnyParamConstructor<mongoose.AnyObject>,
 > = {
   data: [data: WatcherResultDocument<T>, watcher: CollectionWatcher<T>];
   end: [reason: string | null];
@@ -40,7 +41,8 @@ type CollectionWatcherEvents<
 };
 
 export class CollectionWatcher<
-  T extends AnyParamConstructor<mongoose.AnyObject> = AnyParamConstructor<mongoose.AnyObject>
+  T extends AnyParamConstructor<mongoose.AnyObject> =
+    AnyParamConstructor<mongoose.AnyObject>,
 > extends EventEmitter<CollectionWatcherEvents<T>> {
   private listener: Promise<void> | null = null;
   private listenerAbortion: AbortController = new AbortController();

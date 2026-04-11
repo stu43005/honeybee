@@ -7,10 +7,7 @@ import {
 import type { MessageAuthorType, MessageType } from "../interfaces.js";
 
 @modelOptions({ schemaOptions: { collection: "videouserstats" } })
-@index(
-  { videoId: 1, messageType: 1, authorChannelId: 1 },
-  { unique: true }
-)
+@index({ videoId: 1, messageType: 1, authorChannelId: 1 }, { unique: true })
 @index({ videoId: 1, messageType: 1, authorType: 1 })
 export class VideoUserStats {
   @prop({ required: true })

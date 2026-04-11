@@ -1,4 +1,9 @@
-import { getModelForClass, index, modelOptions, prop } from "@typegoose/typegoose";
+import {
+  getModelForClass,
+  index,
+  modelOptions,
+  prop,
+} from "@typegoose/typegoose";
 
 @modelOptions({ schemaOptions: { collection: "banactions" } })
 @index({ channelId: 1, originVideoId: 1 }, { unique: true })

@@ -126,7 +126,8 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
       description: `Post when tracked channels sends a message on thare owned channel`,
       transform: (track) => {
         if (track.trackChannels.length === 0) return null;
-        const withoutNormalChats = track.enabledFeatures.includes("withoutNormalChats");
+        const withoutNormalChats =
+          track.enabledFeatures.includes("withoutNormalChats");
         return {
           colls: [
             ...(withoutNormalChats ? [] : ["chats"]),
@@ -150,7 +151,8 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
       description: `Post when tracked channels sends a message on other channels`,
       transform: (track) => {
         if (track.trackChannels.length === 0) return null;
-        const withoutNormalChats = track.enabledFeatures.includes("withoutNormalChats");
+        const withoutNormalChats =
+          track.enabledFeatures.includes("withoutNormalChats");
         return {
           colls: [
             ...(withoutNormalChats ? [] : ["chats"]),
@@ -176,7 +178,8 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
         if (track.trackChannels.length === 0) return null;
         const chats = track.enabledFeatures.includes("chats");
         const followedChats = track.enabledFeatures.includes("followedChats");
-        const withoutNormalChats = track.enabledFeatures.includes("withoutNormalChats");
+        const withoutNormalChats =
+          track.enabledFeatures.includes("withoutNormalChats");
         const chatBlocklist = new Set([
           ...(chats ? track.trackChannels : []),
           ...(followedChats ? track.chatFollowlist : []),
@@ -208,10 +211,13 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
       description: `Post when followed sender sends a message on tracked channel`,
       transform: (track) => {
         if (track.trackChannels.length === 0) return null;
-        const withoutNormalChats = track.enabledFeatures.includes("withoutNormalChats");
+        const withoutNormalChats =
+          track.enabledFeatures.includes("withoutNormalChats");
         const chatFollowlist = new Set(track.chatFollowlist);
         if (track.enabledFeatures.includes("chats")) {
-          track.trackChannels.forEach((channelId) => chatFollowlist.delete(channelId));
+          track.trackChannels.forEach((channelId) =>
+            chatFollowlist.delete(channelId)
+          );
         }
         if (chatFollowlist.size === 0) return null;
         return {
@@ -327,8 +333,8 @@ function getIncludeShortsFilter(track: Track) {
     ...(includeShorts && !includeNonShorts
       ? IsShortQuery
       : !includeShorts && includeNonShorts
-      ? IsNotShortQuery
-      : {}),
+        ? IsNotShortQuery
+        : {}),
   };
 }
 
@@ -339,8 +345,8 @@ function getMemberVideosFilter(track: Track) {
     ...(memberVideos && !nonMemberVideos
       ? { memberLimited: true }
       : !memberVideos && nonMemberVideos
-      ? { memberLimited: { $ne: true } }
-      : {}),
+        ? { memberLimited: { $ne: true } }
+        : {}),
   };
 }
 

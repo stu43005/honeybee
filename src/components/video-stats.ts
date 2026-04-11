@@ -266,14 +266,10 @@ export default function videoStats(app: Application) {
   ];
 
   for (const cron of crons) {
-    agenda.define(
-      cron.name,
-      cron.job,
-      {
-        lockLifetime: 20 * 60 * 1000,
-      }
-    );
-    agenda.every(cron.interval, cron.name);
+    agenda.define(cron.name, cron.job, {
+      lockLifetime: 20 * 60 * 1000,
+    });
+    void agenda.every(cron.interval, cron.name);
   }
 }
 
@@ -663,10 +659,7 @@ export async function recalcVideoHbStats(videoIds: string[]) {
                   $and: [
                     { $eq: ["$type", VideoStatsType.PurchaseAmountTotal] },
                     {
-                      $eq: [
-                        "$messageType",
-                        MessageType.MembershipGiftPurchase,
-                      ],
+                      $eq: ["$messageType", MessageType.MembershipGiftPurchase],
                     },
                   ],
                 },

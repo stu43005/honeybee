@@ -58,7 +58,7 @@ export async function runCrawler() {
   }
 
   const JOB_HOLODEX_UPDATE_LIVE = "crawler holodex update live";
-  agenda.define(JOB_HOLODEX_UPDATE_LIVE, async (job: Job): Promise<void> => {
+  agenda.define(JOB_HOLODEX_UPDATE_LIVE, async (_job: Job): Promise<void> => {
     const checkChannel = await getCheckChannel();
 
     const liveAndUpcomingStreams = (
@@ -75,10 +75,10 @@ export async function runCrawler() {
       await VideoModel.updateFromHolodex(stream);
     }
   });
-  agenda.every("10 minutes", JOB_HOLODEX_UPDATE_LIVE);
+  void agenda.every("10 minutes", JOB_HOLODEX_UPDATE_LIVE);
 
   const JOB_HOLODEX_UPDATE_PAST = "crawler holodex update past";
-  agenda.define(JOB_HOLODEX_UPDATE_PAST, async (job: Job): Promise<void> => {
+  agenda.define(JOB_HOLODEX_UPDATE_PAST, async (_job: Job): Promise<void> => {
     const checkChannel = await getCheckChannel();
 
     const pastStreams = (
@@ -102,7 +102,7 @@ export async function runCrawler() {
       await VideoModel.updateFromHolodex(stream);
     }
   });
-  agenda.every("20 minutes", JOB_HOLODEX_UPDATE_PAST);
+  void agenda.every("20 minutes", JOB_HOLODEX_UPDATE_PAST);
 
   /*
   const JOB_HOLODEX_OUTDATE_VIDEO = "crawler holodex outdate video";
@@ -173,12 +173,12 @@ export async function runCrawler() {
       lockLifetime: moment.duration(1, "hour").asMilliseconds(),
     }
   );
-  agenda.every("1 day", JOB_HOLODEX_UPDATE_CHANNELS);
+  void agenda.every("1 day", JOB_HOLODEX_UPDATE_CHANNELS);
 
   const JOB_HOLODEX_OUTDATE_CHANNEL = "crawler holodex outdate channel";
   agenda.define(
     JOB_HOLODEX_OUTDATE_CHANNEL,
-    async (job: Job): Promise<void> => {
+    async (_job: Job): Promise<void> => {
       const needUpdate = await ChannelModel.findSubscribed()
         .and([
           {
@@ -212,7 +212,7 @@ export async function runCrawler() {
       }
     }
   );
-  agenda.every("1 hour", JOB_HOLODEX_OUTDATE_CHANNEL);
+  void agenda.every("1 hour", JOB_HOLODEX_OUTDATE_CHANNEL);
 
   //#endregion holodex
 
@@ -245,7 +245,7 @@ export async function runCrawler() {
         }
       }
     );
-    agenda.every("12 hours", JOB_YOUTUBE_PUBSUB_SUBSCRIBE);
+    void agenda.every("12 hours", JOB_YOUTUBE_PUBSUB_SUBSCRIBE);
   }
 
   ytNotifier.on("subscribe", (data) => {
@@ -285,15 +285,13 @@ export async function runCrawler() {
   }
 
   const JOB_YOUTUBE_UPDATE_VIDEOS = "crawler youtube update";
-  agenda.define(JOB_YOUTUBE_UPDATE_VIDEOS, async (job: Job): Promise<void> => {
+  agenda.define(JOB_YOUTUBE_UPDATE_VIDEOS, async (_job: Job): Promise<void> => {
     const videoIds = Array.from(
       new Set<string>([
         ...mapToId(
           await VideoModel.find({ status: VideoStatus.New }).select("id")
         ),
-        ...mapToId(
-          await VideoModel.find({ crawledAt: null }).select("id")
-        ),
+        ...mapToId(await VideoModel.find({ crawledAt: null }).select("id")),
         ...mapToId(
           await VideoModel.findLiveVideos()
             .and([
@@ -303,7 +301,7 @@ export async function runCrawler() {
                   $lt: moment.tz("UTC").add(5, "minutes").toDate(),
                   $gt: moment.tz("UTC").subtract(5, "minutes").toDate(),
                 },
-              }
+              },
             ])
             .select("id")
         ),
@@ -327,17 +325,15 @@ export async function runCrawler() {
       batch.map((perBatch) => updateVideoFromYoutube(perBatch))
     );
   });
-  agenda.every("1 minute", JOB_YOUTUBE_UPDATE_VIDEOS);
+  void agenda.every("1 minute", JOB_YOUTUBE_UPDATE_VIDEOS);
 
   const JOB_YOUTUBE_UPDATE_CHANNELS = "crawler youtube update channels";
   agenda.define(
     JOB_YOUTUBE_UPDATE_CHANNELS,
-    async (job: Job): Promise<void> => {
+    async (_job: Job): Promise<void> => {
       const channelIds = Array.from(
         new Set<string>([
-          ...mapToId(
-            await ChannelModel.find({ crawledAt: null }).select("id")
-          ),
+          ...mapToId(await ChannelModel.find({ crawledAt: null }).select("id")),
           ...mapToId(
             await ChannelModel.findSubscribed()
               .sort({ crawledAt: 1 })
@@ -365,7 +361,7 @@ export async function runCrawler() {
       );
     }
   );
-  agenda.every("5 minute", JOB_YOUTUBE_UPDATE_CHANNELS);
+  void agenda.every("5 minute", JOB_YOUTUBE_UPDATE_CHANNELS);
 
   //#endregion youtube
 

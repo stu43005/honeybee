@@ -47,13 +47,13 @@ export class Chat {
   public membership?: string;
 
   @prop({ required: true })
-  public isVerified!: Boolean;
+  public isVerified!: boolean;
 
   @prop({ required: true })
-  public isOwner!: Boolean;
+  public isOwner!: boolean;
 
   @prop({ required: true })
-  public isModerator!: Boolean;
+  public isModerator!: boolean;
 
   @prop({ required: true, index: true })
   public originVideoId!: string;

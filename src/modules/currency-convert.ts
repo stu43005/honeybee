@@ -65,7 +65,7 @@ async function getExchange(
           date: date,
         };
       }
-    } catch (error) {
+    } catch {
       // throw new Error("There was a problem fetching data");
     }
   }
@@ -91,7 +91,7 @@ async function getExchange(
         date: date,
       };
     }
-  } catch (error) {
+  } catch {
     // throw new Error("There was a problem fetching data");
   }
 

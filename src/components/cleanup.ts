@@ -28,8 +28,8 @@ export default function cleanup(app: Application) {
   agenda.define("cleanup ended streams", cleanEndedStreams);
   agenda.define("cleanup webhookresults", cleanWebhookResults);
 
-  agenda.every("5 minutes", "cleanup ended streams");
-  agenda.every("1 hour", "cleanup webhookresults");
+  void agenda.every("5 minutes", "cleanup ended streams");
+  void agenda.every("1 hour", "cleanup webhookresults");
 }
 
 async function cleanVideos(videoIds: string[]) {
@@ -173,7 +173,7 @@ async function cleanWebhookResults() {
       }
       if (!markDelete) {
         // Not delete
-        ids.delete((doc._id as mongo.BSON.ObjectId).toString());
+        ids.delete(doc._id.toString());
       }
     }
 

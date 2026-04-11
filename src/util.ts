@@ -3,7 +3,7 @@ interface Record {
   current: number | undefined;
   lastDelta: number;
   history: number[];
-  updater: (...args: any) => any | Promise<any>;
+  updater: (...args: any) => any;
 }
 
 export class DeltaCollection {
@@ -53,12 +53,15 @@ export function groupBy<T, K extends keyof T, S extends Extract<T[K], string>>(
   lst: T[],
   key: K
 ) {
-  return lst.reduce((result, o) => {
-    const index = o[key] as S;
-    if (!result[index]) result[index] = [];
-    result[index].push(o as any);
-    return result;
-  }, {} as { [k in S]: (T extends { [s in K]: k } ? T : never)[] });
+  return lst.reduce(
+    (result, o) => {
+      const index = o[key] as S;
+      if (!result[index]) result[index] = [];
+      result[index].push(o as any);
+      return result;
+    },
+    {} as { [k in S]: (T extends { [s in K]: k } ? T : never)[] }
+  );
 }
 
 export function castBool(value: unknown) {
@@ -156,7 +159,7 @@ export function pipeSignal(signal: AbortSignal, controller: AbortController) {
   }
   signal.addEventListener(
     "abort",
-    async () => {
+    () => {
       controller.abort(signal.reason);
     },
     { once: true }
@@ -167,19 +170,19 @@ export function pipeSignal(signal: AbortSignal, controller: AbortController) {
  * 在字串超過指定長度時，縮短字串並加上省略號。
  */
 export function abbreviate(str: string, maxWidth: number) {
-  if (typeof str !== 'string' || typeof maxWidth !== 'number') {
-      throw new Error('Invalid arguments');
+  if (typeof str !== "string" || typeof maxWidth !== "number") {
+    throw new Error("Invalid arguments");
   }
 
   if (str.length <= maxWidth) {
-      return str;
+    return str;
   }
 
-  const ellipsis = '...';
+  const ellipsis = "...";
   const cutoffLength = maxWidth - ellipsis.length;
 
   if (cutoffLength <= 0) {
-      return ellipsis.substring(0, maxWidth);
+    return ellipsis.substring(0, maxWidth);
   }
 
   return str.substring(0, cutoffLength) + ellipsis;

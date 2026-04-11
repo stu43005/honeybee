@@ -25,7 +25,7 @@ export class SetVideoCommand implements Command {
   public async execute(intr: ChatInputCommandInteraction): Promise<void> {
     const videoId = intr.options.getString("video-id", true);
 
-    let video = await VideoModel.findByVideoId(videoId);
+    const video = await VideoModel.findByVideoId(videoId);
     if (!video) {
       await intr.reply({
         content: "Cannot find the video.",
@@ -38,7 +38,7 @@ export class SetVideoCommand implements Command {
 
     // Extract the keys of boolean properties of Video
     type VideoBooleanKeys = {
-      [K in keyof Video]: Video[K] & {} extends Boolean ? K : never;
+      [K in keyof Video]: Video[K] & {} extends boolean ? K : never;
     }[keyof Video] & {};
     function setBoolean(key: VideoBooleanKeys, valueKey: string) {
       const value = intr.options.getBoolean(valueKey);

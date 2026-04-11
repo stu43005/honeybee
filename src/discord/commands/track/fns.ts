@@ -5,12 +5,12 @@ import type {
 } from "discord.js";
 import type { TrackKey } from "../../../models/Track.js";
 
-export async function getTrackKey(
+export function getTrackKey(
   intr: ChatInputCommandInteraction | AutocompleteInteraction
-): Promise<{
+): {
   trackKey?: TrackKey;
   baseChannel?: CategoryChildChannel;
-}> {
+} {
   if (!intr.guildId || !intr.channel || intr.channel.isDMBased()) {
     return {};
   }
@@ -23,7 +23,7 @@ export async function getTrackKey(
   }
 
   const trackKey: TrackKey = {
-    guildId: intr.guildId!,
+    guildId: intr.guildId,
     channelId: baseChannel.id,
     threadId: intr.channel.isThread() ? intr.channel.id : null,
   };

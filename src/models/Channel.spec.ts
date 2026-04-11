@@ -10,7 +10,11 @@ describe("Channel.waitForCrawl", () => {
   });
 
   it("returns document immediately when crawledAt is already set", async () => {
-    const doc = { id: "UC123", name: "Real Name", crawledAt: new Date() } as any;
+    const doc = {
+      id: "UC123",
+      name: "Real Name",
+      crawledAt: new Date(),
+    } as any;
     const spy = jest
       .spyOn(ChannelModel, "findByChannelId")
       .mockResolvedValue(doc);

@@ -24,7 +24,10 @@ import {
   trackFeatures,
 } from "../../../data/track.js";
 import ChannelModel from "../../../models/Channel.js";
-import TrackModel, { type Track, type TrackKey } from "../../../models/Track.js";
+import TrackModel, {
+  type Track,
+  type TrackKey,
+} from "../../../models/Track.js";
 import { validateChannelId } from "../../../modules/youtube.js";
 import type { Command } from "../command.js";
 import { getTrackKey } from "./fns.js";
@@ -123,7 +126,7 @@ export class TrackCommand implements Command {
     .toJSON();
 
   public async execute(intr: ChatInputCommandInteraction): Promise<void> {
-    const { trackKey, baseChannel } = await getTrackKey(intr);
+    const { trackKey, baseChannel } = getTrackKey(intr);
     if (!trackKey || !baseChannel) {
       await intr.reply({
         content: "This command can only be used in a server.",
@@ -171,7 +174,9 @@ export class TrackCommand implements Command {
     intr: ChatInputCommandInteraction,
     channelId: string,
     buildDescription: (
-      channel: NonNullable<Awaited<ReturnType<typeof ChannelModel.waitForCrawl>>>,
+      channel: NonNullable<
+        Awaited<ReturnType<typeof ChannelModel.waitForCrawl>>
+      >,
       warning: string
     ) => string,
     logContext: string
@@ -798,7 +803,7 @@ export class TrackCommand implements Command {
           case "remove":
           case "unblock-moderator":
           case "unfollow-sender": {
-            const { trackKey } = await getTrackKey(intr);
+            const { trackKey } = getTrackKey(intr);
             const track = trackKey && (await TrackModel.findOne(trackKey));
             if (!track) {
               await intr.respond([]);
@@ -811,8 +816,8 @@ export class TrackCommand implements Command {
                     subcommand === "remove"
                       ? track.trackChannels
                       : subcommand === "unblock-moderator"
-                      ? track.chatBlocklist
-                      : track.chatFollowlist,
+                        ? track.chatBlocklist
+                        : track.chatFollowlist,
                 },
               },
             ]);

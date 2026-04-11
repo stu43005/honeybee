@@ -7,7 +7,7 @@ process.on("unhandledRejection", (err) => {
   process.exit(1);
 });
 
-process.on("uncaughtException", async (err) => {
+process.on("uncaughtException", (err) => {
   console.log("CLI got uncaughtException", err);
   process.exit(1);
 });
@@ -17,7 +17,7 @@ process.on("SIGINT", () => {
   process.exit(0);
 });
 
-yargs(process.argv.slice(2))
+void yargs(process.argv.slice(2))
   .scriptName("honeybee")
   .command("scheduler", "start scheduler", {}, async () => {
     const { runScheduler } = await import("./commands/scheduler.js");

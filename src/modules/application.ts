@@ -13,7 +13,7 @@ export class Application {
     });
 
     this.http = this.use(new HttpServerModule());
-    this.http.server.get("/healthz", async (request, reply) => {
+    this.http.server.get("/healthz", async (_request, _reply) => {
       for (let index = 0; index < this.modules.length; index++) {
         const module = this.modules[index];
         try {
@@ -24,7 +24,7 @@ export class Application {
           ) {
             throw new Error(`${module.name} not ready.`);
           }
-        } catch (error) {
+        } catch {
           throw new Error(`${module.name} not ready.`);
         }
       }

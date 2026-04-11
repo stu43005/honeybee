@@ -63,5 +63,5 @@ export default function webhookPrepare(app: Application) {
       await setTimeout(1000);
     }
   });
-  agenda.every("1 hour", prepareAllWebhooks);
+  void agenda.every("1 hour", prepareAllWebhooks);
 }

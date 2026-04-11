@@ -73,18 +73,18 @@ export const templatePreset: Readonly<
                 ],
               }
             : parameters.collection === "milestones"
-            ? {
-                fields: [
-                  {
-                    name: "Milestone",
-                    value: `${
-                      parameters.level ? `${parameters.level}, ` : ""
-                    }since ${parameters.since}`,
-                    inline: true,
-                  },
-                ],
-              }
-            : {}),
+              ? {
+                  fields: [
+                    {
+                      name: "Milestone",
+                      value: `${
+                        parameters.level ? `${parameters.level}, ` : ""
+                      }since ${parameters.since}`,
+                      inline: true,
+                    },
+                  ],
+                }
+              : {}),
           footer: {
             text: parameters.video.title,
             icon_url: parameters.channel.avatarUrl,
@@ -440,8 +440,8 @@ export const templatePreset: Readonly<
         const liveMessage: string = premiere
           ? " is premiering a new video!"
           : parameters.actualStart
-          ? " is live."
-          : " went live!";
+            ? " is live."
+            : " went live!";
         const timestamp = parameters.actualStart ?? parameters.scheduledStart;
         return {
           embeds: [
@@ -472,8 +472,8 @@ export const templatePreset: Readonly<
         const vodMessage: string = !parameters.actualStart
           ? " never started this stream."
           : premiere
-          ? " premiered a new video on YouTube!"
-          : " was live.";
+            ? " premiered a new video on YouTube!"
+            : " was live.";
         const durationStr: string = premiere
           ? "premiere"
           : secondsToHms(parameters.duration);
@@ -494,8 +494,8 @@ export const templatePreset: Readonly<
               description: !parameters.actualStart
                 ? "Live stream has never started."
                 : parameters.deleted
-                ? "No VOD is available."
-                : memberNotice + `Video available: [${durationStr}]`,
+                  ? "No VOD is available."
+                  : memberNotice + `Video available: [${durationStr}]`,
               footer: {
                 text: "Stream ended",
               },
@@ -597,7 +597,7 @@ function getEmbedColor(parameters: Record<string, any>) {
 export const matchPresets: Readonly<
   Record<string, (webhook: DocumentType<Webhook>) => Promise<any>>
 > = Object.freeze({
-  "organization-Hololive": async (webhook) => {
+  "organization-Hololive": async (_webhook) => {
     const channels = await ChannelModel.find(
       { organization: "Hololive" },
       { id: 1 }

@@ -8,7 +8,9 @@ import {
 import { VideoStatsType } from "../interfaces.js";
 import ChannelModel from "../models/Channel.js";
 import VideoModel, { type Video } from "../models/Video.js";
-import VideoStatsModel, { SCRAPE_DURATION_VIDEOID } from "../models/VideoStats.js";
+import VideoStatsModel, {
+  SCRAPE_DURATION_VIDEOID,
+} from "../models/VideoStats.js";
 import { Application } from "../modules/application.js";
 import { MongodbModule } from "../modules/db.js";
 import { QueueModule } from "../modules/queue.js";

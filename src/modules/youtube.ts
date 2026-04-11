@@ -186,8 +186,7 @@ function applyYoutubeChannelInfo(
   ytInfo: youtube_v3.Schema$Channel
 ): void {
   if (ytInfo.snippet?.title) channel.name = ytInfo.snippet.title;
-  if (ytInfo.snippet?.customUrl)
-    channel.customUrl = ytInfo.snippet.customUrl;
+  if (ytInfo.snippet?.customUrl) channel.customUrl = ytInfo.snippet.customUrl;
   if (ytInfo.snippet?.description)
     channel.description = ytInfo.snippet.description;
   if (ytInfo.snippet?.thumbnails?.high?.url)

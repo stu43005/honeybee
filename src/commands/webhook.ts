@@ -85,7 +85,7 @@ async function sendDiscordWebhook(
       },
     });
   } finally {
-    cache.del(createWebhookResultCacheKey(resultIdentifier));
+    void cache.del(createWebhookResultCacheKey(resultIdentifier));
   }
 }
 
@@ -123,7 +123,7 @@ async function sendWebhook(
       },
     });
   } finally {
-    cache.del(createWebhookResultCacheKey(resultIdentifier));
+    void cache.del(createWebhookResultCacheKey(resultIdentifier));
   }
 }
 
@@ -195,7 +195,7 @@ async function getWebhookResult(
     if (result?.response || data.operationType === "insert") {
       return result;
     }
-    cache.del(cacheKey);
+    void cache.del(cacheKey);
   }
   const timeout = AbortSignal.timeout(3000);
   for await (const _ of setInterval(300)) {
@@ -210,7 +210,7 @@ async function getWebhookResult(
     if (timeout.aborted && result) {
       return result;
     }
-    cache.del(cacheKey);
+    void cache.del(cacheKey);
     if (timeout.aborted) {
       break;
     }
@@ -294,8 +294,8 @@ async function processWebhookEvent(
     webhook.templatePreset && templatePreset[webhook.templatePreset]
       ? templatePreset[webhook.templatePreset](parameters)
       : webhook.template
-      ? getJsonTemplate("template", webhook.template)(parameters)
-      : data.fullDocument.toJSON();
+        ? getJsonTemplate("template", webhook.template)(parameters)
+        : data.fullDocument.toJSON();
 
   if (!body) {
     // no message to send
@@ -329,7 +329,7 @@ async function processWebhookEvent(
     },
     { upsert: true }
   );
-  cache.del(createWebhookResultCacheKey(resultIdentifier));
+  void cache.del(createWebhookResultCacheKey(resultIdentifier));
 
   if (checkIsDiscordWebhookUrl(url)) {
     await sendDiscordWebhook(method, url, body, webhook, resultIdentifier);
@@ -409,9 +409,11 @@ export async function runWebhook() {
     for (const [key, { webhook, data }] of bufferChange) {
       bufferChange.delete(key);
       if (data) {
-        processWebhookQueue.add(() => processWebhookEvent(webhook, data)).catch((error) => {
-          documentLog(webhook, "<!> [ERROR]", error);
-        });
+        processWebhookQueue
+          .add(() => processWebhookEvent(webhook, data))
+          .catch((error) => {
+            documentLog(webhook, "<!> [ERROR]", error);
+          });
       }
     }
   }, 5000);
@@ -533,9 +535,11 @@ export async function runWebhook() {
 
         for (const webhook of collectionSetting.webhooks) {
           if (prepareWebhookEvent(webhook, data)) {
-            processWebhookQueue.add(() => processWebhookEvent(webhook, data)).catch((error) => {
-              documentLog(webhook, "<!> [ERROR]", error);
-            });
+            processWebhookQueue
+              .add(() => processWebhookEvent(webhook, data))
+              .catch((error) => {
+                documentLog(webhook, "<!> [ERROR]", error);
+              });
           }
         }
       }
@@ -639,7 +643,8 @@ export async function runWebhook() {
     },
   ]).on("change", (data: mongo.ChangeStreamDocument<Webhook>) => {
     documentLog(data, data.operationType.toUpperCase());
-    if (setupWebhooksQueue.size < 2) setupWebhooksQueue.add(() => setupWebhooks());
+    if (setupWebhooksQueue.size < 2)
+      void setupWebhooksQueue.add(() => setupWebhooks());
   });
   app.use({
     name: "webhook-change-stream",

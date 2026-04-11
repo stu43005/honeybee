@@ -22,8 +22,8 @@ export class MongodbModule implements Module {
     return mongoose.disconnect();
   }
 
-  async healthCheck(): Promise<boolean> {
-    return (
+  healthCheck(): Promise<boolean> {
+    return Promise.resolve(
       mongoose.connection.readyState === mongoose.ConnectionStates.connected
     );
   }
@@ -61,8 +61,8 @@ export async function changeStreamCloseSignal(
   if (signal.aborted) {
     return close();
   }
-  signal.addEventListener("abort", async () => {
-    await close();
+  signal.addEventListener("abort", () => {
+    void close();
   });
 }
 
@@ -75,9 +75,7 @@ export async function importAllModels(): Promise<void> {
       !file.name.endsWith(".spec.js") &&
       !file.name.endsWith(".test.js")
     ) {
-      const importPath = pathToFileURL(
-        path.join(modelsDir, file.name)
-      ).href;
+      const importPath = pathToFileURL(path.join(modelsDir, file.name)).href;
       await import(importPath);
     }
   }

@@ -10,6 +10,7 @@ import {
 import { Base, TimeStamps } from "@typegoose/typegoose/lib/defaultClasses.js";
 import { Track } from "./Track.js";
 
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type, @typescript-eslint/no-unsafe-declaration-merging -- Typegoose idiom: interface merges Base fields (_id) into the class instance type
 export interface Webhook extends Base {}
 
 @modelOptions({
@@ -18,6 +19,7 @@ export interface Webhook extends Base {}
 })
 @index({ updatedAt: 1 })
 @index({ track: 1, feature: 1 }, { unique: true })
+// eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging -- see interface declaration above
 export class Webhook extends TimeStamps {
   // basic info
 
@@ -50,7 +52,7 @@ export class Webhook extends TimeStamps {
   public filter?: any;
 
   @prop()
-  public followUpdate?: Boolean;
+  public followUpdate?: boolean;
 
   // webhook config
 

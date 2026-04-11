@@ -7,8 +7,7 @@ import { createRequire } from "node:module";
  * ESM replacement for `__filename`.
  * Usage: `__filename(import.meta)`
  */
-export const __filename = (meta: ImportMeta): string =>
-  fileURLToPath(meta.url);
+export const __filename = (meta: ImportMeta): string => fileURLToPath(meta.url);
 
 /**
  * ESM replacement for `__dirname`.

@@ -81,10 +81,10 @@ export class Channel extends TimeStamps {
   public deleted?: boolean;
 
   @prop()
-  public isInactive?: Boolean;
+  public isInactive?: boolean;
 
   @prop()
-  public extraCrawl?: Boolean;
+  public extraCrawl?: boolean;
 
   @prop()
   public hbIgnore?: boolean;
@@ -108,7 +108,8 @@ export class Channel extends TimeStamps {
     if (this.hbIgnore) return false;
     if (this.deleted) return false;
 
-    if (HOLODEX_FETCH_ORG === HOLODEX_ALL_VTUBERS && this.organization) return true;
+    if (HOLODEX_FETCH_ORG === HOLODEX_ALL_VTUBERS && this.organization)
+      return true;
     if (this.organization === HOLODEX_FETCH_ORG) return true;
     if (this.extraCrawl) return true;
 
@@ -232,7 +233,8 @@ export class Channel extends TimeStamps {
         return latest;
       }
 
-      const delay = backoffSchedule[Math.min(attempt, backoffSchedule.length - 1)];
+      const delay =
+        backoffSchedule[Math.min(attempt, backoffSchedule.length - 1)];
       const waitMs = Math.min(delay, remaining);
       await sleep(waitMs, undefined, { signal });
       attempt++;

@@ -45,6 +45,7 @@ declare module "youtube-notification" {
     notified: (data: NotifiedData) => void;
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging -- strongly-typed EventEmitter events idiom
   interface YouTubeNotifier {
     on<U extends keyof Events>(event: U, listener: Events[U]): this;
     once<U extends keyof Events>(event: U, listener: Events[U]): this;
@@ -57,6 +58,7 @@ declare module "youtube-notification" {
     ): boolean;
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging -- see interface above
   class YouTubeNotifier extends EventEmitter {
     constructor(options?: NotifierOptions);
     setup(): void;

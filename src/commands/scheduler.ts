@@ -78,7 +78,7 @@ export async function runScheduler() {
   }
 
   const checkStalledJobs = "scheduler checkStalledJobs";
-  agenda.define(checkStalledJobs, async (job: Job): Promise<void> => {
+  agenda.define(checkStalledJobs, async (_job: Job): Promise<void> => {
     const res = await queue.checkStalledJobs();
     if (res > 0) {
       console.log("enqueue stalled jobs:", res);
@@ -106,7 +106,7 @@ export async function runScheduler() {
   });
 
   const rearrange = "scheduler rearrange";
-  agenda.define(rearrange, async (job: Job): Promise<void> => {
+  agenda.define(rearrange, async (_job: Job): Promise<void> => {
     const alreadyActiveJobs = await queue.getJobs("active", {
       start: 0,
       end: 1000,
@@ -221,7 +221,7 @@ Failed=${health.failed}`
     }
   });
 
-  queue.on("job progress", async (jobId, progress: HoneybeeStats) => {
+  queue.on("job progress", async (jobId, _progress: HoneybeeStats) => {
     const job = await queue.getJob(jobId);
     if (job) {
       const { videoId, replica } = job.data;
@@ -268,8 +268,8 @@ Failed=${health.failed}`
   });
 
   await app.init();
-  agenda.every("30 seconds", rearrange);
-  agenda.every("1 minute", checkStalledJobs);
+  void agenda.every("30 seconds", rearrange);
+  void agenda.every("1 minute", checkStalledJobs);
 
   const watcher = new CollectionWatcher(VideoModel);
   watcher.on("data", async ({ fullDocument: video, operationType }) => {
@@ -294,7 +294,7 @@ Failed=${health.failed}`
       schedulerLog(`Unable to schedule the stream: ${video.id},`, error);
     }
   });
-  watcher.listen({
+  void watcher.listen({
     operationType: ["insert", "update"],
   });
 

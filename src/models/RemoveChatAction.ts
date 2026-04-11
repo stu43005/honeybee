@@ -6,7 +6,7 @@ export class RemoveChatAction {
   targetId!: string;
 
   @prop()
-  retracted?: Boolean;
+  retracted?: boolean;
 
   @prop({ required: true, index: true })
   originVideoId!: string;

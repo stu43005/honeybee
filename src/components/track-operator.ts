@@ -13,7 +13,7 @@ export default function trackOperator(app: Application) {
   assert(agenda, "agenda should be defined.");
 
   agenda.define("transform tracks", transformTracks);
-  agenda.every("1 hour", "transform tracks");
+  void agenda.every("1 hour", "transform tracks");
 }
 
 async function transformTracks() {

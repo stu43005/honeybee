@@ -13,7 +13,7 @@ export default function videoScaler(app: Application) {
   assert(agenda, "agenda should be defined.");
 
   agenda.define("video scale", videoScale);
-  agenda.every("30 seconds", "video scale");
+  void agenda.every("30 seconds", "video scale");
 }
 
 async function videoScale() {
@@ -28,7 +28,7 @@ async function videoScale() {
     VideoStatsFlags.VideoScalerProcessed
   );
 
-  for await (const { videoId, statsId, lastId } of stats) {
+  for (const { videoId, statsId, lastId } of stats) {
     const lastChat = await ChatModel.findById(
       lastId,
       { timestamp: 1 },
