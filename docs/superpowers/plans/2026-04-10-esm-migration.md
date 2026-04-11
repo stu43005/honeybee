@@ -728,6 +728,233 @@ git commit -m "fix(esm): resolve remaining type errors after ESM migration"
 
 ---
 
+## Task 12b: Upgrade CJS-only dependencies to ESM-compatible versions
+
+**Context:** During Task 12's type-check pass, several dependencies were flagged with `TS2351 "not constructable"` errors. These are CJS packages whose default exports don't survive NodeNext's stricter ESM interop. Upgrading to newer versions (which either ship native ESM or fix their `exports` field) resolves the errors at the dependency layer instead of forcing brittle `import * as` workarounds.
+
+**Affected packages (discovered during Task 12 implementation):**
+
+| Package | Current | Latest | Type | Notes |
+|---|---|---|---|---|
+| `p-queue` | ^6.6.2 | ^9.1.2 | ESM | Major bump, constructor unchanged |
+| `agenda` | ^5.0.0 | ^6.2.4 | ESM | Major bump — **v6 has breaking API changes, see Task 12c** |
+| `ts-jest` | ^29.1.2 | ^29.4.9 | CJS (unchanged) | Needed for TS6 peer dep compatibility |
+| `decimal.js` | ^10.6.0 | ^10.6.0 | unchanged | Error persists — needs source-level fix instead (see Task 12d) |
+
+**Files:**
+- Modify: `package.json` (dependency versions)
+- Modify: `package-lock.json`
+
+- [ ] **Step 1: Upgrade ts-jest first (unblocks TS6 peer conflict)**
+
+```bash
+npm install --save-dev ts-jest@latest
+```
+
+Expected: ts-jest updated to 29.4.9+ (TS6-compatible). This must happen before installing new p-queue/agenda because their installs resolve the TS6 peer graph.
+
+- [ ] **Step 2: Upgrade p-queue and agenda**
+
+```bash
+npm install p-queue@latest agenda@latest
+```
+
+Expected: `package.json` dependencies show `p-queue: ^9.x.x` and `agenda: ^6.x.x`. Agenda v6 requires a separate backend package — Step 3 installs it.
+
+- [ ] **Step 3: Install @agendajs/mongo-backend (required by Agenda v6)**
+
+```bash
+npm install @agendajs/mongo-backend
+```
+
+Expected: new dependency added. Agenda v6 ships no bundled backend; MongoDB is a separate package.
+
+- [ ] **Step 4: Verify versions**
+
+```bash
+node -e "const p=require('./package.json'); console.log('p-queue:', p.dependencies['p-queue']); console.log('agenda:', p.dependencies.agenda); console.log('@agendajs/mongo-backend:', p.dependencies['@agendajs/mongo-backend']); console.log('ts-jest:', p.devDependencies['ts-jest']);"
+```
+
+Expected output shows all four with the new version ranges.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add package.json package-lock.json
+git commit -m "chore(deps): upgrade p-queue, agenda, ts-jest for ESM + TS6 compat"
+```
+
+---
+
+## Task 12c: Migrate Agenda v5 → v6 API
+
+**Context:** Agenda v6 introduces a mandatory `backend` option and renames some internals. Without this migration, the code will compile but fail at runtime with "backend is required".
+
+**Reference:** `docs/superpowers/specs/2026-04-09-esm-migration-design.md` and the v6 migration guide at `https://github.com/agenda/agenda/blob/main/docs/migration-guide-v6.md`.
+
+**Scope of honeybee's Agenda usage:**
+
+1. **Construction** (only in `src/modules/schedule.ts`): uses `{ db: { address: MONGO_URI } }`
+2. **`.define()` calls**: 28 sites across 9 files, all using the 2-arg form `agenda.define(name, handler)` or the 3-arg `agenda.define(name, handler)` without options. **v6 is backward compatible for this form** (the breaking parameter swap only affects the 3-arg form with explicit options).
+3. **`.every()` / `.schedule()` calls**: API unchanged.
+4. **Event handlers** (`on('start'|'success'|'fail')`): API unchanged.
+5. **Lifecycle** (`start()`, `drain()`): API unchanged.
+6. **NOT used:** `.jobs()`, `.queryJobs()`, `_collection`, `shouldSaveResult`, custom `repository`.
+
+**Files:**
+- Modify: `src/modules/schedule.ts` (construction + event typing)
+- Possibly modify: `src/commands/crawler.ts`, `src/commands/scheduler.ts`, and any other file that imports `Job` from `agenda` (if the type path changed)
+
+- [ ] **Step 1: Rewrite src/modules/schedule.ts**
+
+Replace the contents of `src/modules/schedule.ts` with:
+
+```ts
+import { Agenda } from "agenda";
+import { MongoBackend } from "@agendajs/mongo-backend";
+import assert from "node:assert";
+import { MONGO_URI } from "./db.js";
+import type { Module } from "./module.js";
+
+export class AgendaModule implements Module {
+  name = "agenda";
+  agenda: Agenda;
+
+  constructor() {
+    assert(MONGO_URI, "MONGO_URI should be defined.");
+
+    this.agenda = new Agenda({
+      backend: new MongoBackend({
+        address: MONGO_URI,
+      }),
+    });
+
+    this.agenda.on("start", (job) => {
+      console.log(
+        `[${job.attrs.name}] starting at ${new Date().toISOString()}`
+      );
+    });
+
+    this.agenda.on("success", (job) => {
+      console.log(
+        `[${job.attrs.name}] successed at ${new Date().toISOString()}`
+      );
+    });
+
+    this.agenda.on("fail", (err, job) => {
+      console.log(`[${job.attrs.name}] failed with error: ${err.message}`);
+    });
+  }
+
+  async init() {
+    await this.agenda.start();
+  }
+
+  async close() {
+    return this.agenda.drain();
+  }
+}
+```
+
+Key changes from v5:
+- `import Agenda from "agenda"` → `import { Agenda } from "agenda"` (named export, v6 is ESM)
+- Add `import { MongoBackend } from "@agendajs/mongo-backend"`
+- Constructor option `{ db: { address: MONGO_URI } }` → `{ backend: new MongoBackend({ address: MONGO_URI }) }`
+- `import assert from "assert"` → `import assert from "node:assert"` (idiomatic Node protocol)
+- Event handler parameters (`job`, `err`) are now properly typed in v6 — no more implicit-any errors
+
+- [ ] **Step 2: Audit Job type import paths**
+
+Run:
+
+```bash
+grep -rn "from \"agenda\"" src/ --include="*.ts"
+```
+
+Expected: check each import. Any `import type { Job } from "agenda"` is still correct in v6 (Agenda re-exports Job from the core module). No changes required unless type resolution fails.
+
+- [ ] **Step 3: Verify .define()/.every()/.schedule() call sites are still valid**
+
+Agenda v6 keeps the 2-arg `.define(name, handler)` and the options-last form `.define(name, handler, options)` (parameter swap). None of honeybee's call sites currently pass explicit `{ concurrency }` or similar options, so no call-site changes are needed.
+
+Spot-check by running:
+
+```bash
+grep -rn "\.define(" src/ --include="*.ts" | wc -l
+```
+
+Expected: around 28 sites. Do NOT rewrite them — v6 is compatible with 2-arg calls.
+
+One edge case: `src/components/webhook-prepare.ts:17` uses `agenda.define(prepareAllWebhooks, async () => {...})` — passing a function reference as the name. In v5 this works because Agenda coerces to string via `fn.name`. v6 behavior is unchanged. Leave as-is.
+
+- [ ] **Step 4: Type-check only the files affected by Agenda**
+
+```bash
+npx tsc --noEmit 2>&1 | grep -E "schedule\.ts|crawler\.ts|scheduler\.ts|agenda"
+```
+
+Expected: zero output. If there are still type errors (e.g., `Job` import path), fix them one at a time.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/modules/schedule.ts
+git commit -m "refactor(agenda): migrate to Agenda v6 API with MongoBackend"
+```
+
+If Step 4 surfaced fixes in other files, include them in the same commit.
+
+---
+
+## Task 12d: Fix remaining TS2351 errors (decimal.js)
+
+**Context:** `decimal.js` is already at its latest version (10.6.0) and is a CJS package with a default export that NodeNext module resolution exposes as the module namespace, not a constructor. The fix is source-level: use `import Decimal from "decimal.js"` with `esModuleInterop: true` should work, BUT ts2esm or the NodeNext strictness may be rewriting it in a way that breaks the default import. Inspect the current import form and adjust.
+
+**Files:**
+- Modify: `src/modules/currency-convert.ts`
+
+- [ ] **Step 1: Inspect the current import line**
+
+```bash
+head -5 src/modules/currency-convert.ts
+```
+
+- [ ] **Step 2: Try default import first**
+
+Ensure the top of the file is:
+
+```ts
+import Decimal from "decimal.js";
+```
+
+If it's `import * as Decimal from "decimal.js"`, change it to the default-import form. With `esModuleInterop: true` in tsconfig (already set in Task 5), this is the correct form for a CJS package exporting `module.exports = Decimal`.
+
+- [ ] **Step 3: Type-check**
+
+```bash
+npx tsc --noEmit 2>&1 | grep "currency-convert\|decimal"
+```
+
+Expected: empty.
+
+- [ ] **Step 4: If default import still fails**, fall back to namespace default:
+
+```ts
+import DecimalNS from "decimal.js";
+const Decimal = DecimalNS.default ?? DecimalNS;
+```
+
+This handles the case where the CJS module's default export is wrapped.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/modules/currency-convert.ts
+git commit -m "fix(currency): adjust decimal.js import for NodeNext ESM"
+```
+
+---
+
 ## Task 13: Create ESLint v9 flat config
 
 **Files:**
