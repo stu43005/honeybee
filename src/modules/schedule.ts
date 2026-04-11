@@ -1,6 +1,7 @@
 import { Agenda } from "agenda";
 import { MongoBackend } from "@agendajs/mongo-backend";
 import assert from "node:assert";
+import { SHUTDOWN_TIMEOUT } from "../constants.js";
 import { MONGO_URI } from "./db.js";
 import type { Module } from "./module.js";
 
@@ -39,6 +40,11 @@ export class AgendaModule implements Module {
   }
 
   async close() {
-    await this.agenda.drain();
+    const result = await this.agenda.drain(SHUTDOWN_TIMEOUT);
+    if (result.timedOut) {
+      console.warn(
+        `[agenda] drain timed out after ${SHUTDOWN_TIMEOUT}ms; ${result.running} job(s) still running`
+      );
+    }
   }
 }
