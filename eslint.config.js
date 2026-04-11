@@ -1,18 +1,21 @@
-import js from "@eslint/js";
-import tseslint from "typescript-eslint";
+// @ts-check
+import eslint from "@eslint/js";
+import { defineConfig, globalIgnores } from "eslint/config";
 import prettier from "eslint-config-prettier";
+import tseslint from "typescript-eslint";
 
-export default tseslint.config(
-  {
-    ignores: ["dist/**", "node_modules/**", "coverage/**"],
-  },
-  js.configs.recommended,
-  ...tseslint.configs.recommended,
-  ...tseslint.configs.recommendedTypeChecked,
+export default defineConfig(
+  globalIgnores(["dist/**", "node_modules/**", "coverage/**"]),
+  eslint.configs.recommended,
+  tseslint.configs.recommended,
+  tseslint.configs.recommendedTypeChecked,
   {
     languageOptions: {
       parserOptions: {
-        projectService: true,
+        projectService: {
+          allowDefaultProject: ["eslint.config.js", "jest.config.mjs"],
+        },
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- import.meta.dirname is string at runtime; JS config typing is loose
         tsconfigRootDir: import.meta.dirname,
       },
     },
