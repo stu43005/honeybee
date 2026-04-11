@@ -71,11 +71,9 @@ export async function importAllModels(): Promise<void> {
   for (const file of await fsp.readdir(modelsDir, { withFileTypes: true })) {
     if (
       file.isFile() &&
-      !file.name.endsWith(".d.ts") &&
+      file.name.endsWith(".js") &&
       !file.name.endsWith(".spec.js") &&
-      !file.name.endsWith(".spec.ts") &&
-      !file.name.endsWith(".test.js") &&
-      !file.name.endsWith(".test.ts")
+      !file.name.endsWith(".test.js")
     ) {
       const importPath = pathToFileURL(
         path.join(modelsDir, file.name)
