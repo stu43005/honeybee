@@ -1799,20 +1799,39 @@ function requireModule<T extends Module>(app: Application, name: string): T {
 }
 
 /**
- * Layer 2 of the webhook horizontal-scaling architecture.
+ * Listens to MongoDB changeStreams for the collections this instance owns and
+ * forwards each relevant insert/update event into the bee-queue worker pool
+ * for actual webhook delivery. Centralises all changeStream lifecycle in one
+ * place so that webhook config changes (meta-stream) and ownership changes
+ * (partition rebalance) trigger a single reconcile path.
  *
  * Owns:
- *   - meta-stream (watches WebhookModel config changes)
- *   - per-collection changeStreams (only for colls assigned to this instance)
- *   - resume token persistence (periodic + on close)
- *   - reconcile loop triggered by meta-stream events + partition rebalance
+ *   - meta-stream: a single changeStream on WebhookModel that watches insert /
+ *     update / replace / delete on webhook config documents and triggers a
+ *     reconcile so newly enabled collections are picked up and disabled ones
+ *     are dropped.
+ *   - per-collection changeStreams: opens one ChangeStream per collection that
+ *     this instance currently owns, with a $match filter assembled from all
+ *     enabled webhooks targeting that collection.
+ *   - resume token persistence: writes the latest resume token to Redis on a
+ *     periodic interval and again at close, so a restarted instance (or a new
+ *     owner after rebalance) resumes from where the previous owner stopped.
+ *   - reconcile loop: idempotent setupCollections() that diffs the desired
+ *     ownership set (from partition.getAssignedCollections + enabled webhook
+ *     list) against the currently-open streams and opens / closes / updates as
+ *     needed. Triggered by meta-stream events and by partition rebalance.
  *
  * Dependencies (obtained in init() via app.get):
- *   - RedisModule: resume token storage (Layer 2 internal concern)
- *   - WebhookPartitionModule: which colls to listen to, rebalance signal
- *   - WebhookQueueProducerModule: push change events into the queue via
- *     producerModule.scheduleAndEnqueue(job) — cooldown / dedupe / WATCH-MULTI
- *     coordination is owned by the producer
+ *   - RedisModule: stores resume tokens under "webhook:resumetoken:<coll>"
+ *     keys. Resume tokens are this module's internal state — no other module
+ *     reads them.
+ *   - WebhookPartitionModule: provides getAssignedCollections() to compute
+ *     ownership and emits "rebalance" when the active instance set changes.
+ *   - WebhookQueueProducerModule: receives change events via
+ *     producerModule.scheduleAndEnqueue(job). The cooldown window, in-flight
+ *     coalesce check, and Redis WATCH/MULTI/EXEC coordination all live inside
+ *     the producer; this module just hands over a WebhookJob describing the
+ *     event.
  */
 export class WebhookChangeStreamModule implements Module {
   public readonly name = "webhook-changestream";
@@ -1848,13 +1867,16 @@ export class WebhookChangeStreamModule implements Module {
     });
 
     // React to partition reassignments. This also provides our INITIAL
-    // reconcile: runWebhook registers changestream BEFORE partition (so
-    // partition closes first per spec §4.7), which means this init() runs
+    // reconcile: runWebhook registers changestream BEFORE partition so that
+    // partition closes first under LIFO shutdown — partition's close()
+    // promptly DELs its instance key from Redis and broadcasts a rebalance,
+    // letting peers begin reassignment while our own changeStreams are still
+    // alive to flush in-flight events. As a consequence, this init() runs
     // while partition is still uninitialized. partition.init() will later
-    // publish to REBALANCE_CHANNEL as its last step, and its own subscriber
-    // loops it back to emit "rebalance" on the EventEmitter — triggering our
-    // first setupCollections() call with a fully-populated activeInstanceIds.
-    // No manual initial reconcile is needed.
+    // publish to its rebalance channel as its last step, and its own
+    // subscriber loops it back to emit "rebalance" on the EventEmitter —
+    // triggering our first setupCollections() call with a fully-populated
+    // activeInstanceIds. No manual initial reconcile is needed.
     this.partition.on("rebalance", () => this.scheduleSetup());
   }
 
