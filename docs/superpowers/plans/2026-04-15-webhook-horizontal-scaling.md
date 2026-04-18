@@ -20,6 +20,8 @@
 - `src/modules/webhook-partition.spec.ts` — 單元測試
 - `src/modules/webhook-queue.ts` — bee-queue 封裝 + scheduleAndEnqueue + worker startup
 - `src/modules/webhook-queue.spec.ts` — 單元測試
+- `src/modules/webhook-claim.ts` — WebhookResult 冪等 upsert / claim helper（抽出以便單元測試）
+- `src/modules/webhook-claim.spec.ts` — 單元測試
 
 **Modified files:**
 
