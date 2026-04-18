@@ -1640,25 +1640,22 @@ git commit -m "refactor(webhook): integrate claimWebhookResult into processWebho
 
 - Modify: `src/commands/webhook.ts`
 
-- [ ] **Step 1: 新增 loadJobContext**
+**設計**：所有需要 Redis 的操作都以 `redis: RedisClientType` 作為參數傳入，不使用模組層變數。Redis client 的 lifecycle 由 Task 14 在 `runWebhook` 內部透過複用既有的 `RedisModule`（`src/modules/redis.ts`）管理，範圍侷限於該函數。
 
-在 `processWebhookEvent` 之前新增：
-
-首先，在 `webhook.ts` 頂端的 import 區塊加入以下匯入（`createClient` / `RedisClientType` / `REDIS_URI` / `WebhookJob`）：
+- [ ] **Step 1: 在 webhook.ts 頂端 import 區塊加入必要型別**
 
 ```typescript
-import { createClient, type RedisClientType } from "redis";
-import { REDIS_URI } from "../constants.js";
+import type { RedisClientType } from "redis";
 import type { WebhookJob } from "../interfaces.js";
 ```
 
-然後在 `processWebhookEvent` 之前、在檔案頂層 scope（與其他既有模組層宣告同列）新增 `sharedRedisClient` 變數與三個 helper 函數。**為避免 `noUnusedLocals` 警告（這些符號要到 Task 14 才被消費）**，宣告變數時加上 `// eslint-disable-next-line @typescript-eslint/no-unused-vars` 註記，或在檔案末尾加 `void [sharedRedisClient, loadJobContext, loadResumeToken, saveResumeToken];` 一行 placeholder 引用，Task 14 完成後刪除該行。
+（**不要** import `createClient` 或 `REDIS_URI`；Task 14 會透過既有的 `RedisModule` 取得 client。）
+
+- [ ] **Step 2: 在 `processWebhookEvent` 之前新增 helper 函數**
+
+三個 helper 皆為 pure top-level 函數、**不引用任何模組層 Redis 變數**。`loadResumeToken` / `saveResumeToken` 接受 `redis` 參數；`loadJobContext` 不需要 Redis。
 
 ```typescript
-// Shared redis client for resume token + scheduleAndEnqueue on the producer
-// side. Initialised in runWebhook() (see Task 14).
-let sharedRedisClient: RedisClientType | null = null;
-
 async function loadJobContext(job: WebhookJob): Promise<{
   webhook: DocumentType<Webhook>;
   data: WatcherResultDocument;
@@ -1713,15 +1710,15 @@ async function saveResumeToken(
 
 注意：在 import 區塊中確認已加入 `getModelByCollectionName`（應已存在）、`mongo`（從 mongoose 已匯入）、`WebhookModel`（應已存在）。若 TypeScript 對 `WatcherResultDocument` 的 typing 較嚴格，使用 `as WatcherResultDocument` cast 即可，因為下游 `processWebhookEvent` 並未依賴 `new model(...)` 的 Document 包裝語法之外的特性。
 
-- [ ] **Step 2: 在檔案末尾加入暫時引用以避免 unused 錯誤**
+- [ ] **Step 3: 在檔案末尾加入暫時引用以避免 `noUnusedLocals` 錯誤**
 
-在 `webhook.ts` 末尾加入一行（Task 14 完成後刪除）：
+由於這三個 helper 要到 Task 14 才被呼叫，先加一行 placeholder（Task 14 完成後刪除）：
 
 ```typescript
-void [sharedRedisClient, loadJobContext, loadResumeToken, saveResumeToken];
+void [loadJobContext, loadResumeToken, saveResumeToken];
 ```
 
-- [ ] **Step 3: Type check**
+- [ ] **Step 4: Type check**
 
 ```bash
 npx tsc --noEmit
@@ -1729,7 +1726,7 @@ npx tsc --noEmit
 
 Expected: 無錯誤。
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/commands/webhook.ts
@@ -1755,6 +1752,7 @@ import {
   WEBHOOK_COOLDOWN_MS,
   WEBHOOK_RESUME_TOKEN_SAVE_INTERVAL_MS,
 } from "../constants.js";
+import { RedisModule } from "../modules/redis.js";
 import { WebhookPartitionModule } from "../modules/webhook-partition.js";
 import {
   WebhookQueueConsumerModule,
@@ -1762,11 +1760,11 @@ import {
 } from "../modules/webhook-queue.js";
 ```
 
-（若既有 import 區塊已經部分匯入 `../constants.js`，合併匯入即可。不要引入 `src/version.ts`；直接在 runWebhook 函數內用 `const packageVersion = "unknown";` 或從 `process.env.npm_package_version ?? "unknown"` 讀取。）
+（若既有 import 區塊已經部分匯入 `../constants.js`，合併匯入即可。不要引入 `src/version.ts`；直接在 runWebhook 函數內用 `const packageVersion = "unknown";` 或從 `process.env.npm_package_version ?? "unknown"` 讀取。不要新增 `createClient` 或 `REDIS_URI` 的匯入——Redis client 由既有的 `RedisModule` 管理。）
 
 - [ ] **Step 2: 將 startChangeStream 改為使用 resume token 持久化**
 
-找到 `startChangeStream` 函數（約 line 482–548）。改寫為：
+找到 `startChangeStream` 函數（約 line 482–548）。改寫為以下版本。**此函數必須在 Step 6 被移入 `runWebhook` 內部**，因為它依賴 runWebhook 內的 local `redisModule`、`producerQueue`、`partition`、`collectionSettings` 等 closure 變數。
 
 ```typescript
 async function startChangeStream(
@@ -1786,9 +1784,7 @@ async function startChangeStream(
         collectionSetting.changeStream,
         collectionSetting.tokenSaveInterval
       )
-    : sharedRedisClient
-      ? await loadResumeToken(sharedRedisClient, coll)
-      : undefined;
+    : await loadResumeToken(redisModule.redis, coll);
 
   const model = getModelByCollectionName(coll);
   if (!model) {
@@ -1810,9 +1806,9 @@ async function startChangeStream(
   // Periodic resume token save
   const tokenSaveInterval = global.setInterval(() => {
     const token = (changeStream as any).resumeToken;
-    if (!token || !sharedRedisClient) return;
+    if (!token) return;
     void saveResumeToken(
-      sharedRedisClient,
+      redisModule.redis,
       coll,
       token,
       partition.instanceId
@@ -1860,10 +1856,9 @@ async function startChangeStream(
       }));
 
     for (const job of webhookJob) {
-      if (!sharedRedisClient || !producerQueue) continue;
       scheduleAndEnqueue(
         producerQueue,
-        sharedRedisClient,
+        redisModule.redis,
         job,
         Date.now(),
         WEBHOOK_COOLDOWN_MS
@@ -1907,9 +1902,9 @@ async function closeChangeStream(
   try {
     await changeStream.close();
     changeStream.removeAllListeners();
-    if (finalToken && sharedRedisClient) {
+    if (finalToken) {
       await saveResumeToken(
-        sharedRedisClient,
+        redisModule.redis,
         coll,
         finalToken,
         partition.instanceId
@@ -1995,9 +1990,9 @@ async function setupWebhook(coll: string, webhooks: DocumentType<Webhook>[]) {
 
 找到 `export async function runWebhook`（約 line 361）。本步驟做以下變動：
 
-1. **將 Step 2/4/5 重寫的 `startChangeStream` / `closeChangeStream` / `setupWebhook` 函數移入 `runWebhook` 內部**，使其能 close over `sharedRedisClient`、`producerQueue`、`partition`、`collectionSettings` 等 runWebhook 內的 local state。同樣把既有的 `removeWebhook`、`changeStreamIsValid`、`setupWebhooks` 也移入 runWebhook 內。
-2. **建立 shared Redis client 早於 partition module**，並 assign 給模組層的 `sharedRedisClient`（Task 13 宣告）。
-3. **依 §4.7 順序註冊 modules**：先註冊「先 init、後 close」的，再註冊「後 init、先 close」的。LIFO 關閉順序為：webhook-change-stream → setup-webhooks-queue → partition → remove-webhook-changestreams → producer → consumer → discord-rest-client → MongoDB。**partition 必須在 remove-webhook-changestreams 之前註冊**，才能讓關閉順序變成「partition 先離開（讓其他實例接管）→ 本實例 changeStream 關閉」。
+1. **將 Step 2/4/5 重寫的 `startChangeStream` / `closeChangeStream` / `setupWebhook` 函數移入 `runWebhook` 內部**，使其能 close over `redisModule`、`producerQueue`、`partition`、`collectionSettings` 等 runWebhook 內的 local state。同樣把既有的 `removeWebhook`、`changeStreamIsValid`、`setupWebhooks` 也移入 runWebhook 內。
+2. **建立 Redis client via 既有 `RedisModule`**（`src/modules/redis.ts`）：以 `const redisModule = new RedisModule()` 的方式宣告 local 變數，並透過 `app.use(redisModule)` 註冊由 Application 管理其 connect/disconnect lifecycle。**不新增 module-level 變數、不直接呼叫 `createClient`**；所有需要 Redis 的 helper 透過 closure 取得 `redisModule.redis`。
+3. **依 §4.7 順序註冊 modules**：先註冊「先 init、後 close」的，再註冊「後 init、先 close」的。LIFO 關閉順序為：webhook-change-stream → setup-webhooks-queue → partition → remove-webhook-changestreams → producer → consumer → redis → discord-rest-client → MongoDB。**partition 必須在 remove-webhook-changestreams 之前註冊**，才能讓關閉順序變成「partition 先離開（讓其他實例接管）→ 本實例 changeStream 關閉」。**`redisModule` 必須在所有會使用到它的 modules（producer / consumer / partition / changeStream cleanup）之前註冊**，確保關閉時它最後斷線。
 4. **所有 `app.use(...)` 必須在 `await app.init()` 之前**：Application 不支援 init 後再註冊 module（後註冊者的 `init()` 不會被呼叫）。
 5. **partition 的 rebalance 事件觸發 setupWebhooks**：將 `setupWebhooksQueue = new PQueue(...)` 宣告**移到** `partition.on("rebalance", ...)` 之前，避免 forward reference 帶來的脆弱性。
 
@@ -2009,11 +2004,9 @@ export async function runWebhook() {
   const app = new Application();
   app.use(new MongodbModule());
 
-  // Shared Redis client for resume token save/load and scheduleAndEnqueue.
-  // Assign to the module-level `sharedRedisClient` declared in Task 13 so
-  // that loadJobContext / loadResumeToken / saveResumeToken can use it.
-  sharedRedisClient = createClient({ url: REDIS_URI });
-  await sharedRedisClient.connect();
+  // Redis client via existing RedisModule — lifecycle managed by Application.
+  // Scope is local to runWebhook; no module-level variable is introduced.
+  const redisModule = new RedisModule();
 
   const collectionSettings = new Map<string, CollectionSetting>();
 
@@ -2049,7 +2042,7 @@ export async function runWebhook() {
   // LIFO close order is the reverse:
   //   webhook-change-stream → setup-webhooks-queue → partition →
   //   remove-webhook-changestreams → producer → consumer →
-  //   discord-rest-client → MongoDB
+  //   redis → discord-rest-client → MongoDB
   // The partition module MUST close BEFORE remove-webhook-changestreams: when
   // partition closes it DELs its instance key from Redis and publishes on the
   // rebalance channel, so other instances notice this instance leaving and
@@ -2059,6 +2052,9 @@ export async function runWebhook() {
   // still producing events briefly after other instances think they took
   // over) is bounded and tolerated by bee-queue setId dedup plus the
   // WebhookResult idempotency check.
+  // redisModule is registered BEFORE consumer/producer/partition (init first,
+  // close last among Redis-dependent modules) so the Redis connection stays
+  // alive until after all of them finish shutting down.
   // MongoDB and discord-rest are registered FIRST (init first, close last) so
   // they outlive every other lifecycle during shutdown.
   app.use({
@@ -2071,6 +2067,7 @@ export async function runWebhook() {
       }
     },
   });
+  app.use(redisModule);
   app.use(consumerModule);
   app.use(producerModule);
   app.use({
@@ -2120,7 +2117,7 @@ export async function runWebhook() {
   // ---- function definitions that close over runWebhook's locals ----
   // The functions below (closeChangeStream, removeWebhook, startChangeStream,
   // setupWebhook, setupWebhooks) MUST be defined inside runWebhook because
-  // they reference `sharedRedisClient`, `producerQueue`, `partition`,
+  // they reference `redisModule`, `producerQueue`, `partition`,
   // `collectionSettings`, and `setupWebhooksQueue`.
 
   function changeStreamIsValid(changeStream?: mongo.ChangeStream) {
@@ -2143,7 +2140,7 @@ export async function runWebhook() {
 
 **重要實作備註**：
 
-- Step 2 (`startChangeStream`)、Step 4 (`closeChangeStream`)、Step 5 (`setupWebhook`) 的函數定義在 Step 6 寫入時必須**放在 `runWebhook` 函數內部**，否則它們無法存取 `sharedRedisClient`/`producerQueue`/`partition`/`collectionSettings` 這些 closure 變數，會出現 ReferenceError。
+- Step 2 (`startChangeStream`)、Step 4 (`closeChangeStream`)、Step 5 (`setupWebhook`) 的函數定義在 Step 6 寫入時必須**放在 `runWebhook` 函數內部**，否則它們無法存取 `redisModule`/`producerQueue`/`partition`/`collectionSettings` 這些 closure 變數，會出現 ReferenceError。
 - 既有的 `removeWebhook` 函數也要一併移入 `runWebhook` 內部（它依賴 `collectionSettings`）。
 - LIFO 關閉順序由註冊順序決定。請逐條對照註冊順序註解，確認 partition 在 remove-webhook-changestreams 之後註冊（即會更早關閉）。
 
