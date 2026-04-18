@@ -303,9 +303,11 @@ async function getJobIfInFlight(queue, jobId): Promise<boolean> {
 
 ### 3.6 scheduleAndEnqueue 實作（WATCH/MULTI/EXEC）
 
-使用 Redis 原生樂觀鎖確保 `nextAllowed` 計算的原子性，不使用 Lua 腳本。
+使用 Redis 原生樂觀鎖確保 `nextAllowed` 計算的原子性，不使用 Lua 腳本。**使用 node-redis v4（專案既有依賴）**：WATCH 衝突時 `multi.exec()` 會 **throw `WatchError`**（非 ioredis 的回傳 `null`），且 `set` 的 TTL 選項以物件形式傳入 `{ PX: ms }`。
 
 ```typescript
+import { WatchError } from "redis";
+
 async function scheduleAndEnqueue(
   job: WebhookJob,
   now: number,
@@ -335,9 +337,15 @@ async function scheduleAndEnqueue(
     if (now >= nextAllowed) {
       // 已過冷卻期 → 立即推入
       const multi = redis.multi();
-      multi.set(nextKey, String(now + cooldown), "PX", WEBHOOK_NEXT_KEY_TTL_MS);
-      const result = await multi.exec();
-      if (result === null) continue; // WATCH 被觸發，重試
+      multi.set(nextKey, String(now + cooldown), {
+        PX: WEBHOOK_NEXT_KEY_TTL_MS,
+      });
+      try {
+        await multi.exec();
+      } catch (err) {
+        if (err instanceof WatchError) continue; // WATCH 被觸發，重試
+        throw err;
+      }
 
       await webhookQueue.createJob(job).setId(jobId).save();
       return "immediate";
@@ -346,14 +354,15 @@ async function scheduleAndEnqueue(
     // 冷卻期內且無待發 job → 排程延遲推入
     const delay = nextAllowed - now;
     const multi = redis.multi();
-    multi.set(
-      nextKey,
-      String(nextAllowed + cooldown),
-      "PX",
-      WEBHOOK_NEXT_KEY_TTL_MS
-    );
-    const result = await multi.exec();
-    if (result === null) continue;
+    multi.set(nextKey, String(nextAllowed + cooldown), {
+      PX: WEBHOOK_NEXT_KEY_TTL_MS,
+    });
+    try {
+      await multi.exec();
+    } catch (err) {
+      if (err instanceof WatchError) continue;
+      throw err;
+    }
 
     await webhookQueue
       .createJob(job)
@@ -367,7 +376,7 @@ async function scheduleAndEnqueue(
   // 關鍵：必須先用非交易（unconditional）SET 推進 nextKey，
   // 否則 fallback job 完成後下一次事件會讀到 stale nextAllowed，
   // 走 "immediate" 分支造成 ≥ 5 秒間隔不變量被破壞。
-  // 此處不用 WATCH/MULTI/EXEC，因為 5 次競爭失敗已表明樂觀鎖難以成功；
+  // 此處不用 WATCH/MULTI/EXEC，因為 5 次競爭失敗已表明樂觀鎖難以成功;
   // 用 best-effort SET 推進 nextKey 比放任 stale 更安全。
   // 取 max(當前讀取值 + cooldown, now + 2*cooldown) 確保至少比當下 fallback
   // 觸發時間再多 cooldown，保證下一次推入至少要等到 fallback job 被消費後 cooldown 時間。
@@ -375,12 +384,9 @@ async function scheduleAndEnqueue(
     lastNextAllowed + cooldown,
     now + cooldown * 2
   );
-  await redis.set(
-    nextKey,
-    String(fallbackNextAllowed),
-    "PX",
-    WEBHOOK_NEXT_KEY_TTL_MS
-  );
+  await redis.set(nextKey, String(fallbackNextAllowed), {
+    PX: WEBHOOK_NEXT_KEY_TTL_MS,
+  });
   await webhookQueue
     .createJob(job)
     .setId(jobId)
