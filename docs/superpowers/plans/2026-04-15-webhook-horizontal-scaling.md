@@ -14,14 +14,15 @@
 
 ## File Structure
 
-**New files:**
+**New files（全部集中於 `src/modules/webhook/` 目錄）：**
 
-- `src/modules/webhook-partition.ts` — 分區分配模組（註冊/心跳/SCAN/hash 分配/rebalance 事件）
-- `src/modules/webhook-partition.spec.ts` — 單元測試
-- `src/modules/webhook-queue.ts` — bee-queue 封裝 + scheduleAndEnqueue + worker startup
-- `src/modules/webhook-queue.spec.ts` — 單元測試
-- `src/modules/webhook-claim.ts` — WebhookResult 冪等 upsert / claim helper（抽出以便單元測試）
-- `src/modules/webhook-claim.spec.ts` — 單元測試
+- `src/modules/webhook/partition.ts` — 分區分配模組（註冊/心跳/SCAN/hash 分配/rebalance 事件）
+- `src/modules/webhook/partition.spec.ts` — 單元測試
+- `src/modules/webhook/queue.ts` — bee-queue 封裝 + scheduleAndEnqueue + Consumer/Producer Application 模組
+- `src/modules/webhook/queue.spec.ts` — 單元測試
+- `src/modules/webhook/claim.ts` — WebhookResult 冪等 upsert / claim helper（抽出以便單元測試）
+- `src/modules/webhook/claim.spec.ts` — 單元測試
+- `src/modules/webhook/changestream.ts` — **Layer 2 獨立 Application 模組**：包含 meta-stream、per-collection changeStream lifecycle、resume token 持久化、rebalance 監聽、debounced reconcile loop；透過 `app.get` 取得 redis/partition/producer 依賴
 
 **Modified files:**
 
@@ -182,16 +183,16 @@ git commit -m "feat(webhook): add expireAt TTL field to WebhookResult"
 
 **Files:**
 
-- Create: `src/modules/webhook-partition.ts`
-- Create: `src/modules/webhook-partition.spec.ts`
+- Create: `src/modules/webhook/partition.ts`
+- Create: `src/modules/webhook/partition.spec.ts`
 
 - [ ] **Step 1: 先寫失敗的測試**
 
-建立 `src/modules/webhook-partition.spec.ts`：
+建立 `src/modules/webhook/partition.spec.ts`：
 
 ```typescript
 import { describe, expect, it } from "@jest/globals";
-import { assignInstance, hashCollection } from "./webhook-partition.js";
+import { assignInstance, hashCollection } from "./partition.js";
 
 describe("hashCollection", () => {
   it("returns a deterministic uint32 for a given collection name", () => {
@@ -235,12 +236,12 @@ describe("assignInstance", () => {
 - [ ] **Step 2: 執行測試，確認失敗**
 
 ```bash
-npx jest src/modules/webhook-partition.spec.ts
+npx jest src/modules/webhook/partition.spec.ts
 ```
 
-Expected: FAIL — Cannot find module `./webhook-partition.js`.
+Expected: FAIL — Cannot find module `./partition.js`.
 
-- [ ] **Step 3: 建立 `src/modules/webhook-partition.ts` 的最小實作**
+- [ ] **Step 3: 建立 `src/modules/webhook/partition.ts` 的最小實作**
 
 ```typescript
 import { createHash } from "node:crypto";
@@ -275,7 +276,7 @@ export function assignInstance(
 - [ ] **Step 4: 再次執行測試，確認通過**
 
 ```bash
-npx jest src/modules/webhook-partition.spec.ts
+npx jest src/modules/webhook/partition.spec.ts
 ```
 
 Expected: PASS（所有測試）。
@@ -283,7 +284,7 @@ Expected: PASS（所有測試）。
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/modules/webhook-partition.ts src/modules/webhook-partition.spec.ts
+git add src/modules/webhook/partition.ts src/modules/webhook/partition.spec.ts
 git commit -m "feat(webhook): add hash-based partition assignment pure functions"
 ```
 
@@ -293,9 +294,9 @@ git commit -m "feat(webhook): add hash-based partition assignment pure functions
 
 **Files:**
 
-- Modify: `src/modules/webhook-partition.ts`
+- Modify: `src/modules/webhook/partition.ts`
 
-- [ ] **Step 1: 在 webhook-partition.ts 新增 WebhookPartitionModule class**
+- [ ] **Step 1: 在 partition.ts 新增 WebhookPartitionModule class**
 
 在檔案尾端（保留既有的 pure 函數）加入：
 
@@ -309,8 +310,8 @@ import {
   WEBHOOK_PARTITION_HEARTBEAT_MS,
   WEBHOOK_PARTITION_TTL_SECONDS,
   WEBHOOK_REBALANCE_DEBOUNCE_MS,
-} from "../constants.js";
-import type { Module } from "./module.js";
+} from "../../constants.js";
+import type { Module } from "../module.js";
 
 const INSTANCE_KEY_PREFIX = "webhook:instance:";
 const REBALANCE_CHANNEL = "webhook:rebalance";
@@ -487,7 +488,7 @@ Expected: 無錯誤。
 - [ ] **Step 3: Commit**
 
 ```bash
-git add src/modules/webhook-partition.ts
+git add src/modules/webhook/partition.ts
 git commit -m "feat(webhook): add WebhookPartitionModule with heartbeat and SCAN"
 ```
 
@@ -497,18 +498,18 @@ git commit -m "feat(webhook): add WebhookPartitionModule with heartbeat and SCAN
 
 **Files:**
 
-- Modify: `src/modules/webhook-partition.spec.ts`
+- Modify: `src/modules/webhook/partition.spec.ts`
 
 - [ ] **Step 1: 在既有 import 中加入 WebhookPartitionModule**
 
-在 `src/modules/webhook-partition.spec.ts` 檔案頂端既有的 import 中加入 `WebhookPartitionModule`：
+在 `src/modules/webhook/partition.spec.ts` 檔案頂端既有的 import 中加入 `WebhookPartitionModule`：
 
 ```typescript
 import {
   WebhookPartitionModule,
   assignInstance,
   hashCollection,
-} from "./webhook-partition.js";
+} from "./partition.js";
 ```
 
 - [ ] **Step 2: 在 spec 末尾加入 getAssignedCollections 測試**
@@ -571,7 +572,7 @@ describe("WebhookPartitionModule.getAssignedCollections", () => {
 - [ ] **Step 3: 執行測試**
 
 ```bash
-npx jest src/modules/webhook-partition.spec.ts
+npx jest src/modules/webhook/partition.spec.ts
 ```
 
 Expected: PASS（所有測試，包含 Task 4 的純函數測試）。
@@ -579,7 +580,7 @@ Expected: PASS（所有測試，包含 Task 4 的純函數測試）。
 - [ ] **Step 4: Commit**
 
 ```bash
-git add src/modules/webhook-partition.spec.ts
+git add src/modules/webhook/partition.spec.ts
 git commit -m "test(webhook): add getAssignedCollections coverage for partition module"
 ```
 
@@ -591,14 +592,14 @@ git commit -m "test(webhook): add getAssignedCollections coverage for partition 
 
 **Files:**
 
-- Create: `src/modules/webhook-queue.ts`
+- Create: `src/modules/webhook/queue.ts`
 
-- [ ] **Step 1: 建立 webhook-queue.ts 骨架**
+- [ ] **Step 1: 建立 queue.ts 骨架**
 
 ```typescript
 import BeeQueue from "bee-queue";
-import { REDIS_URI } from "../constants.js";
-import type { WebhookJob } from "../interfaces.js";
+import { REDIS_URI } from "../../constants.js";
+import type { WebhookJob } from "../../interfaces.js";
 
 const QUEUE_NAME = "webhook";
 
@@ -669,7 +670,7 @@ Expected: 無錯誤。若出現 `BeeQueue` 型別問題，檢查是否需要 `im
 - [ ] **Step 3: Commit**
 
 ```bash
-git add src/modules/webhook-queue.ts
+git add src/modules/webhook/queue.ts
 git commit -m "feat(webhook): add webhook-queue skeleton with createQueue helper"
 ```
 
@@ -679,19 +680,19 @@ git commit -m "feat(webhook): add webhook-queue skeleton with createQueue helper
 
 **Files:**
 
-- Modify: `src/modules/webhook-queue.ts`
-- Create: `src/modules/webhook-queue.spec.ts`
+- Modify: `src/modules/webhook/queue.ts`
+- Create: `src/modules/webhook/queue.spec.ts`
 
 - [ ] **Step 1: 寫失敗的測試**
 
-建立 `src/modules/webhook-queue.spec.ts`：
+建立 `src/modules/webhook/queue.spec.ts`：
 
 ```typescript
 import { describe, expect, it, jest } from "@jest/globals";
 import type BeeQueue from "bee-queue";
 import { WatchError, type RedisClientType } from "redis";
-import { scheduleAndEnqueue } from "./webhook-queue.js";
-import type { WebhookJob } from "../interfaces.js";
+import { scheduleAndEnqueue } from "./queue.js";
+import type { WebhookJob } from "../../interfaces.js";
 
 // Each exec step is either "ok" (resolves) or "watch-abort" (throws WatchError).
 type ExecOutcome = "ok" | "watch-abort";
@@ -867,20 +868,20 @@ describe("scheduleAndEnqueue", () => {
 - [ ] **Step 2: 執行測試，確認失敗**
 
 ```bash
-npx jest src/modules/webhook-queue.spec.ts
+npx jest src/modules/webhook/queue.spec.ts
 ```
 
 Expected: FAIL — `scheduleAndEnqueue` is not exported.
 
-- [ ] **Step 3: 在 `src/modules/webhook-queue.ts` 實作 scheduleAndEnqueue**
+- [ ] **Step 3: 在 `src/modules/webhook/queue.ts` 實作 scheduleAndEnqueue**
 
 首先，在檔案頂端的 import 區塊加入 `WatchError`、`RedisClientType` 與 `WEBHOOK_NEXT_KEY_TTL_MS`：
 
 ```typescript
 import BeeQueue from "bee-queue";
 import { WatchError, type RedisClientType } from "redis";
-import { REDIS_URI, WEBHOOK_NEXT_KEY_TTL_MS } from "../constants.js";
-import type { WebhookJob } from "../interfaces.js";
+import { REDIS_URI, WEBHOOK_NEXT_KEY_TTL_MS } from "../../constants.js";
+import type { WebhookJob } from "../../interfaces.js";
 ```
 
 然後在檔案中（既有 helper 之後）加入：
@@ -993,7 +994,7 @@ export async function scheduleAndEnqueue(
 - [ ] **Step 4: 執行測試，確認全部通過**
 
 ```bash
-npx jest src/modules/webhook-queue.spec.ts
+npx jest src/modules/webhook/queue.spec.ts
 ```
 
 Expected: PASS（5 個測試）。
@@ -1003,7 +1004,7 @@ Expected: PASS（5 個測試）。
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/modules/webhook-queue.ts src/modules/webhook-queue.spec.ts
+git add src/modules/webhook/queue.ts src/modules/webhook/queue.spec.ts
 git commit -m "feat(webhook): add scheduleAndEnqueue with WATCH/MULTI/EXEC cooldown"
 ```
 
@@ -1013,7 +1014,7 @@ git commit -m "feat(webhook): add scheduleAndEnqueue with WATCH/MULTI/EXEC coold
 
 **Files:**
 
-- Modify: `src/modules/webhook-queue.ts`
+- Modify: `src/modules/webhook/queue.ts`
 
 - [ ] **Step 1: 在 import 區塊加入 Module 介面與 SHUTDOWN_TIMEOUT / WEBHOOK_WORKER_CONCURRENCY**
 
@@ -1025,11 +1026,11 @@ import {
   SHUTDOWN_TIMEOUT,
   WEBHOOK_NEXT_KEY_TTL_MS,
   WEBHOOK_WORKER_CONCURRENCY,
-} from "../constants.js";
-import type { Module } from "./module.js";
+} from "../../constants.js";
+import type { Module } from "../module.js";
 ```
 
-（保留既有的 `import BeeQueue from "bee-queue"` 與 `import type { RedisClientType } from "redis"`，僅更新 `../constants.js` 與新增 `./module.js` import。）
+（保留既有的 `import BeeQueue from "bee-queue"` 與 `import type { RedisClientType } from "redis"`，僅更新 `../../constants.js` 的完整 import 清單並新增 `../module.js` import。）
 
 - [ ] **Step 2: 在檔案末尾新增 consumer module**
 
@@ -1139,7 +1140,7 @@ Expected: 無錯誤。若 bee-queue 的 `BeeQueue.Job` namespace 型別無法解
 - [ ] **Step 4: Commit**
 
 ```bash
-git add src/modules/webhook-queue.ts
+git add src/modules/webhook/queue.ts
 git commit -m "feat(webhook): add WebhookQueueConsumerModule and ProducerModule"
 ```
 
@@ -1151,19 +1152,19 @@ git commit -m "feat(webhook): add WebhookQueueConsumerModule and ProducerModule"
 
 **Files:**
 
-- Create: `src/modules/webhook-claim.ts`
-- Create: `src/modules/webhook-claim.spec.ts`
+- Create: `src/modules/webhook/claim.ts`
+- Create: `src/modules/webhook/claim.spec.ts`
 
 為了讓 claim 邏輯可以單元測試，獨立成 module（而非內嵌於 `webhook.ts`）。此 module 只依賴 `WebhookResultModel` 與 lodash-es 的 `isEqual`，不觸及其他 webhook 邏輯。
 
 - [ ] **Step 1: 寫失敗的測試**
 
-建立 `src/modules/webhook-claim.spec.ts`：
+建立 `src/modules/webhook/claim.spec.ts`：
 
 ```typescript
 import { afterEach, describe, expect, it, jest } from "@jest/globals";
-import { claimWebhookResult } from "./webhook-claim.js";
-import WebhookResultModel from "../models/WebhookResult.js";
+import { claimWebhookResult } from "./claim.js";
+import WebhookResultModel from "../../models/WebhookResult.js";
 
 type FakeExisting = {
   response?: unknown;
@@ -1270,19 +1271,19 @@ describe("claimWebhookResult", () => {
 - [ ] **Step 2: 執行測試，確認失敗**
 
 ```bash
-npx jest src/modules/webhook-claim.spec.ts
+npx jest src/modules/webhook/claim.spec.ts
 ```
 
-Expected: FAIL — `Cannot find module './webhook-claim.js'`。
+Expected: FAIL — `Cannot find module './claim.js'`。
 
-- [ ] **Step 3: 實作 `src/modules/webhook-claim.ts`**
+- [ ] **Step 3: 實作 `src/modules/webhook/claim.ts`**
 
 ```typescript
 import type { DocumentType } from "@typegoose/typegoose";
 import { isEqual } from "lodash-es";
-import { WEBHOOK_RESULT_FOLLOW_TTL_SECONDS } from "../constants.js";
-import type { Webhook } from "../models/Webhook.js";
-import WebhookResultModel from "../models/WebhookResult.js";
+import { WEBHOOK_RESULT_FOLLOW_TTL_SECONDS } from "../../constants.js";
+import type { Webhook } from "../../models/Webhook.js";
+import WebhookResultModel from "../../models/WebhookResult.js";
 
 export type WebhookResultIdentifier = {
   webhookId: string;
@@ -1373,7 +1374,7 @@ export async function claimWebhookResult(
 - [ ] **Step 4: 執行測試，確認全部通過**
 
 ```bash
-npx jest src/modules/webhook-claim.spec.ts
+npx jest src/modules/webhook/claim.spec.ts
 ```
 
 Expected: PASS（5 個測試）。
@@ -1389,7 +1390,7 @@ Expected: 無錯誤。
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/modules/webhook-claim.ts src/modules/webhook-claim.spec.ts
+git add src/modules/webhook/claim.ts src/modules/webhook/claim.spec.ts
 git commit -m "feat(webhook): add claimWebhookResult idempotency helper with tests"
 ```
 
@@ -1547,16 +1548,16 @@ git commit -m "refactor(webhook): send functions now write body/method/url on su
 在檔案頂端的 import 區塊加入：
 
 ```typescript
-import { claimWebhookResult } from "../modules/webhook-claim.js";
+import { claimWebhookResult } from "../modules/webhook/claim.js";
 ```
 
-注意：`WebhookResultIdentifier` 型別既有定義在 `webhook.ts` 本地（約 line 164-168），Task 10 新增的 `src/modules/webhook-claim.ts` 也定義了同名型別。為避免重複，改為從 webhook-claim 匯入並刪除本地定義：
+注意：`WebhookResultIdentifier` 型別既有定義在 `webhook.ts` 本地（約 line 164-168），Task 10 新增的 `src/modules/webhook/claim.ts` 也定義了同名型別。為避免重複，改為從 `webhook/claim` 匯入並刪除本地定義：
 
 ```typescript
 import {
   claimWebhookResult,
   type WebhookResultIdentifier,
-} from "../modules/webhook-claim.js";
+} from "../modules/webhook/claim.js";
 ```
 
 然後刪除 `webhook.ts` 中既有的 `type WebhookResultIdentifier = { ... }` 宣告（約 line 164-168）。
@@ -1634,26 +1635,23 @@ git commit -m "refactor(webhook): integrate claimWebhookResult into processWebho
 
 ---
 
-### Task 13: loadJobContext + resume token 持久化
+### Task 13: loadJobContext（Worker 端重建事件 context）
 
 **Files:**
 
 - Modify: `src/commands/webhook.ts`
 
-**設計**：所有需要 Redis 的操作都以 `redis: RedisClientType` 作為參數傳入，不使用模組層變數。Redis client 的 lifecycle 由 Task 14 在 `runWebhook` 內部透過複用既有的 `RedisModule`（`src/modules/redis.ts`）管理，範圍侷限於該函數。
+**背景**：worker 消費 `WebhookJob` 時，payload 只有 `{ webhookId, coll, docId, operationType }`。需要 helper 從 MongoDB 重新載入 webhook config 與 fullDocument，組成 `processWebhookEvent` 所需的 `WatcherResultDocument`。此 helper 不涉及 Redis，單純是 Layer 4 worker 側的 shared helper，留在 `webhook.ts`。
 
-- [ ] **Step 1: 在 webhook.ts 頂端 import 區塊加入必要型別**
+Resume token 相關 helper（load / save）則改為 Task 14 ChangeStreamModule 的 private method（Layer 2 內部實作細節），不放在 `webhook.ts`。
+
+- [ ] **Step 1: 在 webhook.ts 頂端 import 區塊加入 WebhookJob 型別**
 
 ```typescript
-import type { RedisClientType } from "redis";
 import type { WebhookJob } from "../interfaces.js";
 ```
 
-（**不要** import `createClient` 或 `REDIS_URI`；Task 14 會透過既有的 `RedisModule` 取得 client。）
-
-- [ ] **Step 2: 在 `processWebhookEvent` 之前新增 helper 函數**
-
-三個 helper 皆為 pure top-level 函數、**不引用任何模組層 Redis 變數**。`loadResumeToken` / `saveResumeToken` 接受 `redis` 參數；`loadJobContext` 不需要 Redis。
+- [ ] **Step 2: 在 `processWebhookEvent` 之前新增 `loadJobContext` helper**
 
 ```typescript
 async function loadJobContext(job: WebhookJob): Promise<{
@@ -1679,43 +1677,16 @@ async function loadJobContext(job: WebhookJob): Promise<{
     } as WatcherResultDocument,
   };
 }
-
-async function loadResumeToken(
-  redis: RedisClientType,
-  coll: string
-): Promise<unknown | undefined> {
-  const raw = await redis.get(`webhook:resumetoken:${coll}`);
-  if (!raw) return undefined;
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed.token;
-  } catch {
-    return undefined;
-  }
-}
-
-async function saveResumeToken(
-  redis: RedisClientType,
-  coll: string,
-  token: unknown,
-  instanceId: string
-): Promise<void> {
-  await redis.set(
-    `webhook:resumetoken:${coll}`,
-    JSON.stringify({ token, updatedAt: Date.now(), owner: instanceId }),
-    { EX: 3600 }
-  );
-}
 ```
 
-注意：在 import 區塊中確認已加入 `getModelByCollectionName`（應已存在）、`mongo`（從 mongoose 已匯入）、`WebhookModel`（應已存在）。若 TypeScript 對 `WatcherResultDocument` 的 typing 較嚴格，使用 `as WatcherResultDocument` cast 即可，因為下游 `processWebhookEvent` 並未依賴 `new model(...)` 的 Document 包裝語法之外的特性。
+注意：在 import 區塊中確認已加入 `getModelByCollectionName`（應已存在）、`mongo`（從 mongoose 已匯入）、`WebhookModel`（應已存在）。若 TypeScript 對 `WatcherResultDocument` 的 typing 較嚴格，使用 `as WatcherResultDocument` cast 即可。
 
 - [ ] **Step 3: 在檔案末尾加入暫時引用以避免 `noUnusedLocals` 錯誤**
 
-由於這三個 helper 要到 Task 14 才被呼叫，先加一行 placeholder（Task 14 完成後刪除）：
+此 helper 要到 Task 15 才被 worker handler 呼叫，先加 placeholder（Task 15 完成後刪除）：
 
 ```typescript
-void [loadJobContext, loadResumeToken, saveResumeToken];
+void loadJobContext;
 ```
 
 - [ ] **Step 4: Type check**
@@ -1730,224 +1701,196 @@ Expected: 無錯誤。
 
 ```bash
 git add src/commands/webhook.ts
-git commit -m "feat(webhook): add loadJobContext and resume token helpers"
+git commit -m "feat(webhook): add loadJobContext helper for worker side"
 ```
 
 ---
 
-### Task 14: runWebhook() 主函數重寫
+### Task 14: WebhookChangeStreamModule（Layer 2 抽離為獨立 Application 模組）
 
 **Files:**
 
-- Modify: `src/commands/webhook.ts`
+- Create: `src/modules/webhook/changestream.ts`
 
-這是整個 refactor 最核心的一步。目前的 `runWebhook` 約 line 361–659。
+**Scope**：把原本散在 `runWebhook` 裡的「changeStream 生命週期 + meta-stream + resume token + rebalance 監聽」全部收進一個 Application 模組。對應 design spec Layer 2。
 
-- [ ] **Step 1: 新增必要的 imports**
+**主要設計決策**：
 
-在檔案頂部 import 區塊加入：
+- **單一類別封裝**：`WebhookChangeStreamModule` implements `Module`。所有 state（collections Map / setup queue / meta-stream）與邏輯（reconcile / open / close）都是 class 的 private member。
+- **透過 `app.get` 取依賴**：在 `init()` 開頭取得 `RedisModule` / `WebhookPartitionModule` / `WebhookQueueProducerModule`。建構時只接受 `app` 參考，不做實際工作。
+- **簡化 setup 流程**：移除原本的 `setupWebhooks → setupWebhook → startChangeStream` 三層。改為**單層 reconcile**：`setupCollections()` 一次計算完「本實例該監聽哪些 coll」，直接 diff 當前狀態並執行 open/close。內部 helper 只有 `openCollection` 與 `closeCollection`（後者同時負責寫入 final resume token，取代既有 `removeWebhook` 與 `closeChangeStream` 的微妙區分）。
+- **debounce via PQueue(concurrency=1)**：`setupQueue.size < 2` 的 cap-at-2 模式保留，純粹作為 debounce（避免 meta-stream 爆量事件觸發多次 reconcile）。
+- **Resume token helpers 變 private method**：`loadResumeToken` / `saveResumeToken` 只被這個模組使用，封裝進 class，不再暴露為 file-level 函數。
+- **命名調整**：`CollectionSetting` → `CollectionState`（存的是 runtime state，不是設定）；`setupWebhooks` → `setupCollections`；`startChangeStream` → `openCollection`；`closeChangeStream` + `removeWebhook` → `closeCollection`。
+
+- [ ] **Step 1: 新增 `src/modules/webhook/changestream.ts`**
 
 ```typescript
+import type { DocumentType } from "@typegoose/typegoose";
+import { isEqual, groupBy } from "lodash-es";
+import { mongo } from "mongoose";
+import PQueue from "p-queue";
 import {
   WEBHOOK_COOLDOWN_MS,
   WEBHOOK_RESUME_TOKEN_SAVE_INTERVAL_MS,
-} from "../constants.js";
-import { RedisModule } from "../modules/redis.js";
-import { WebhookPartitionModule } from "../modules/webhook-partition.js";
-import {
-  WebhookQueueConsumerModule,
-  WebhookQueueProducerModule,
-} from "../modules/webhook-queue.js";
-```
+} from "../../constants.js";
+import type { WebhookJob } from "../../interfaces.js";
+import WebhookModel, { type Webhook } from "../../models/Webhook.js";
+import { flatObjectKey, setIfDefine } from "../../util.js";
+import type { Application } from "../application.js";
+import { documentLog, getModelByCollectionName } from "../db.js";
+import { isMatching } from "../matching.js";
+import type { Module } from "../module.js";
+import { RedisModule } from "../redis.js";
+import { WebhookPartitionModule } from "./partition.js";
+import { WebhookQueueProducerModule, scheduleAndEnqueue } from "./queue.js";
 
-（若既有 import 區塊已經部分匯入 `../constants.js`，合併匯入即可。不要引入 `src/version.ts`；直接在 runWebhook 函數內用 `const packageVersion = "unknown";` 或從 `process.env.npm_package_version ?? "unknown"` 讀取。不要新增 `createClient` 或 `REDIS_URI` 的匯入——Redis client 由既有的 `RedisModule` 管理。）
-
-- [ ] **Step 2: 將 startChangeStream 改為使用 resume token 持久化**
-
-找到 `startChangeStream` 函數（約 line 482–548）。改寫為以下版本。**此函數必須在 Step 6 被移入 `runWebhook` 內部**，因為它依賴 runWebhook 內的 local `redisModule`、`producerQueue`、`partition`、`collectionSettings` 等 closure 變數。
-
-```typescript
-async function startChangeStream(
-  coll: string,
-  collectionSetting: CollectionSetting
-): Promise<
-  | {
-      stream: mongo.ChangeStream;
-      tokenSaveInterval: NodeJS.Timeout;
-    }
-  | undefined
-> {
-  // close previous change stream if exists
-  const resumeAfter = collectionSetting.changeStream
-    ? await closeChangeStream(
-        coll,
-        collectionSetting.changeStream,
-        collectionSetting.tokenSaveInterval
-      )
-    : await loadResumeToken(redisModule.redis, coll);
-
-  const model = getModelByCollectionName(coll);
-  if (!model) {
-    documentLog(
-      coll,
-      `<!> [ERROR] Unable to get model (unknown collection "${coll}")`
-    );
-    return;
-  }
-  const changeStream = model.watch(
-    [{ $match: collectionSetting.changeStreamMatch }],
-    {
-      resumeAfter: resumeAfter as any,
-      fullDocument: "updateLookup",
-      readPreference: "secondaryPreferred",
-    }
-  );
-
-  // Periodic resume token save
-  const tokenSaveInterval = global.setInterval(() => {
-    const token = (changeStream as any).resumeToken;
-    if (!token) return;
-    void saveResumeToken(
-      redisModule.redis,
-      coll,
-      token,
-      partition.instanceId
-    ).catch((err) =>
-      documentLog(coll, "<!> [WARN] resume token save failed:", err)
-    );
-  }, WEBHOOK_RESUME_TOKEN_SAVE_INTERVAL_MS);
-
-  changeStream.on("change", (changeStreamData: mongo.ChangeStreamDocument) => {
-    if (
-      changeStreamData.operationType !== "insert" &&
-      changeStreamData.operationType !== "update"
-    ) {
-      return;
-    }
-    if (!("documentKey" in changeStreamData)) return;
-    if (
-      !("fullDocument" in changeStreamData) ||
-      !changeStreamData.fullDocument
-    ) {
-      documentLog(
-        coll,
-        "<!> [ERROR] missing fullDocument",
-        changeStreamData.documentKey
-      );
-      return;
-    }
-
-    // Push to queue via scheduleAndEnqueue instead of processing inline
-    const webhookJob: WebhookJob[] = collectionSetting.webhooks
-      .filter((wh) => {
-        if (!wh.followUpdate && changeStreamData.operationType === "update")
-          return false;
-        if (wh.match && !isMatching(changeStreamData.fullDocument, wh.match))
-          return false;
-        return true;
-      })
-      .map((wh) => ({
-        webhookId: wh._id.toHexString(),
-        coll,
-        docId: (
-          changeStreamData.documentKey._id as mongo.BSON.ObjectId
-        ).toHexString(),
-        operationType: changeStreamData.operationType as "insert" | "update",
-      }));
-
-    for (const job of webhookJob) {
-      scheduleAndEnqueue(
-        producerQueue,
-        redisModule.redis,
-        job,
-        Date.now(),
-        WEBHOOK_COOLDOWN_MS
-      ).catch((err) =>
-        documentLog(coll, "<!> [ERROR] scheduleAndEnqueue failed:", err)
-      );
-    }
-  });
-  return { stream: changeStream, tokenSaveInterval };
-}
-```
-
-- [ ] **Step 3: 更新 CollectionSetting 結構**
-
-找到 `interface CollectionSetting`（約 line 355–359），改為：
-
-```typescript
-interface CollectionSetting {
-  changeStream?: mongo.ChangeStream;
-  tokenSaveInterval?: NodeJS.Timeout;
-  changeStreamMatch?: any;
+interface CollectionState {
+  changeStream: mongo.ChangeStream;
+  tokenSaveInterval: NodeJS.Timeout;
+  changeStreamMatch: any;
   webhooks: DocumentType<Webhook>[];
 }
-```
 
-- [ ] **Step 4: 更新 closeChangeStream 簽名**
-
-找到 `closeChangeStream`（約 line 452–468），改為：
-
-```typescript
-async function closeChangeStream(
-  coll: string,
-  changeStream: mongo.ChangeStream,
-  tokenSaveInterval?: NodeJS.Timeout
-) {
-  if (tokenSaveInterval) {
-    global.clearInterval(tokenSaveInterval);
-  }
-  // Read resumeToken BEFORE close() because the driver may clear it afterwards
-  const finalToken = (changeStream as any).resumeToken;
-  try {
-    await changeStream.close();
-    changeStream.removeAllListeners();
-    if (finalToken) {
-      await saveResumeToken(
-        redisModule.redis,
-        coll,
-        finalToken,
-        partition.instanceId
-      ).catch(() => {});
-    }
-    return finalToken;
-  } catch (error) {
-    documentLog(
-      coll,
-      "<!> [FATAL] Unable to close the previous change stream.",
-      error
+function requireModule<T extends Module>(app: Application, name: string): T {
+  const mod = app.get<T>(name);
+  if (!mod) {
+    throw new Error(
+      `WebhookChangeStreamModule: required module '${name}' not found`
     );
-    process.exit(1);
   }
+  return mod;
 }
-```
 
-- [ ] **Step 5: 更新 setupWebhook 以使用 partition filter 與新結構**
+/**
+ * Layer 2 of the webhook horizontal-scaling architecture.
+ *
+ * Owns:
+ *   - meta-stream (watches WebhookModel config changes)
+ *   - per-collection changeStreams (only for colls assigned to this instance)
+ *   - resume token persistence (periodic + on close)
+ *   - reconcile loop triggered by meta-stream events + partition rebalance
+ *
+ * Dependencies (obtained in init() via app.get):
+ *   - RedisModule: resume token storage + scheduleAndEnqueue
+ *   - WebhookPartitionModule: which colls to listen to, rebalance signal
+ *   - WebhookQueueProducerModule: push change events as WebhookJob into the queue
+ */
+export class WebhookChangeStreamModule implements Module {
+  public readonly name = "webhook-changestream";
+  public isInit = false;
 
-找到 `setupWebhook`（約 line 554–598）。改寫為：
+  private redisModule!: RedisModule;
+  private partition!: WebhookPartitionModule;
+  private producerModule!: WebhookQueueProducerModule;
 
-```typescript
-async function setupWebhook(coll: string, webhooks: DocumentType<Webhook>[]) {
-  try {
-    // Only act on collections assigned to this instance
-    const myColls = new Set(
-      partition.getAssignedCollections(
-        Array.from(collectionSettings.keys()).concat(coll)
-      )
-    );
-    if (!myColls.has(coll)) {
-      // If we previously owned this coll, close it
-      if (collectionSettings.has(coll)) {
-        await removeWebhook(coll);
-      }
-      return;
+  private readonly collections = new Map<string, CollectionState>();
+  // PQueue(concurrency=1) + size<2 cap: serialize reconcile runs and
+  // coalesce burst events (meta-stream + rebalance) into at most 2 pending runs
+  private readonly setupQueue = new PQueue({ concurrency: 1 });
+  private metaStream?: mongo.ChangeStream;
+
+  constructor(private readonly app: Application) {}
+
+  async init(): Promise<void> {
+    this.redisModule = requireModule(this.app, "redis");
+    this.partition = requireModule(this.app, "webhook-partition");
+    this.producerModule = requireModule(this.app, "webhook-queue-producer");
+
+    // Meta-stream: watch Webhook config inserts/updates/replaces/deletes
+    this.metaStream = WebhookModel.watch([
+      {
+        $match: {
+          operationType: { $in: ["insert", "update", "replace", "delete"] },
+        },
+      },
+    ]).on("change", (data: mongo.ChangeStreamDocument<Webhook>) => {
+      documentLog(data, data.operationType.toUpperCase());
+      this.scheduleSetup();
+    });
+
+    // React to partition reassignments. This also provides our INITIAL
+    // reconcile: runWebhook registers changestream BEFORE partition (so
+    // partition closes first per spec §4.7), which means this init() runs
+    // while partition is still uninitialized. partition.init() will later
+    // publish to REBALANCE_CHANNEL as its last step, and its own subscriber
+    // loops it back to emit "rebalance" on the EventEmitter — triggering our
+    // first setupCollections() call with a fully-populated activeInstanceIds.
+    // No manual initial reconcile is needed.
+    this.partition.on("rebalance", () => this.scheduleSetup());
+  }
+
+  async close(): Promise<void> {
+    // Stop accepting new meta-stream events
+    if (this.metaStream) {
+      await this.metaStream.close();
     }
+    // Drain any in-flight reconcile runs
+    await this.setupQueue.onIdle();
+    // Close all owned collection streams (writes final resume tokens)
+    for (const coll of Array.from(this.collections.keys())) {
+      await this.closeCollection(coll);
+    }
+  }
 
-    const collectionSetting: CollectionSetting = collectionSettings.get(
-      coll
-    ) ?? { webhooks: [] };
+  /** Enqueue a reconcile run. Drops if ≥2 already queued (debounce). */
+  private scheduleSetup(): void {
+    if (this.setupQueue.size < 2) {
+      void this.setupQueue.add(() => this.setupCollections());
+    }
+  }
 
-    const changeStreamMatch = {
+  /**
+   * Reconcile loop: fetch enabled webhooks, compute which colls this instance
+   * should listen to via partition.getAssignedCollections, then diff against
+   * current `collections` Map to open/close/keep each one.
+   */
+  private async setupCollections(): Promise<void> {
+    try {
+      const allWebhooks = await WebhookModel.findEnabled();
+      const valid = allWebhooks.filter((wh) => this.validateWebhook(wh));
+      const byColl = groupBy(
+        valid.flatMap((webhook) =>
+          webhook.colls.map((coll) => ({ webhook, coll }))
+        ),
+        ({ coll }) => coll
+      );
+      const allColls = Object.keys(byColl);
+      const assigned = new Set(this.partition.getAssignedCollections(allColls));
+
+      // 1) Close collections no longer owned or no longer configured
+      for (const coll of Array.from(this.collections.keys())) {
+        if (!assigned.has(coll) || !byColl[coll]) {
+          await this.closeCollection(coll);
+        }
+      }
+
+      // 2) Open or reconfigure assigned collections
+      for (const coll of assigned) {
+        const webhooks = byColl[coll].map(({ webhook }) => webhook);
+        const match = this.buildMatch(webhooks);
+        const existing = this.collections.get(coll);
+        if (
+          existing &&
+          existing.changeStream.closed === false &&
+          isEqual(match, existing.changeStreamMatch)
+        ) {
+          // same match + still open: just refresh webhooks reference
+          existing.webhooks = webhooks;
+          continue;
+        }
+        // new coll or match changed: close (if any) and reopen
+        if (existing) await this.closeCollection(coll);
+        await this.openCollection(coll, webhooks, match);
+      }
+    } catch (error) {
+      documentLog("global", "<!> [FATAL] Unable to setup webhooks.", error);
+      process.exit(1);
+    }
+  }
+
+  private buildMatch(webhooks: DocumentType<Webhook>[]): any {
+    return {
       $or: webhooks.map((webhook) =>
         flatObjectKey({
           operationType: webhook.followUpdate
@@ -1957,109 +1900,206 @@ async function setupWebhook(coll: string, webhooks: DocumentType<Webhook>[]) {
         })
       ),
     };
+  }
 
-    if (
-      changeStreamIsValid(collectionSetting.changeStream) &&
-      collectionSetting.changeStreamMatch &&
-      isEqual(changeStreamMatch, collectionSetting.changeStreamMatch)
-    ) {
-      collectionSetting.webhooks = webhooks;
-      return;
+  private validateWebhook(webhook: DocumentType<Webhook>): boolean {
+    const error = webhook.validateSync();
+    if (error) {
+      documentLog(
+        webhook,
+        "<!> [ERROR] The format of the webhook is incorrect.",
+        error
+      );
+      return false;
     }
+    return true;
+  }
 
-    collectionSetting.webhooks = webhooks;
-    collectionSetting.changeStreamMatch = changeStreamMatch;
-    const started = await startChangeStream(coll, collectionSetting);
-    if (started) {
-      collectionSetting.changeStream = started.stream;
-      collectionSetting.tokenSaveInterval = started.tokenSaveInterval;
-      collectionSettings.set(coll, collectionSetting);
+  private async openCollection(
+    coll: string,
+    webhooks: DocumentType<Webhook>[],
+    match: any
+  ): Promise<void> {
+    const model = getModelByCollectionName(coll);
+    if (!model) {
       documentLog(
         coll,
-        `start listening (match length: ${changeStreamMatch.$or.length})`
+        `<!> [ERROR] Unable to get model (unknown collection "${coll}")`
+      );
+      return;
+    }
+    const resumeAfter = await this.loadResumeToken(coll);
+    const changeStream = model.watch([{ $match: match }], {
+      resumeAfter: resumeAfter as any,
+      fullDocument: "updateLookup",
+      readPreference: "secondaryPreferred",
+    });
+
+    const tokenSaveInterval = global.setInterval(() => {
+      const token = (changeStream as any).resumeToken;
+      if (!token) return;
+      void this.saveResumeToken(coll, token).catch((err) =>
+        documentLog(coll, "<!> [WARN] resume token save failed:", err)
+      );
+    }, WEBHOOK_RESUME_TOKEN_SAVE_INTERVAL_MS);
+
+    changeStream.on("change", (data: mongo.ChangeStreamDocument) => {
+      this.handleChangeEvent(coll, data);
+    });
+
+    this.collections.set(coll, {
+      changeStream,
+      tokenSaveInterval,
+      changeStreamMatch: match,
+      webhooks,
+    });
+    documentLog(coll, `start listening (match length: ${match.$or.length})`);
+  }
+
+  private async closeCollection(coll: string): Promise<void> {
+    const state = this.collections.get(coll);
+    if (!state) return;
+    this.collections.delete(coll);
+    global.clearInterval(state.tokenSaveInterval);
+    // Read resumeToken BEFORE close() — driver may clear it afterwards
+    const finalToken = (state.changeStream as any).resumeToken;
+    try {
+      await state.changeStream.close();
+      state.changeStream.removeAllListeners();
+    } catch (error) {
+      documentLog(coll, "<!> [ERROR] Unable to close change stream.", error);
+    }
+    if (finalToken) {
+      await this.saveResumeToken(coll, finalToken).catch(() => {});
+    }
+    documentLog(coll, "stop listening");
+  }
+
+  private handleChangeEvent(
+    coll: string,
+    data: mongo.ChangeStreamDocument
+  ): void {
+    if (data.operationType !== "insert" && data.operationType !== "update")
+      return;
+    if (!("documentKey" in data)) return;
+    if (!("fullDocument" in data) || !data.fullDocument) {
+      documentLog(coll, "<!> [ERROR] missing fullDocument", data.documentKey);
+      return;
+    }
+    const state = this.collections.get(coll);
+    if (!state) return;
+
+    const docId = (data.documentKey._id as mongo.BSON.ObjectId).toHexString();
+    for (const webhook of state.webhooks) {
+      if (!webhook.followUpdate && data.operationType === "update") continue;
+      if (webhook.match && !isMatching(data.fullDocument, webhook.match))
+        continue;
+      const job: WebhookJob = {
+        webhookId: webhook._id.toHexString(),
+        coll,
+        docId,
+        operationType: data.operationType,
+      };
+      void scheduleAndEnqueue(
+        this.producerModule.queue,
+        this.redisModule.redis,
+        job,
+        Date.now(),
+        WEBHOOK_COOLDOWN_MS
+      ).catch((err) =>
+        documentLog(coll, "<!> [ERROR] scheduleAndEnqueue failed:", err)
       );
     }
-  } catch (error) {
-    documentLog(coll, "<!> [FATAL] Unable to create change stream.", error);
-    process.exit(1);
+  }
+
+  private async loadResumeToken(coll: string): Promise<unknown | undefined> {
+    const raw = await this.redisModule.redis.get(`webhook:resumetoken:${coll}`);
+    if (!raw) return undefined;
+    try {
+      return JSON.parse(raw).token;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async saveResumeToken(coll: string, token: unknown): Promise<void> {
+    await this.redisModule.redis.set(
+      `webhook:resumetoken:${coll}`,
+      JSON.stringify({
+        token,
+        updatedAt: Date.now(),
+        owner: this.partition.instanceId,
+      }),
+      { EX: 3600 }
+    );
   }
 }
 ```
 
-- [ ] **Step 6: 重寫 runWebhook 主體**
+- [ ] **Step 2: Type check**
 
-找到 `export async function runWebhook`（約 line 361）。本步驟做以下變動：
+```bash
+npx tsc --noEmit
+```
 
-1. **將 Step 2/4/5 重寫的 `startChangeStream` / `closeChangeStream` / `setupWebhook` 函數移入 `runWebhook` 內部**，使其能 close over `redisModule`、`producerQueue`、`partition`、`collectionSettings` 等 runWebhook 內的 local state。同樣把既有的 `removeWebhook`、`changeStreamIsValid`、`setupWebhooks` 也移入 runWebhook 內。
-2. **建立 Redis client via 既有 `RedisModule`**（`src/modules/redis.ts`）：以 `const redisModule = new RedisModule()` 的方式宣告 local 變數，並透過 `app.use(redisModule)` 註冊由 Application 管理其 connect/disconnect lifecycle。**不新增 module-level 變數、不直接呼叫 `createClient`**；所有需要 Redis 的 helper 透過 closure 取得 `redisModule.redis`。
-3. **依 §4.7 順序註冊 modules**：先註冊「先 init、後 close」的，再註冊「後 init、先 close」的。LIFO 關閉順序為：webhook-change-stream → setup-webhooks-queue → partition → remove-webhook-changestreams → producer → consumer → redis → discord-rest-client → MongoDB。**partition 必須在 remove-webhook-changestreams 之前註冊**，才能讓關閉順序變成「partition 先離開（讓其他實例接管）→ 本實例 changeStream 關閉」。**`redisModule` 必須在所有會使用到它的 modules（producer / consumer / partition / changeStream cleanup）之前註冊**，確保關閉時它最後斷線。
-4. **所有 `app.use(...)` 必須在 `await app.init()` 之前**：Application 不支援 init 後再註冊 module（後註冊者的 `init()` 不會被呼叫）。
-5. **partition 的 rebalance 事件觸發 setupWebhooks**：將 `setupWebhooksQueue = new PQueue(...)` 宣告**移到** `partition.on("rebalance", ...)` 之前，避免 forward reference 帶來的脆弱性。
+Expected: 無錯誤。若 `import { isEqual, groupBy } from "lodash-es";` 報錯，確認 lodash-es 已安裝（既有專案依賴）。若 `WebhookQueueProducerModule` import 出錯，確認 Task 9 已完成。
 
-整個 `runWebhook` 重寫為：
+- [ ] **Step 3: Lint check**
+
+```bash
+npx eslint src/modules/webhook/changestream.ts
+```
+
+Expected: 無錯誤。
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/modules/webhook/changestream.ts
+git commit -m "feat(webhook): add WebhookChangeStreamModule (Layer 2) as Application module"
+```
+
+---
+
+### Task 15: runWebhook() 主函數重寫（組裝層）
+
+**Files:**
+
+- Modify: `src/commands/webhook.ts`
+
+在 Layer 2 抽出成 `WebhookChangeStreamModule` 後，`runWebhook` 僅剩「組裝 Application + 註冊模組 + 設定 worker handler + 初始化」。既有 `startChangeStream` / `closeChangeStream` / `setupWebhook` / `setupWebhooks` / `removeWebhook` / `bufferChange` / `processWebhookQueue` / `prepareWebhookEvent` / `webhooksChangeStream` / 相關 `app.use` 全部**刪除**。
+
+- [ ] **Step 1: 新增必要的 imports**
+
+在檔案頂部 import 區塊加入：
+
+```typescript
+import { RedisModule } from "../modules/redis.js";
+import { WebhookChangeStreamModule } from "../modules/webhook/changestream.js";
+import { WebhookPartitionModule } from "../modules/webhook/partition.js";
+import {
+  WebhookQueueConsumerModule,
+  WebhookQueueProducerModule,
+} from "../modules/webhook/queue.js";
+```
+
+**不要**匯入 `createClient` / `REDIS_URI` / `WEBHOOK_COOLDOWN_MS` / `WEBHOOK_RESUME_TOKEN_SAVE_INTERVAL_MS` — 這些都已移入 ChangeStreamModule 內部。
+
+- [ ] **Step 2: 重寫 runWebhook**
+
+找到 `export async function runWebhook`（約 line 361）。整個函數完整替換為：
 
 ```typescript
 export async function runWebhook() {
   await importAllModels();
   const app = new Application();
+
+  // Infrastructure modules — init first, close last
   app.use(new MongodbModule());
-
-  // Redis client via existing RedisModule — lifecycle managed by Application.
-  // Scope is local to runWebhook; no module-level variable is introduced.
-  const redisModule = new RedisModule();
-
-  const collectionSettings = new Map<string, CollectionSetting>();
-
-  // Setup queue is created early because partition.on("rebalance") references it
-  const setupWebhooksQueue = new PQueue({ concurrency: 1 });
-
-  // Consumer first registered (closes last, drains queue last)
-  const consumerModule = new WebhookQueueConsumerModule();
-
-  // Producer queue
-  const producerModule = new WebhookQueueProducerModule();
-  const producerQueue = producerModule.queue;
-
-  // Partition module (closes earlier than changeStream cleanup, so other
-  // instances are notified before this instance stops emitting events)
-  const partition = new WebhookPartitionModule();
-
-  // Consumer handler
-  consumerModule.setHandler(async (job) => {
-    try {
-      const ctx = await loadJobContext(job.data);
-      if (!ctx) {
-        return; // webhook or document gone
-      }
-      await processWebhookEvent(ctx.webhook, ctx.data);
-    } catch (error) {
-      documentLog(job.data.coll, "<!> [ERROR] worker handler failed:", error);
-      throw error; // let bee-queue retry
-    }
-  });
-
-  // Module INIT order below (first `app.use` call runs init first).
-  // LIFO close order is the reverse:
-  //   webhook-change-stream → setup-webhooks-queue → partition →
-  //   remove-webhook-changestreams → producer → consumer →
-  //   redis → discord-rest-client → MongoDB
-  // The partition module MUST close BEFORE remove-webhook-changestreams: when
-  // partition closes it DELs its instance key from Redis and publishes on the
-  // rebalance channel, so other instances notice this instance leaving and
-  // start reassigning collections. If we closed our changeStreams first and
-  // then dropped partition, there would be a window where no instance owns
-  // the collections that were ours. The overlap (this instance's streams
-  // still producing events briefly after other instances think they took
-  // over) is bounded and tolerated by bee-queue setId dedup plus the
-  // WebhookResult idempotency check.
-  // redisModule is registered BEFORE consumer/producer/partition (init first,
-  // close last among Redis-dependent modules) so the Redis connection stays
-  // alive until after all of them finish shutting down.
-  // MongoDB and discord-rest are registered FIRST (init first, close last) so
-  // they outlive every other lifecycle during shutdown.
   app.use({
     name: "discord-rest-client",
     async close() {
+      // wait for all pending Discord REST handlers to flush
       for (const [, handler] of discordRest.handlers) {
         while (!handler.inactive) {
           await setTimeout(100);
@@ -2067,138 +2107,114 @@ export async function runWebhook() {
       }
     },
   });
-  app.use(redisModule);
+  app.use(new RedisModule());
+
+  // Webhook-domain modules — registered in init order (first registered
+  // inits first). Application.close() runs LIFO, so partition closes FIRST
+  // (registered last). LIFO close order becomes:
+  //   partition → changestream → producer → consumer → redis → discord → mongo
+  //
+  // partition closing first DELs its instance key from Redis and publishes
+  // rebalance; peers notice us leaving and start reassigning collections.
+  // changestream then closes our local streams and writes the final resume
+  // tokens. The brief overlap — this instance's streams still alive while
+  // peers are starting to take over — is tolerated by bee-queue setId dedup
+  // plus the WebhookResult idempotency layer.
+  const consumerModule = new WebhookQueueConsumerModule();
+  const producerModule = new WebhookQueueProducerModule();
+  const changeStreamModule = new WebhookChangeStreamModule(app);
+  const partitionModule = new WebhookPartitionModule();
+
+  // Worker handler (Layer 4 concern; wired here because it depends on
+  // webhook.ts's processWebhookEvent which stays in this file)
+  consumerModule.setHandler(async (job) => {
+    try {
+      const ctx = await loadJobContext(job.data);
+      if (!ctx) return; // webhook or document gone
+      await processWebhookEvent(ctx.webhook, ctx.data);
+    } catch (error) {
+      documentLog(job.data.coll, "<!> [ERROR] worker handler failed:", error);
+      throw error; // let bee-queue retry
+    }
+  });
+
   app.use(consumerModule);
   app.use(producerModule);
-  app.use({
-    name: "remove-webhook-changestreams",
-    async close() {
-      for (const coll of Array.from(collectionSettings.keys())) {
-        await removeWebhook(coll);
-      }
-    },
-  });
-  app.use(partition);
-  app.use({
-    name: "setup-webhooks-queue",
-    async close() {
-      await setupWebhooksQueue.onIdle();
-    },
-  });
+  app.use(changeStreamModule);
+  app.use(partitionModule);
 
-  // Meta-stream that watches Webhook config changes; runs on every instance (§2.2)
-  const webhooksChangeStream = WebhookModel.watch([
-    {
-      $match: {
-        operationType: { $in: ["insert", "update", "replace", "delete"] },
-      },
-    },
-  ]).on("change", (data: mongo.ChangeStreamDocument<Webhook>) => {
-    documentLog(data, data.operationType.toUpperCase());
-    if (setupWebhooksQueue.size < 2)
-      void setupWebhooksQueue.add(() => setupWebhooks());
-  });
-  app.use({
-    name: "webhook-change-stream",
-    async close() {
-      await webhooksChangeStream.close();
-    },
-  });
-
-  // Trigger recompute when partition assignments change
-  partition.on("rebalance", () => {
-    if (setupWebhooksQueue.size < 2)
-      void setupWebhooksQueue.add(() => setupWebhooks());
-  });
-
-  // Initialize all modules now that registration is complete
   await app.init();
-
-  // ---- function definitions that close over runWebhook's locals ----
-  // The functions below (closeChangeStream, removeWebhook, startChangeStream,
-  // setupWebhook, setupWebhooks) MUST be defined inside runWebhook because
-  // they reference `redisModule`, `producerQueue`, `partition`,
-  // `collectionSettings`, and `setupWebhooksQueue`.
-
-  function changeStreamIsValid(changeStream?: mongo.ChangeStream) {
-    return changeStream && changeStream.closed === false;
-  }
-
-  // ... the closeChangeStream / removeWebhook / startChangeStream / setupWebhook
-  // / setupWebhooks function bodies from Steps 2, 4, 5 go here, lexically
-  // enclosed by runWebhook so they have access to the locals above.
-
-  // (To save space, the bodies are not repeated here. When implementing,
-  // place the function definitions from Steps 2/4/5 immediately below this
-  // marker.)
-
-  // Initial bootstrap
-  await setupWebhooksQueue.add(() => setupWebhooks());
   console.log("webhook is ready");
 }
 ```
 
-**重要實作備註**：
+- [ ] **Step 3: 刪除舊程式碼**
 
-- Step 2 (`startChangeStream`)、Step 4 (`closeChangeStream`)、Step 5 (`setupWebhook`) 的函數定義在 Step 6 寫入時必須**放在 `runWebhook` 函數內部**，否則它們無法存取 `redisModule`/`producerQueue`/`partition`/`collectionSettings` 這些 closure 變數，會出現 ReferenceError。
-- 既有的 `removeWebhook` 函數也要一併移入 `runWebhook` 內部（它依賴 `collectionSettings`）。
-- LIFO 關閉順序由註冊順序決定。請逐條對照註冊順序註解，確認 partition 在 remove-webhook-changestreams 之後註冊（即會更早關閉）。
+在 `runWebhook` 之外（檔案中其他地方）與之內，刪除所有下列既有定義。每一條都要移除以免死碼：
 
-- [ ] **Step 7: 移除舊的 bufferChange 與 PQueue 邏輯**
+- `interface CollectionSetting` 及其使用點（已被 `CollectionState` 取代於 ChangeStreamModule 內）
+- `function changeStreamIsValid` 獨立定義（已內聯為 ChangeStreamModule 內的條件判斷）
+- `function closeChangeStream` 獨立定義（已合併為 `closeCollection`）
+- `function removeWebhook` 獨立定義（已合併為 `closeCollection`）
+- `function startChangeStream` 獨立定義（已改為 `openCollection`）
+- `function setupWebhook` 獨立定義（已內聯為 `setupCollections` 的迴圈）
+- `function setupWebhooks` 獨立定義（已改為 `setupCollections`）
+- `function prepareWebhookEvent` 獨立定義（被 `scheduleAndEnqueue` 取代）
+- `const bufferChange = new Map<...>();`
+- `const processWebhookQueue = new PQueue();`
+- `global.setInterval(() => { for (const [key, { webhook, data }] of bufferChange) ... }, 5000);`
+- `const setupWebhooksQueue = new PQueue(...);`
+- `const webhooksChangeStream = WebhookModel.watch(...)...`
+- 對應的 `app.use({ name: "process-webhook-queue", ... })`、`app.use({ name: "remove-webhook", ... })`、`app.use({ name: "setup-webhooks-queue", ... })`、`app.use({ name: "webhook-change-stream", ... })` 註冊
+- Task 13 加入的 `void loadJobContext;` placeholder（現在被 worker handler 使用，不再需要）
 
-在 `runWebhook` 內部找到並刪除以下區塊（對照既有 `src/commands/webhook.ts` line 387–419、366–373、421–450）：
+保留：
 
-- `const processWebhookQueue = new PQueue();`（line 387）
-- 對應的 `app.use({ name: "process-webhook-queue", async close() { await processWebhookQueue.onIdle(); } });` 註冊（line 388–394）
-- `global.setInterval(() => { for (const [key, { webhook, data }] of bufferChange) ... }, 5000);` 區塊（line 408–419）
-- `const bufferChange = new Map<...>();` 宣告（line 367–373）
-- `function prepareWebhookEvent(...)` 整個函數（line 421–450，已被 scheduleAndEnqueue 取代）
-- 既有 changeStream `change` event handler 中對 `prepareWebhookEvent` 與 `processWebhookQueue.add` 的呼叫（line 536–544）— 已由 Step 2 的新 startChangeStream 取代
+- `processWebhookEvent` 函數（Layer 4 核心邏輯）
+- `sendDiscordWebhook` / `sendWebhook`（Task 11 改寫過的版本）
+- `loadJobContext`（Task 13 的 worker helper）
+- `claimWebhookResult` 匯入（Task 10/12）
+- `axiosInstance` / `discordRest` / `cache` 等既有設施
+- 所有 helper：`createWebhookResultIdentifier` / `createWebhookResultCacheKey` / `getWebhookTemplateCache` / `getVideo` / `getChannel` 等
 
-- [ ] **Step 8: 也移除既有 `remove-webhook` cleanup 模組（line 396–404）**
-
-既有的 `app.use({ name: "remove-webhook", async close() { for (const coll of collectionSettings.keys()) { await removeWebhook(coll); } } });` 被 Step 6 的 `remove-webhook-changestreams` 取代，**刪除舊的**避免重複註冊。
-
-- [ ] **Step 9: Type check**
+- [ ] **Step 4: Type check**
 
 ```bash
 npx tsc --noEmit
 ```
 
-Expected: 無錯誤。若有型別錯誤，多半來自 `as any` cast 未對齊；逐個修正。
+Expected: 無錯誤。若有 `CollectionSetting` 等已刪除型別的殘留引用，逐個移除。
 
-- [ ] **Step 9: Lint check**
+- [ ] **Step 5: Lint check**
 
 ```bash
-npx eslint src/commands/webhook.ts src/modules/webhook-partition.ts src/modules/webhook-queue.ts
+npx eslint src/commands/webhook.ts src/modules/webhook/
 ```
 
 Expected: 無錯誤。
 
-- [ ] **Step 10: 執行所有新增的單元測試**
+- [ ] **Step 6: 執行所有單元測試**
 
 ```bash
-npx jest src/modules/webhook-partition.spec.ts src/modules/webhook-queue.spec.ts
+npx jest src/modules/webhook/partition.spec.ts src/modules/webhook/queue.spec.ts src/modules/webhook/claim.spec.ts
 ```
 
 Expected: PASS。
 
-- [ ] **Step 11: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src/commands/webhook.ts
-git commit -m "refactor(webhook): integrate partition + queue modules into runWebhook"
+git commit -m "refactor(webhook): simplify runWebhook to pure module wiring"
 ```
 
----
-
-### Task 15: 人工煙霧測試（smoke test）
+### Task 16: 人工煙霧測試（smoke test）
 
 **Files:** 無（純驗證步驟）
 
 **前提**：在執行此步驟前，確認：
 
-- Task 1–14 所有 commit 已完成
+- Task 1–15 所有 commit 已完成
 - `npm run build` 已成功（TypeScript 編譯通過）
 - 本地 `.env` 有 `REDIS_URI`（例 `redis://localhost:6379`）與 `MONGODB_URI`
 - Redis 與 MongoDB 已運行（例 `docker compose up redis mongo`，依既有專案 compose 定義）
