@@ -57,7 +57,8 @@ export const WEBHOOK_NEXT_KEY_TTL_MS = WEBHOOK_COOLDOWN_MS * 3;
 // 分區分配：心跳週期與 TTL
 // 單一 setInterval tick 同時執行「續租本實例 key」與「SCAN 偵測其他實例崩潰」
 export const WEBHOOK_PARTITION_HEARTBEAT_MS = 5000;
-export const WEBHOOK_PARTITION_TTL_SECONDS = 15;
+// 15 秒；對應 3× heartbeat，容許最多 2 次心跳遺失才被視為死亡
+export const WEBHOOK_PARTITION_TTL_MS = 15_000;
 
 // Rebalance debounce：避免 rolling deploy 期間 changeStream 頻繁抖動
 export const WEBHOOK_REBALANCE_DEBOUNCE_MS = 500;
@@ -67,12 +68,12 @@ export const WEBHOOK_WORKER_CONCURRENCY = Number(
   process.env.WEBHOOK_WORKER_CONCURRENCY ?? 10
 );
 
-// Resume token 定時寫入週期（ms）
+// Resume token 定時寫入週期
 export const WEBHOOK_RESUME_TOKEN_SAVE_INTERVAL_MS = 3000;
 
-// WebhookResult 的 TTL（秒）
-export const WEBHOOK_RESULT_NON_FOLLOW_TTL_SECONDS = 3600; // 1 hour
-export const WEBHOOK_RESULT_FOLLOW_TTL_SECONDS = 604800; // 7 days
+// WebhookResult 的 TTL
+export const WEBHOOK_RESULT_NON_FOLLOW_TTL_MS = 60 * 60 * 1000; // 1 hour
+export const WEBHOOK_RESULT_FOLLOW_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 ```
 
 - [ ] **Step 2: 執行 type check**
@@ -392,7 +393,7 @@ import { randomBytes } from "node:crypto";
 import type { RedisClientType } from "redis";
 import {
   WEBHOOK_PARTITION_HEARTBEAT_MS,
-  WEBHOOK_PARTITION_TTL_SECONDS,
+  WEBHOOK_PARTITION_TTL_MS,
   WEBHOOK_REBALANCE_DEBOUNCE_MS,
 } from "../../constants.js";
 import type { Application } from "../application.js";
@@ -547,7 +548,7 @@ export class WebhookPartitionModule extends EventEmitter implements Module {
     await this.redisModule.redis.set(
       `${INSTANCE_KEY_PREFIX}${this.instanceId}`,
       JSON.stringify(this.metadata),
-      { EX: WEBHOOK_PARTITION_TTL_SECONDS }
+      { PX: WEBHOOK_PARTITION_TTL_MS }
     );
   }
 
@@ -1439,7 +1440,7 @@ Expected: FAIL — `Cannot find module './claim.js'`。
 ```typescript
 import type { DocumentType } from "@typegoose/typegoose";
 import { isEqual } from "lodash-es";
-import { WEBHOOK_RESULT_FOLLOW_TTL_SECONDS } from "../../constants.js";
+import { WEBHOOK_RESULT_FOLLOW_TTL_MS } from "../../constants.js";
 import type { Webhook } from "../../models/Webhook.js";
 import WebhookResultModel from "../../models/WebhookResult.js";
 
@@ -1488,9 +1489,7 @@ export async function claimWebhookResult(
   url: string,
   body: unknown
 ): Promise<ClaimDecision> {
-  const fallbackExpireAt = new Date(
-    Date.now() + WEBHOOK_RESULT_FOLLOW_TTL_SECONDS * 1000
-  );
+  const fallbackExpireAt = new Date(Date.now() + WEBHOOK_RESULT_FOLLOW_TTL_MS);
 
   const updateResult = await WebhookResultModel.updateOne(
     resultIdentifier,
@@ -1566,8 +1565,8 @@ git commit -m "feat(webhook): add claimWebhookResult idempotency helper with tes
 
 ```typescript
 import {
-  WEBHOOK_RESULT_FOLLOW_TTL_SECONDS,
-  WEBHOOK_RESULT_NON_FOLLOW_TTL_SECONDS,
+  WEBHOOK_RESULT_FOLLOW_TTL_MS,
+  WEBHOOK_RESULT_NON_FOLLOW_TTL_MS,
 } from "../constants.js";
 ```
 
@@ -1587,8 +1586,8 @@ async function sendDiscordWebhook(
   uri.searchParams.set("wait", "true");
 
   const ttlMs = webhook.followUpdate
-    ? WEBHOOK_RESULT_FOLLOW_TTL_SECONDS * 1000
-    : WEBHOOK_RESULT_NON_FOLLOW_TTL_SECONDS * 1000;
+    ? WEBHOOK_RESULT_FOLLOW_TTL_MS
+    : WEBHOOK_RESULT_NON_FOLLOW_TTL_MS;
 
   try {
     const response = await discordRest.request({
@@ -1642,8 +1641,8 @@ async function sendWebhook(
   resultIdentifier: WebhookResultIdentifier
 ) {
   const ttlMs = webhook.followUpdate
-    ? WEBHOOK_RESULT_FOLLOW_TTL_SECONDS * 1000
-    : WEBHOOK_RESULT_NON_FOLLOW_TTL_SECONDS * 1000;
+    ? WEBHOOK_RESULT_FOLLOW_TTL_MS
+    : WEBHOOK_RESULT_NON_FOLLOW_TTL_MS;
 
   try {
     const timeout = AbortSignal.timeout(10000);
