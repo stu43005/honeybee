@@ -1608,7 +1608,14 @@ if (checkIsDiscordWebhookUrl(url)) {
 }
 ```
 
-注意：保留既有的「若 previousBody 與新 body 相同則 return」檢查（line 315–318），它是 coalesce 期內的額外提前退出。claim 檢查是對 **已發送的 response** 的比對，不重疊。
+**保留**既有 `processWebhookEvent` 中的 `if (parameters.previousBody && isEqual(parameters.previousBody, body)) return;` 檢查（line 315-318）作為 **Redis-cached fast-path**。這與 `claimWebhookResult` 內的 `isEqual(existing.body, body)` 語義相同，但分層意圖不同：
+
+- **fast-path（previousBody）**：透過 `getWebhookResult` 讀取 Redis cache（見 line 184-218 與 `cache = getCacheInstance({ ttl: 300_000 })`），body 未變的情況下直接 return，**零 MongoDB 查詢**，延遲在毫秒以下
+- **authoritative check（claimWebhookResult）**：upsert + findOne 共兩次 MongoDB round-trip，是跨實例、跨時段的最終防線
+
+兩層並存是為了「常見路徑快、極端情況安全」。若 previousBody 檢查命中（body 未變），省下 claim 的兩次 MongoDB 查詢；若未命中（cache miss / body 不同 / 首次事件），再走 claim 做權威判定。
+
+**參數物件保留**：`parameters.previousBody` 與 `parameters.previousResponse` 除了用於此 fast-path，也是 json-templates 模板的公開 API（使用者可在 webhook template 引用 `{{previousBody}}` 或 `{{previousResponse.id}}`），不要移除。
 
 - [ ] **Step 3: Type check**
 
