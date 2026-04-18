@@ -29,6 +29,7 @@
 - `src/constants.ts` — 新增 webhook 相關常數
 - `src/interfaces.ts` — 新增 `WebhookJob` 型別
 - `src/modules/queue.ts` — `QueueTypes` 加入 `webhook`
+- `src/modules/redis.ts` — 新增 lazy `getSubscriber()` 方法，讓 pub/sub 消費者共用 RedisModule 管理的 subscriber 連線
 - `src/models/WebhookResult.ts` — 新增 `expireAt` TTL 欄位
 - `src/commands/webhook.ts` — 主編排邏輯重寫（移除 in-memory buffer / PQueue，改用 partition + webhook-queue）
 
@@ -294,9 +295,93 @@ git commit -m "feat(webhook): add hash-based partition assignment pure functions
 
 **Files:**
 
+- Modify: `src/modules/redis.ts`
 - Modify: `src/modules/webhook/partition.ts`
 
-- [ ] **Step 1: 在 partition.ts 新增 WebhookPartitionModule class**
+**設計決策**：分區模組需要 Redis pub/sub 廣播 rebalance 事件。Redis subscribe mode 是連線專屬模式（一條連線進入 subscribe 狀態後就不能再執行其他指令），必須有獨立的 subscriber 連線。為避免分區模組自行管理 Redis 連線設定（REDIS_URI 解析、connect/disconnect 生命週期），擴充既有的 `RedisModule` 提供 `getSubscriber()` lazy method，由 `RedisModule` 集中管理 subscriber 連線生命週期；分區模組與其他需要 pub/sub 的模組都從這裡取得連線，不再自行 `createClient()`。
+
+本任務分兩個 commit：先擴充 `RedisModule`，再加入使用它的 `WebhookPartitionModule`。
+
+- [ ] **Step 1: 擴充 `src/modules/redis.ts` 新增 subscriber lazy method**
+
+讀取 `src/modules/redis.ts` 目前內容（約 30 行）。整個檔案完整替換為：
+
+```typescript
+import assert from "assert";
+import { createClient, RedisClientType } from "redis";
+import { REDIS_URI } from "../constants.js";
+import type { Module } from "./module.js";
+
+export class RedisModule implements Module {
+  name = "redis";
+  redis: RedisClientType;
+  private _subscriber?: RedisClientType;
+
+  constructor() {
+    assert(REDIS_URI, "REDIS_URI should be defined.");
+    this.redis = createClient({
+      url: REDIS_URI,
+    });
+  }
+
+  async init(): Promise<void> {
+    await this.redis.connect();
+  }
+
+  async close(): Promise<void> {
+    if (this._subscriber?.isOpen) {
+      try {
+        await this._subscriber.disconnect();
+      } catch {
+        // ignore during shutdown
+      }
+    }
+    await this.redis.disconnect();
+  }
+
+  async healthCheck(): Promise<boolean> {
+    await this.redis.ping();
+    return true;
+  }
+
+  /**
+   * Returns a connected Redis subscriber connection. Redis subscribe mode is
+   * exclusive — a connection in subscribe state cannot execute any other
+   * command — so consumers that need pub/sub must use a dedicated connection
+   * separate from the main command connection (this.redis).
+   *
+   * Lazy-initialized on first call and reused for all subsequent calls;
+   * lifecycle (disconnect on RedisModule.close) is owned here, so consumers
+   * MUST NOT call disconnect() on the returned client. Consumers SHOULD
+   * unsubscribe() from their own channels in their close() to clean up
+   * listeners — the underlying connection stays alive for any other consumer.
+   */
+  async getSubscriber(): Promise<RedisClientType> {
+    if (!this._subscriber) {
+      this._subscriber = this.redis.duplicate();
+      await this._subscriber.connect();
+    }
+    return this._subscriber;
+  }
+}
+```
+
+- [ ] **Step 2: Type check (RedisModule 變更)**
+
+```bash
+npx tsc --noEmit
+```
+
+Expected: 無錯誤。
+
+- [ ] **Step 3: Commit (RedisModule)**
+
+```bash
+git add src/modules/redis.ts
+git commit -m "feat(redis): add lazy getSubscriber() for pub/sub consumers"
+```
+
+- [ ] **Step 4: 在 partition.ts 新增 WebhookPartitionModule class**
 
 在檔案尾端（保留既有的 pure 函數）加入：
 
@@ -304,14 +389,15 @@ git commit -m "feat(webhook): add hash-based partition assignment pure functions
 import { EventEmitter } from "node:events";
 import { hostname } from "node:os";
 import { randomBytes } from "node:crypto";
-import { createClient, type RedisClientType } from "redis";
+import type { RedisClientType } from "redis";
 import {
-  REDIS_URI,
   WEBHOOK_PARTITION_HEARTBEAT_MS,
   WEBHOOK_PARTITION_TTL_SECONDS,
   WEBHOOK_REBALANCE_DEBOUNCE_MS,
 } from "../../constants.js";
+import type { Application } from "../application.js";
 import type { Module } from "../module.js";
+import { RedisModule } from "../redis.js";
 
 const INSTANCE_KEY_PREFIX = "webhook:instance:";
 const REBALANCE_CHANNEL = "webhook:rebalance";
@@ -329,9 +415,18 @@ interface InstanceMetadata {
 }
 
 /**
- * Emits "rebalance" event when the active instance set changes or when a
- * rebalance broadcast is received. Consumers should recompute their assigned
- * collections via getAssignedCollections(allColls).
+ * Tracks the live set of webhook instances via per-instance Redis keys with
+ * TTL (acts as a heartbeat) and broadcasts/listens for rebalance signals via
+ * Redis pub/sub. Emits "rebalance" event whenever the active instance set
+ * changes or a rebalance broadcast arrives. Consumers should recompute their
+ * assigned collections via getAssignedCollections(allColls).
+ *
+ * Dependencies (obtained in init() via app.get):
+ *   - RedisModule: provides both the main command connection (set/get/del/
+ *     scan/publish) via redisModule.redis and the shared pub/sub subscriber
+ *     connection via redisModule.getSubscriber(). RedisModule owns both
+ *     connections' lifecycles, so this module does NOT call createClient or
+ *     disconnect() — only subscribe()/unsubscribe() on its own channel.
  */
 export class WebhookPartitionModule extends EventEmitter implements Module {
   public readonly name = "webhook-partition";
@@ -340,13 +435,23 @@ export class WebhookPartitionModule extends EventEmitter implements Module {
   public readonly instanceId: string;
   private readonly metadata: InstanceMetadata;
 
-  private client: RedisClientType | null = null;
+  private redisModule!: RedisModule;
   private subscriber: RedisClientType | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private rebalanceDebounceTimer: NodeJS.Timeout | null = null;
   private activeInstanceIds: string[] = [];
 
-  constructor(version = "unknown") {
+  // Stored as a field (rather than an inline arrow at subscribe call site) so
+  // we can pass the same reference to unsubscribe() during close, leaving any
+  // other consumers of the shared subscriber connection unaffected.
+  private readonly rebalanceListener = (): void => {
+    this.scheduleRebalance();
+  };
+
+  constructor(
+    private readonly app: Application,
+    version = "unknown"
+  ) {
     super();
     this.instanceId = generateInstanceId();
     this.metadata = {
@@ -359,25 +464,24 @@ export class WebhookPartitionModule extends EventEmitter implements Module {
   }
 
   async init(): Promise<void> {
-    if (!REDIS_URI) {
-      throw new Error("WebhookPartitionModule requires REDIS_URI");
+    const redisModule = this.app.get<RedisModule>("redis");
+    if (!redisModule) {
+      throw new Error(
+        "WebhookPartitionModule.init: RedisModule must be registered before this module"
+      );
     }
-    this.client = createClient({ url: REDIS_URI });
-    this.subscriber = this.client.duplicate();
-    await this.client.connect();
-    await this.subscriber.connect();
+    this.redisModule = redisModule;
+    this.subscriber = await this.redisModule.getSubscriber();
 
     // Subscribe to rebalance broadcasts
-    await this.subscriber.subscribe(REBALANCE_CHANNEL, () => {
-      this.scheduleRebalance();
-    });
+    await this.subscriber.subscribe(REBALANCE_CHANNEL, this.rebalanceListener);
 
     // Initial registration + active set load
     await this.register();
     await this.refreshActiveInstances();
 
     // Broadcast so other instances know we joined
-    await this.client.publish(REBALANCE_CHANNEL, this.instanceId);
+    await this.redisModule.redis.publish(REBALANCE_CHANNEL, this.instanceId);
 
     // Start periodic heartbeat + SCAN
     this.heartbeatTimer = setInterval(() => {
@@ -394,19 +498,29 @@ export class WebhookPartitionModule extends EventEmitter implements Module {
       clearTimeout(this.rebalanceDebounceTimer);
       this.rebalanceDebounceTimer = null;
     }
-    if (this.client) {
+    try {
+      await this.redisModule.redis.del(
+        `${INSTANCE_KEY_PREFIX}${this.instanceId}`
+      );
+      await this.redisModule.redis.publish(REBALANCE_CHANNEL, this.instanceId);
+    } catch {
+      // ignore during shutdown
+    }
+    if (this.subscriber) {
       try {
-        await this.client.del(`${INSTANCE_KEY_PREFIX}${this.instanceId}`);
-        await this.client.publish(REBALANCE_CHANNEL, this.instanceId);
+        // Pass the specific listener reference so we don't drop other
+        // consumers' callbacks on the shared subscriber connection.
+        await this.subscriber.unsubscribe(
+          REBALANCE_CHANNEL,
+          this.rebalanceListener
+        );
       } catch {
         // ignore during shutdown
       }
+      this.subscriber = null;
     }
-    await this.subscriber?.unsubscribe();
-    await this.subscriber?.disconnect();
-    await this.client?.disconnect();
-    this.client = null;
-    this.subscriber = null;
+    // NOTE: do NOT disconnect this.redisModule.redis or the subscriber —
+    // both are owned by RedisModule and will be closed when it shuts down.
   }
 
   /**
@@ -430,8 +544,7 @@ export class WebhookPartitionModule extends EventEmitter implements Module {
   }
 
   private async register(): Promise<void> {
-    if (!this.client) return;
-    await this.client.set(
+    await this.redisModule.redis.set(
       `${INSTANCE_KEY_PREFIX}${this.instanceId}`,
       JSON.stringify(this.metadata),
       { EX: WEBHOOK_PARTITION_TTL_SECONDS }
@@ -439,9 +552,8 @@ export class WebhookPartitionModule extends EventEmitter implements Module {
   }
 
   private async refreshActiveInstances(): Promise<void> {
-    if (!this.client) return;
     const ids: string[] = [];
-    for await (const key of this.client.scanIterator({
+    for await (const key of this.redisModule.redis.scanIterator({
       MATCH: `${INSTANCE_KEY_PREFIX}*`,
       COUNT: 100,
     })) {
@@ -477,7 +589,7 @@ export class WebhookPartitionModule extends EventEmitter implements Module {
 }
 ```
 
-- [ ] **Step 2: 驗證 type check**
+- [ ] **Step 5: 驗證 type check**
 
 ```bash
 npx tsc --noEmit
@@ -485,7 +597,7 @@ npx tsc --noEmit
 
 Expected: 無錯誤。
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 6: Commit (WebhookPartitionModule)**
 
 ```bash
 git add src/modules/webhook/partition.ts
@@ -500,11 +612,12 @@ git commit -m "feat(webhook): add WebhookPartitionModule with heartbeat and SCAN
 
 - Modify: `src/modules/webhook/partition.spec.ts`
 
-- [ ] **Step 1: 在既有 import 中加入 WebhookPartitionModule**
+- [ ] **Step 1: 在既有 import 中加入 WebhookPartitionModule 與 Application 型別**
 
-在 `src/modules/webhook/partition.spec.ts` 檔案頂端既有的 import 中加入 `WebhookPartitionModule`：
+在 `src/modules/webhook/partition.spec.ts` 檔案頂端既有的 import 中加入 `WebhookPartitionModule` 與 `Application`：
 
 ```typescript
+import type { Application } from "../application.js";
 import {
   WebhookPartitionModule,
   assignInstance,
@@ -515,6 +628,8 @@ import {
 - [ ] **Step 2: 在 spec 末尾加入 getAssignedCollections 測試**
 
 測試策略：`activeInstanceIds` 為 private、`instanceId` 為 `readonly`。TypeScript 的 `private` 與 `readonly` 只在編譯期檢查，runtime 可透過雙重 cast (`as unknown as Mutable`) 繞過。此處刻意使用此技巧以避免為測試加開 public setter，並用 `type MutablePartition` 別名與註解顯式標示。
+
+建構式接受 `app: Application`，但這些測試完全跳過 `init()`、直接突變私有欄位驗證 `getAssignedCollections` 的純運算邏輯，不會讀取 `this.app`，因此用 `{} as Application` cast 作為 stub 即可。
 
 ```typescript
 describe("WebhookPartitionModule.getAssignedCollections", () => {
@@ -527,8 +642,12 @@ describe("WebhookPartitionModule.getAssignedCollections", () => {
     activeInstanceIds: string[];
   };
 
+  // Stub Application — these tests never call init(), so the constructor's
+  // stored `app` reference is never dereferenced.
+  const stubApp = {} as Application;
+
   it("partitions collections evenly with no loss or duplication", () => {
-    const module = new WebhookPartitionModule();
+    const module = new WebhookPartitionModule(stubApp);
     const mutable = module as unknown as MutablePartition;
     mutable.activeInstanceIds = ["inst-a", "inst-b", "inst-c"];
 
@@ -546,7 +665,7 @@ describe("WebhookPartitionModule.getAssignedCollections", () => {
   });
 
   it("matches the standalone assignInstance() result for a fixed instance", () => {
-    const module = new WebhookPartitionModule();
+    const module = new WebhookPartitionModule(stubApp);
     const mutable = module as unknown as MutablePartition;
     const instanceIds = ["inst-a", "inst-b", "inst-c"];
     mutable.activeInstanceIds = instanceIds;
@@ -561,7 +680,7 @@ describe("WebhookPartitionModule.getAssignedCollections", () => {
   });
 
   it("returns empty when no active instances", () => {
-    const module = new WebhookPartitionModule();
+    const module = new WebhookPartitionModule(stubApp);
     const mutable = module as unknown as MutablePartition;
     mutable.activeInstanceIds = [];
     expect(module.getAssignedCollections(["chats"])).toEqual([]);
@@ -2182,7 +2301,9 @@ export async function runWebhook() {
   // dependencies are bound here, not threaded through callsites).
   const producerModule = new WebhookQueueProducerModule(app);
   const changeStreamModule = new WebhookChangeStreamModule(app);
-  const partitionModule = new WebhookPartitionModule();
+  // Partition needs `app` to resolve RedisModule for the main command
+  // connection AND its shared subscriber (RedisModule.getSubscriber()).
+  const partitionModule = new WebhookPartitionModule(app);
 
   // Worker handler (Layer 4 concern; wired here because it depends on
   // webhook.ts's processWebhookEvent which stays in this file)
