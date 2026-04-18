@@ -603,8 +603,14 @@ const QUEUE_NAME = "webhook";
 /**
  * Creates the shared bee-queue instance used by producers (enqueue) and
  * consumers (startWorker). The Redis settings mirror the existing QueueModule
- * pattern but add `removeOnFailure` and `activateDelayedJobs`, both of which
- * are required for the spec's coalesce semantics (see spec §3.3).
+ * pattern but add `removeOnFailure` and `activateDelayedJobs`:
+ *
+ * - `removeOnFailure: true` — without it, a permanently failed job keeps its
+ *   id in `bq:webhook:jobs` forever, making coalesce permanently dedupe any
+ *   future event for the same (webhookId, coll, docId).
+ * - `activateDelayedJobs: true` — defaults to false in bee-queue. Without it,
+ *   delayed jobs are saved to the `delayed` sorted set but never promoted to
+ *   the waiting queue, so they never fire.
  */
 export function createWebhookQueue(
   opts: { isWorker: boolean } = { isWorker: false }
@@ -622,11 +628,16 @@ export function createWebhookQueue(
 /**
  * In-flight detection for scheduleAndEnqueue's coalesce decision.
  * In `removeOnSuccess:true + removeOnFailure:true` mode, `getJob(id) !== null`
- * precisely means the id is still in `bq:webhook:jobs` hash, i.e. job is in
- * one of {waiting, delayed, active, stalling, retrying} states.
+ * precisely means the id is still in `bq:webhook:jobs` hash, i.e. the job is
+ * in one of {waiting, delayed, active, stalling, retrying} states.
  *
- * Do NOT use `job.status` for this check — see spec §3.4; bee-queue's status
- * field is "created" for all unexecuted jobs regardless of queue position.
+ * Do NOT use `job.status` for this check. bee-queue stores the status string
+ * inside the job's serialized data; it is written once at construction (as
+ * "created") and not updated when the job is pushed to waiting, promoted to
+ * active, or moved between internal sets. For any job that has not yet
+ * completed, `getJob(id).status === "created"` regardless of queue position,
+ * so using it to infer queue state is wrong. The only reliable signal is
+ * whether `getJob(id)` returns a non-null Job or null.
  */
 export async function isJobInFlight(
   queue: BeeQueue<WebhookJob>,
@@ -1079,10 +1090,12 @@ export class WebhookQueueConsumerModule implements Module {
  * Exists as an Application module so that the underlying Redis connection
  * has a managed lifecycle (init → ready, close → disconnect).
  *
- * Registration order note: both this module and WebhookQueueConsumerModule
- * are registered in runWebhook (see Task 14). Spec §4.7 documents only the
- * consumer; the producer is an implementation detail and shuts down alongside
- * the consumer before the partition module is removed.
+ * Registration order: both this module and WebhookQueueConsumerModule are
+ * registered in runWebhook. The producer module exists purely to manage the
+ * Redis connection lifecycle of the non-worker bee-queue client; the public
+ * producer API is scheduleAndEnqueue (a plain function that uses
+ * producerModule.queue). Shutdown ordering ensures the consumer closes after
+ * the producer so that any last in-flight jobs are drained before shutdown.
  */
 export class WebhookQueueProducerModule implements Module {
   public readonly name = "webhook-queue-producer";
@@ -1281,17 +1294,31 @@ export type ClaimDecision =
 
 /**
  * Idempotent claim for a webhook delivery. Upserts a WebhookResult record
- * keyed by (webhookId, coll, docId). Returns "skip" if the record already
- * shows a successful delivery of the same body.
+ * keyed by (webhookId, coll, docId) and decides whether the current event
+ * should actually be sent, based on prior delivery state:
  *
- * Design spec §4.3: method/url/body are written in $setOnInsert to satisfy
- * the schema's required:true constraint. They are ALSO written in the
- * post-send $set (see sendDiscordWebhook / sendWebhook in Task 11) so that
- * subsequent follow-update comparisons use "last sent body" not
- * "first inserted body".
+ *   - If upsertedCount === 1 (fresh insert): action = "send"
+ *   - If existing record has a non-null `response`:
+ *       - For a non-followUpdate webhook: action = "skip"
+ *         (the target has already been notified; further events are duplicates)
+ *       - For a followUpdate webhook with identical body: action = "skip"
+ *         (body unchanged since last successful send, no reason to re-send)
+ *       - For a followUpdate webhook with different body: action = "send"
+ *   - If existing record has no response yet (stall recovery or concurrent
+ *     in-flight worker): action = "send"
  *
- * A conservative fallback `expireAt` is set so that records for permanently
- * failing sends are eventually reclaimed by the TTL index.
+ * method/url/body are written in $setOnInsert to satisfy the WebhookResult
+ * schema's required:true constraint on these fields. They are ALSO re-written
+ * in the post-send $set performed by sendDiscordWebhook / sendWebhook so that
+ * subsequent followUpdate comparisons use the LAST sent body, not the body
+ * that happened to trigger the first insert. Without the post-send re-write,
+ * every follow-update event would compare against the same original body and
+ * deduplication would break after the second event.
+ *
+ * A conservative fallback `expireAt` is set on insert so that records created
+ * by this upsert but never followed by a successful send (e.g. the HTTP call
+ * fails and is never retried) are eventually reclaimed by the TTL index
+ * rather than accumulating indefinitely.
  */
 export async function claimWebhookResult(
   webhook: DocumentType<Webhook>,
@@ -1412,8 +1439,11 @@ async function sendDiscordWebhook(
     });
 
     // On success, overwrite method/url/body along with response/statusCode.
-    // body must be re-written here (not only in $setOnInsert) so subsequent
-    // follow-update comparisons use "last sent body" — see spec §4.3.
+    // body must be re-written here (not only in $setOnInsert) so that subsequent
+    // follow-update events compare against the LAST sent body via
+    // isEqual(existing.body, newBody). If body were only written on insert, the
+    // comparison would always be against the first-ever body and subsequent
+    // updates would never deduplicate correctly.
     await WebhookResultModel.updateOne(resultIdentifier, {
       $set: {
         method,
@@ -2011,8 +2041,15 @@ export async function runWebhook() {
   //   webhook-change-stream → setup-webhooks-queue → partition →
   //   remove-webhook-changestreams → producer → consumer →
   //   discord-rest-client → MongoDB
-  // Spec §4.7 requires partition to close BEFORE remove-webhook-changestreams
-  // so other instances are notified before this instance stops emitting events.
+  // The partition module MUST close BEFORE remove-webhook-changestreams: when
+  // partition closes it DELs its instance key from Redis and publishes on the
+  // rebalance channel, so other instances notice this instance leaving and
+  // start reassigning collections. If we closed our changeStreams first and
+  // then dropped partition, there would be a window where no instance owns
+  // the collections that were ours. The overlap (this instance's streams
+  // still producing events briefly after other instances think they took
+  // over) is bounded and tolerated by bee-queue setId dedup plus the
+  // WebhookResult idempotency check.
   // MongoDB and discord-rest are registered FIRST (init first, close last) so
   // they outlive every other lifecycle during shutdown.
   app.use({
