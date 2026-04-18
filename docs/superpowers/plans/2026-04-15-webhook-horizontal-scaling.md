@@ -1016,7 +1016,7 @@ git commit -m "feat(webhook): add scheduleAndEnqueue with WATCH/MULTI/EXEC coold
 
 - Modify: `src/modules/webhook/queue.ts`
 
-- [ ] **Step 1: 在 import 區塊加入 Module 介面與 SHUTDOWN_TIMEOUT / WEBHOOK_WORKER_CONCURRENCY**
+- [ ] **Step 1: 在 import 區塊加入 Module 介面、Application、RedisModule、cooldown 常數與 worker 常數**
 
 在檔案頂端既有的 import 加入：
 
@@ -1024,22 +1024,24 @@ git commit -m "feat(webhook): add scheduleAndEnqueue with WATCH/MULTI/EXEC coold
 import {
   REDIS_URI,
   SHUTDOWN_TIMEOUT,
+  WEBHOOK_COOLDOWN_MS,
   WEBHOOK_NEXT_KEY_TTL_MS,
   WEBHOOK_WORKER_CONCURRENCY,
 } from "../../constants.js";
+import type { Application } from "../application.js";
 import type { Module } from "../module.js";
+import { RedisModule } from "../redis.js";
 ```
 
-（保留既有的 `import BeeQueue from "bee-queue"` 與 `import type { RedisClientType } from "redis"`，僅更新 `../../constants.js` 的完整 import 清單並新增 `../module.js` import。）
+（保留既有的 `import BeeQueue from "bee-queue"` 與 `import { WatchError, type RedisClientType } from "redis"`，僅更新 `../../constants.js` 的完整 import 清單並新增 `../module.js` / `../application.js` / `../redis.js` import。）
 
 - [ ] **Step 2: 在檔案末尾新增 consumer module**
 
 ```typescript
 /**
  * Application module that manages the bee-queue worker lifecycle for this
- * instance. The high-level producer API (scheduleAndEnqueue) is a plain
- * function, but the underlying bee-queue producer connection still needs a
- * lifecycle owner — see WebhookQueueProducerModule below.
+ * instance. Producer-side concerns (queue connection + scheduleAndEnqueue
+ * API) live in WebhookQueueProducerModule below.
  */
 export class WebhookQueueConsumerModule implements Module {
   public readonly name = "webhook-queue-consumer";
@@ -1088,29 +1090,47 @@ export class WebhookQueueConsumerModule implements Module {
 }
 
 /**
- * Producer-only bee-queue connection. Owns the non-worker bee-queue instance
- * used by the changeStream event handler to push jobs via scheduleAndEnqueue.
- * Exists as an Application module so that the underlying Redis connection
- * has a managed lifecycle (init → ready, close → disconnect).
+ * Producer-side public API. Owns the non-worker bee-queue connection AND
+ * exposes scheduleAndEnqueue() — the canonical way for upstream code (Layer 2
+ * changeStream handler) to push webhook events into the queue with cooldown
+ * semantics. Producer concerns (queue, redis client, cooldown defaults) live
+ * here so callers don't have to thread them through.
  *
- * Registration order: both this module and WebhookQueueConsumerModule are
- * registered in runWebhook. The producer module exists purely to manage the
- * Redis connection lifecycle of the non-worker bee-queue client; the public
- * producer API is scheduleAndEnqueue (a plain function that uses
- * producerModule.queue). Shutdown ordering ensures the consumer closes after
- * the producer so that any last in-flight jobs are drained before shutdown.
+ * Dependencies:
+ *   - RedisModule (looked up in init() via app.get): provides the redis client
+ *     used by the underlying scheduleAndEnqueue() pure function for
+ *     WATCH/MULTI/EXEC cooldown coordination.
+ *
+ * Registration order: must be registered AFTER RedisModule so that
+ * `app.get("redis")` succeeds at init() time. The pure scheduleAndEnqueue()
+ * function (above) remains exported for unit testing — production code should
+ * call producerModule.scheduleAndEnqueue(job) instead.
+ *
+ * Shutdown ordering: LIFO close means changeStream module (registered later)
+ * closes first and drains its setupQueue, so no new scheduleAndEnqueue calls
+ * happen by the time this module's close() runs. The cached redis client
+ * remains valid until RedisModule.close() runs (registered earlier, closes
+ * later), eliminating any close-time use-after-disconnect risk.
  */
 export class WebhookQueueProducerModule implements Module {
   public readonly name = "webhook-queue-producer";
   public isInit = false;
 
   public readonly queue: BeeQueue<WebhookJob>;
+  private redis!: RedisClientType;
 
-  constructor() {
+  constructor(private readonly app: Application) {
     this.queue = createWebhookQueue({ isWorker: false });
   }
 
   async init(): Promise<void> {
+    const redisModule = this.app.get<RedisModule>("redis");
+    if (!redisModule) {
+      throw new Error(
+        "WebhookQueueProducerModule.init: RedisModule must be registered before this module"
+      );
+    }
+    this.redis = redisModule.redis;
     await this.queue.ready();
   }
 
@@ -1125,6 +1145,25 @@ export class WebhookQueueProducerModule implements Module {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Producer-side public API: atomically schedule a webhook job into the queue
+   * with cooldown semantics. Thin wrapper around the pure scheduleAndEnqueue
+   * function (above) — the underlying algorithm is unit-tested via that pure
+   * entry, and this method exists to bind the queue + redis dependencies that
+   * production callers shouldn't have to know about.
+   *
+   * `now` and `cooldown` default to `Date.now()` and `WEBHOOK_COOLDOWN_MS`
+   * respectively for ergonomic production calls; tests of the underlying
+   * algorithm exercise the pure function directly with explicit args.
+   */
+  scheduleAndEnqueue(
+    job: WebhookJob,
+    now: number = Date.now(),
+    cooldown: number = WEBHOOK_COOLDOWN_MS
+  ): Promise<ScheduleResult> {
+    return scheduleAndEnqueue(this.queue, this.redis, job, now, cooldown);
   }
 }
 ```
@@ -1730,10 +1769,7 @@ import type { DocumentType } from "@typegoose/typegoose";
 import { isEqual, groupBy } from "lodash-es";
 import { mongo } from "mongoose";
 import PQueue from "p-queue";
-import {
-  WEBHOOK_COOLDOWN_MS,
-  WEBHOOK_RESUME_TOKEN_SAVE_INTERVAL_MS,
-} from "../../constants.js";
+import { WEBHOOK_RESUME_TOKEN_SAVE_INTERVAL_MS } from "../../constants.js";
 import type { WebhookJob } from "../../interfaces.js";
 import WebhookModel, { type Webhook } from "../../models/Webhook.js";
 import { flatObjectKey, setIfDefine } from "../../util.js";
@@ -1743,7 +1779,7 @@ import { isMatching } from "../matching.js";
 import type { Module } from "../module.js";
 import { RedisModule } from "../redis.js";
 import { WebhookPartitionModule } from "./partition.js";
-import { WebhookQueueProducerModule, scheduleAndEnqueue } from "./queue.js";
+import { WebhookQueueProducerModule } from "./queue.js";
 
 interface CollectionState {
   changeStream: mongo.ChangeStream;
@@ -1772,9 +1808,11 @@ function requireModule<T extends Module>(app: Application, name: string): T {
  *   - reconcile loop triggered by meta-stream events + partition rebalance
  *
  * Dependencies (obtained in init() via app.get):
- *   - RedisModule: resume token storage + scheduleAndEnqueue
+ *   - RedisModule: resume token storage (Layer 2 internal concern)
  *   - WebhookPartitionModule: which colls to listen to, rebalance signal
- *   - WebhookQueueProducerModule: push change events as WebhookJob into the queue
+ *   - WebhookQueueProducerModule: push change events into the queue via
+ *     producerModule.scheduleAndEnqueue(job) — cooldown / dedupe / WATCH-MULTI
+ *     coordination is owned by the producer
  */
 export class WebhookChangeStreamModule implements Module {
   public readonly name = "webhook-changestream";
@@ -2000,15 +2038,11 @@ export class WebhookChangeStreamModule implements Module {
         docId,
         operationType: data.operationType,
       };
-      void scheduleAndEnqueue(
-        this.producerModule.queue,
-        this.redisModule.redis,
-        job,
-        Date.now(),
-        WEBHOOK_COOLDOWN_MS
-      ).catch((err) =>
-        documentLog(coll, "<!> [ERROR] scheduleAndEnqueue failed:", err)
-      );
+      void this.producerModule
+        .scheduleAndEnqueue(job)
+        .catch((err) =>
+          documentLog(coll, "<!> [ERROR] scheduleAndEnqueue failed:", err)
+        );
     }
   }
 
@@ -2121,7 +2155,10 @@ export async function runWebhook() {
   // peers are starting to take over — is tolerated by bee-queue setId dedup
   // plus the WebhookResult idempotency layer.
   const consumerModule = new WebhookQueueConsumerModule();
-  const producerModule = new WebhookQueueProducerModule();
+  // Producer needs `app` to resolve RedisModule via app.get at init() time;
+  // scheduleAndEnqueue is exposed as a method on this module (queue + redis
+  // dependencies are bound here, not threaded through callsites).
+  const producerModule = new WebhookQueueProducerModule(app);
   const changeStreamModule = new WebhookChangeStreamModule(app);
   const partitionModule = new WebhookPartitionModule();
 
