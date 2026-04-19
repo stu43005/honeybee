@@ -1,11 +1,12 @@
 import assert from "assert";
 import Queue from "bee-queue";
 import { REDIS_URI, SHUTDOWN_TIMEOUT } from "../constants.js";
-import type { HoneybeeJob } from "../interfaces.js";
+import type { HoneybeeJob, WebhookJob } from "../interfaces.js";
 import type { Module } from "./module.js";
 
-type QueueTypes = {
+export type QueueTypes = {
   honeybee: HoneybeeJob;
+  webhook: WebhookJob;
 };
 
 export class QueueModule<T extends keyof QueueTypes> implements Module {

@@ -82,3 +82,10 @@ export interface HoneybeeStats {
   handled: number;
   errors: number;
 }
+
+export interface WebhookJob {
+  webhookId: string;
+  coll: string;
+  docId: string;
+  operationType: "insert" | "update";
+}
