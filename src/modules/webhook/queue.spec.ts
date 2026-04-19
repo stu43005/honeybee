@@ -171,7 +171,7 @@ describe("scheduleAndEnqueue", () => {
   it("rethrows non-WatchError exec failures without retry", async () => {
     const redis = createMockRedis(null);
     // Override exec to throw a generic error
-    (redis.multi as jest.Mock).mockReturnValue({
+    redis.multi.mockReturnValue({
       set: jest.fn<() => unknown>().mockReturnThis(),
       exec: jest
         .fn<() => Promise<never>>()
