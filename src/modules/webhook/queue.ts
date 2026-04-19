@@ -1,5 +1,9 @@
 import BeeQueue from "bee-queue";
-import { REDIS_URI } from "../../constants.js";
+import { WatchError, type RedisClientType } from "redis";
+import {
+  REDIS_URI,
+  WEBHOOK_FOLLOW_UPDATE_COOLDOWN_KEY_TTL_MS,
+} from "../../constants.js";
 import type { WebhookJob } from "../../interfaces.js";
 
 const QUEUE_NAME = "webhook";
@@ -57,4 +61,102 @@ export function buildJobId(job: WebhookJob): string {
 
 export function buildNextKey(jobId: string): string {
   return `webhook:next:${jobId}`;
+}
+
+export type ScheduleResult =
+  | "immediate"
+  | "delayed"
+  | "coalesced"
+  | "fallback-delayed";
+
+/**
+ * Atomically decide whether to enqueue immediately, delay, coalesce, or fall
+ * back, and perform the corresponding bee-queue save(). Uses Redis
+ * WATCH/MULTI/EXEC for optimistic concurrency on the per-job nextKey.
+ *
+ * Invariant: any two successive worker trigger times (delayUntil for delayed
+ * branch, save time for immediate branch) for the same (webhookId, coll,
+ * docId) differ by ≥ cooldown.
+ *
+ * node-redis v4 behaviour: when a WATCHed key changes before EXEC, `multi.exec()`
+ * rejects with `WatchError` — it does NOT return null like ioredis. We catch
+ * WatchError to retry and rethrow other errors.
+ */
+export async function scheduleAndEnqueue(
+  queue: BeeQueue<WebhookJob>,
+  redis: RedisClientType,
+  job: WebhookJob,
+  now: number,
+  cooldown: number
+): Promise<ScheduleResult> {
+  const jobId = buildJobId(job);
+  const nextKey = buildNextKey(jobId);
+  let lastNextAllowed = 0;
+  const MAX_RETRIES = 5;
+
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    await redis.watch(nextKey);
+    const raw = await redis.get(nextKey);
+    const nextAllowed = raw === null ? 0 : parseInt(raw, 10);
+    lastNextAllowed = nextAllowed;
+
+    // In-flight check: getJob(id) !== null means id is still in bq:webhook:jobs
+    if (await isJobInFlight(queue, jobId)) {
+      await redis.unwatch();
+      return "coalesced";
+    }
+
+    if (now >= nextAllowed) {
+      const multi = redis.multi();
+      multi.set(nextKey, String(now + cooldown), {
+        PX: WEBHOOK_FOLLOW_UPDATE_COOLDOWN_KEY_TTL_MS,
+      });
+      try {
+        await multi.exec();
+      } catch (err) {
+        if (err instanceof WatchError) continue; // WATCH triggered, retry
+        throw err;
+      }
+
+      await queue.createJob(job).setId(jobId).save();
+      return "immediate";
+    }
+
+    const delay = nextAllowed - now;
+    const multi = redis.multi();
+    multi.set(nextKey, String(nextAllowed + cooldown), {
+      PX: WEBHOOK_FOLLOW_UPDATE_COOLDOWN_KEY_TTL_MS,
+    });
+    try {
+      await multi.exec();
+    } catch (err) {
+      if (err instanceof WatchError) continue;
+      throw err;
+    }
+
+    await queue
+      .createJob(job)
+      .setId(jobId)
+      .delayUntil(now + delay)
+      .save();
+    return "delayed";
+  }
+
+  // Fallback: 5 retries exhausted. Use best-effort unconditional SET to advance
+  // nextKey (avoids stale value breaking the ≥cooldown invariant after the
+  // fallback job completes) then push a delayed job. setId-dedup handles the
+  // race with other instances' winning saves.
+  const fallbackNextAllowed = Math.max(
+    lastNextAllowed + cooldown,
+    now + cooldown * 2
+  );
+  await redis.set(nextKey, String(fallbackNextAllowed), {
+    PX: WEBHOOK_FOLLOW_UPDATE_COOLDOWN_KEY_TTL_MS,
+  });
+  await queue
+    .createJob(job)
+    .setId(jobId)
+    .delayUntil(now + cooldown)
+    .save();
+  return "fallback-delayed";
 }
