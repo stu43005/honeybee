@@ -26,3 +26,65 @@ export const MAX_HOURS_BEFORE_CLEANUP = METRICS_MAX_ENDED_HOURS + 1;
 export const CRAWL_REPLAY_MAX_HOURS = 1;
 
 export const CHAT_ARCHIVE_DIR = process.env.CHAT_ARCHIVE_DIR;
+
+// ─────────────────────────────────────────────────────────────────────
+// Webhook 水平擴展：共用常數
+// 依事件流分組：Partition → ChangeStream → Task Distribution → Execution
+// ─────────────────────────────────────────────────────────────────────
+
+// ─── Partition Assignment（分區分配層） ───────────────────────────
+
+// 分區心跳週期：每個實例把自己的 webhook:instance:<id> key 續租一次的
+// 間隔。同一個 setInterval tick 也會 SCAN 所有 instance key，偵測其他
+// 實例崩潰 / 離線後主動觸發 rebalance。
+export const WEBHOOK_PARTITION_HEARTBEAT_MS = 5000;
+
+// 分區實例 key 的 TTL：webhook:instance:<id> key 沒被心跳續租時，Redis
+// 自動移除的時間。設為 3× heartbeat 容許最多 2 次心跳遺失才被視為死亡，
+// 避免單次網路抖動就觸發不必要的 rebalance。
+export const WEBHOOK_PARTITION_TTL_MS = 15_000;
+
+// Rebalance debounce：收到 rebalance 廣播（其他實例加入 / 離開）後延遲
+// 觸發 setupCollections 的等待時間。避免 rolling deploy 期間多個實例
+// 連續進出導致 changeStream 反覆開關、浪費 MongoDB oplog 連線。
+export const WEBHOOK_REBALANCE_DEBOUNCE_MS = 500;
+
+// ─── ChangeStream Listener（監聽層） ──────────────────────────────
+
+// Resume token 定時持久化週期：每個 collection changeStream 把最新
+// resumeToken 寫入 Redis（webhook:resumetoken:<coll>）的間隔。太短浪費
+// IO、太長則實例重啟或 rebalance 後接手方的事件重播窗口變大。
+export const WEBHOOK_RESUME_TOKEN_SAVE_INTERVAL_MS = 3000;
+
+// ─── Task Distribution（任務分發層） ──────────────────────────────
+
+// Follow-Update 事件冷卻時間：同一 (webhookId, coll, docId) 的兩次 worker
+// 觸發之間必須間隔至少此時間。主要在 followUpdate=true 模式下生效 ——
+// 冷卻期內的連續 update 事件會被合併為單一 delayed job，避免高頻文件變更
+// 讓下游 webhook 目標被重複打擊。
+export const WEBHOOK_FOLLOW_UPDATE_COOLDOWN_MS = 5000;
+
+// Follow-Update 冷卻 key（webhook:next:<jobId>）的 Redis TTL：紀錄下一次
+// 允許觸發時間的 key 必須存活到對應 delayed job 實際執行之前，否則 TTL
+// 到期後 key 消失會讓新 event 走「立即推入」分支、破壞最小間隔不變量。
+// 取 3× cooldown 預留餘裕涵蓋時鐘抖動、Redis 複寫延遲與排隊時間。
+export const WEBHOOK_FOLLOW_UPDATE_COOLDOWN_KEY_TTL_MS =
+  WEBHOOK_FOLLOW_UPDATE_COOLDOWN_MS * 3;
+
+// ─── Webhook Execution（執行層） ──────────────────────────────────
+
+// Webhook worker 並發數：每個實例 bee-queue worker 同時處理幾個 webhook
+// 發送任務。預設 10，可經 WEBHOOK_WORKER_CONCURRENCY env 覆寫。
+export const WEBHOOK_WORKER_CONCURRENCY = Number(
+  process.env.WEBHOOK_WORKER_CONCURRENCY ?? 10
+);
+
+// WebhookResult 記錄保留時間（非 follow-update）：非 follow-update webhook
+// 只發送一次，成功後記錄僅作觀察除錯用，1 小時後由 MongoDB TTL index 自動
+// 清除。
+export const WEBHOOK_RESULT_NON_FOLLOW_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+// WebhookResult 記錄保留時間（follow-update）：follow-update webhook 的 body
+// 需長期保留作為後續 update 事件的「與上次發送 body 是否相同」isEqual 比對
+// 基準，7 天涵蓋多數直播 / 歸檔重播週期。
+export const WEBHOOK_RESULT_FOLLOW_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
