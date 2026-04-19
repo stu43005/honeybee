@@ -40,6 +40,9 @@ export class WebhookResult extends TimeStamps {
 
   @prop()
   public error?: string;
+
+  @prop({ type: Date, expires: 0, index: true })
+  public expireAt?: Date;
 }
 
 export default getModelForClass(WebhookResult);
