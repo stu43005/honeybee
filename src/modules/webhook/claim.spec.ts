@@ -1,4 +1,3 @@
-/// <reference types="jest" />
 import { afterEach, describe, expect, it, jest } from "@jest/globals";
 import { claimWebhookResult } from "./claim.js";
 import WebhookResultModel from "../../models/WebhookResult.js";

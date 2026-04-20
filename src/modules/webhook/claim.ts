@@ -1,5 +1,5 @@
 import type { DocumentType } from "@typegoose/typegoose";
-import { isEqual } from "lodash";
+import { isEqual } from "lodash-es";
 import { WEBHOOK_RESULT_FOLLOW_TTL_MS } from "../../constants.js";
 import type { Webhook } from "../../models/Webhook.js";
 import WebhookResultModel from "../../models/WebhookResult.js";

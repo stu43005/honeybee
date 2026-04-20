@@ -8,6 +8,7 @@ const config = {
   moduleNameMapper: {
     "^(\\.{1,2}/.*)\\.js$": "$1",
   },
+  transformIgnorePatterns: ["/node_modules/(?!lodash-es/)"],
   transform: {
     "^.+\\.tsx?$": [
       "ts-jest",
