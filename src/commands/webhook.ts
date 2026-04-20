@@ -36,6 +36,10 @@ import {
   MongodbModule,
 } from "../modules/db.js";
 import { isMatching } from "../modules/matching.js";
+import {
+  WEBHOOK_RESULT_FOLLOW_TTL_MS,
+  WEBHOOK_RESULT_NON_FOLLOW_TTL_MS,
+} from "../constants.js";
 import { flatObjectKey, secondsToHms, setIfDefine } from "../util.js";
 
 const axiosInstance = axios.create({
@@ -59,6 +63,11 @@ async function sendDiscordWebhook(
 ) {
   const uri = new URL(url);
   uri.searchParams.set("wait", "true");
+
+  const ttlMs = webhook.followUpdate
+    ? WEBHOOK_RESULT_FOLLOW_TTL_MS
+    : WEBHOOK_RESULT_NON_FOLLOW_TTL_MS;
+
   try {
     const response = await discordRest.request({
       fullRoute: uri.pathname.replace(/^\/api/, "") as RouteLike,
@@ -68,15 +77,23 @@ async function sendDiscordWebhook(
       auth: false,
     });
 
-    if (webhook.followUpdate) {
-      await WebhookResultModel.updateOne(resultIdentifier, {
-        $set: {
-          response: response,
-        },
-      });
-    } else {
-      await WebhookResultModel.deleteOne(resultIdentifier);
-    }
+    // On success, overwrite method/url/body along with response/statusCode.
+    // body must be re-written here (not only in $setOnInsert) so that subsequent
+    // follow-update events compare against the LAST sent body via
+    // isEqual(existing.body, newBody). If body were only written on insert, the
+    // comparison would always be against the first-ever body and subsequent
+    // updates would never deduplicate correctly.
+    await WebhookResultModel.updateOne(resultIdentifier, {
+      $set: {
+        method,
+        url,
+        body,
+        response,
+        statusCode: 200,
+        expireAt: new Date(Date.now() + ttlMs),
+      },
+      $unset: { error: "" },
+    });
   } catch (error) {
     await WebhookResultModel.updateOne(resultIdentifier, {
       $set: {
@@ -96,6 +113,10 @@ async function sendWebhook(
   webhook: Webhook,
   resultIdentifier: WebhookResultIdentifier
 ) {
+  const ttlMs = webhook.followUpdate
+    ? WEBHOOK_RESULT_FOLLOW_TTL_MS
+    : WEBHOOK_RESULT_NON_FOLLOW_TTL_MS;
+
   try {
     const timeout = AbortSignal.timeout(10000);
     const res = await axiosInstance.request({
@@ -105,16 +126,17 @@ async function sendWebhook(
       signal: timeout,
     });
 
-    if (webhook.followUpdate) {
-      await WebhookResultModel.updateOne(resultIdentifier, {
-        $set: {
-          statusCode: res.status,
-          response: res.data,
-        },
-      });
-    } else {
-      await WebhookResultModel.deleteOne(resultIdentifier);
-    }
+    await WebhookResultModel.updateOne(resultIdentifier, {
+      $set: {
+        method,
+        url,
+        body,
+        response: res.data,
+        statusCode: res.status,
+        expireAt: new Date(Date.now() + ttlMs),
+      },
+      $unset: { error: "" },
+    });
   } catch (error) {
     await WebhookResultModel.updateOne(resultIdentifier, {
       $set: {
