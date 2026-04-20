@@ -94,16 +94,22 @@ async function sendDiscordWebhook(
     // isEqual(existing.body, newBody). If body were only written on insert, the
     // comparison would always be against the first-ever body and subsequent
     // updates would never deduplicate correctly.
+    const setFields: Record<string, unknown> = {
+      method,
+      url,
+      body,
+      response,
+      statusCode: 200,
+    };
+    const unsetFields: Record<string, unknown> = { error: "" };
+    if (ttlMs !== null) {
+      setFields.expireAt = new Date(Date.now() + ttlMs);
+    } else {
+      unsetFields.expireAt = "";
+    }
     await WebhookResultModel.updateOne(resultIdentifier, {
-      $set: {
-        method,
-        url,
-        body,
-        response,
-        statusCode: 200,
-        expireAt: new Date(Date.now() + ttlMs),
-      },
-      $unset: { error: "" },
+      $set: setFields,
+      $unset: unsetFields,
     });
   } catch (error) {
     await WebhookResultModel.updateOne(resultIdentifier, {
@@ -137,16 +143,22 @@ async function sendWebhook(
       signal: timeout,
     });
 
+    const setFields: Record<string, unknown> = {
+      method,
+      url,
+      body,
+      response: res.data,
+      statusCode: res.status,
+    };
+    const unsetFields: Record<string, unknown> = { error: "" };
+    if (ttlMs !== null) {
+      setFields.expireAt = new Date(Date.now() + ttlMs);
+    } else {
+      unsetFields.expireAt = "";
+    }
     await WebhookResultModel.updateOne(resultIdentifier, {
-      $set: {
-        method,
-        url,
-        body,
-        response: res.data,
-        statusCode: res.status,
-        expireAt: new Date(Date.now() + ttlMs),
-      },
-      $unset: { error: "" },
+      $set: setFields,
+      $unset: unsetFields,
     });
   } catch (error) {
     await WebhookResultModel.updateOne(resultIdentifier, {

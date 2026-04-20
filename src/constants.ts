@@ -93,5 +93,7 @@ export const WEBHOOK_RESULT_NON_FOLLOW_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 // WebhookResult 記錄保留時間（follow-update）：follow-update webhook 的 body
 // 需長期保留作為後續 update 事件的「與上次發送 body 是否相同」isEqual 比對
-// 基準，7 天涵蓋多數直播 / 歸檔重播週期。
-export const WEBHOOK_RESULT_FOLLOW_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+// 基準。設為 null 表示不寫入 expireAt、不由 MongoDB TTL index 自動清除；改由
+// src/components/cleanup.ts 的 cleanWebhookResults 排程依原始來源文件狀態
+// （poll 結束、raid 過期、video 非直播、來源文件已刪除等）移除。
+export const WEBHOOK_RESULT_FOLLOW_TTL_MS: number | null = null;

@@ -1,6 +1,9 @@
 import type { DocumentType } from "@typegoose/typegoose";
 import { isEqual } from "lodash-es";
-import { WEBHOOK_RESULT_FOLLOW_TTL_MS } from "../../constants.js";
+import {
+  WEBHOOK_RESULT_FOLLOW_TTL_MS,
+  WEBHOOK_RESULT_NON_FOLLOW_TTL_MS,
+} from "../../constants.js";
 import type { Webhook } from "../../models/Webhook.js";
 import WebhookResultModel from "../../models/WebhookResult.js";
 
@@ -37,10 +40,13 @@ export type ClaimDecision =
  * every follow-update event would compare against the same original body and
  * deduplication would break after the second event.
  *
- * A conservative fallback `expireAt` is set on insert so that records created
- * by this upsert but never followed by a successful send (e.g. the HTTP call
- * fails and is never retried) are eventually reclaimed by the TTL index
- * rather than accumulating indefinitely.
+ * A fallback `expireAt` is set on insert for non-follow-update webhooks so that
+ * records created by this upsert but never followed by a successful send (e.g.
+ * the HTTP call fails and is never retried) are eventually reclaimed by the TTL
+ * index rather than accumulating indefinitely. Follow-update records
+ * deliberately skip `expireAt` on insert (WEBHOOK_RESULT_FOLLOW_TTL_MS === null)
+ * and are instead pruned by the cleanWebhookResults cron in
+ * src/components/cleanup.ts based on source-document state.
  */
 export async function claimWebhookResult(
   webhook: DocumentType<Webhook>,
@@ -49,19 +55,23 @@ export async function claimWebhookResult(
   url: string,
   body: unknown
 ): Promise<ClaimDecision> {
-  const fallbackExpireAt = new Date(Date.now() + WEBHOOK_RESULT_FOLLOW_TTL_MS);
+  const fallbackTtlMs = webhook.followUpdate
+    ? WEBHOOK_RESULT_FOLLOW_TTL_MS
+    : WEBHOOK_RESULT_NON_FOLLOW_TTL_MS;
+
+  const setOnInsert: Record<string, unknown> = {
+    ...resultIdentifier,
+    method,
+    url,
+    body,
+  };
+  if (fallbackTtlMs !== null) {
+    setOnInsert.expireAt = new Date(Date.now() + fallbackTtlMs);
+  }
 
   const updateResult = await WebhookResultModel.updateOne(
     resultIdentifier,
-    {
-      $setOnInsert: {
-        ...resultIdentifier,
-        method,
-        url,
-        body,
-        expireAt: fallbackExpireAt,
-      },
-    },
+    { $setOnInsert: setOnInsert },
     { upsert: true }
   );
 
