@@ -56,6 +56,13 @@ export const WEBHOOK_REBALANCE_DEBOUNCE_MS = 500;
 // IO、太長則實例重啟或 rebalance 後接手方的事件重播窗口變大。
 export const WEBHOOK_RESUME_TOKEN_SAVE_INTERVAL_MS = 3000;
 
+// Resume token key（webhook:resumetoken:<coll>）的 Redis TTL：非運作中
+// instance 留在 Redis 的 resume token 最長保留時間。設為 1 小時，若 instance
+// 停機超過此時間，下次接手方會從 oplog tail 重新監聽（可能漏掉停機期間事件
+// —— 此為 operationally accepted tradeoff；若停機時間超過 oplog 保留視窗
+// 本來就會丟 resume token）。
+export const WEBHOOK_RESUME_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
+
 // ─── Task Distribution（任務分發層） ──────────────────────────────
 
 // Follow-Update 事件冷卻時間：同一 (webhookId, coll, docId) 的兩次 worker

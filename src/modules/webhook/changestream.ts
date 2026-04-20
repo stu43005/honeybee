@@ -2,7 +2,10 @@ import type { DocumentType } from "@typegoose/typegoose";
 import { isEqual, groupBy } from "lodash-es";
 import { mongo } from "mongoose";
 import PQueue from "p-queue";
-import { WEBHOOK_RESUME_TOKEN_SAVE_INTERVAL_MS } from "../../constants.js";
+import {
+  WEBHOOK_RESUME_TOKEN_SAVE_INTERVAL_MS,
+  WEBHOOK_RESUME_TOKEN_TTL_MS,
+} from "../../constants.js";
 import type { WebhookJob } from "../../interfaces.js";
 import WebhookModel, { type Webhook } from "../../models/Webhook.js";
 import { flatObjectKey, setIfDefine } from "../../util.js";
@@ -13,6 +16,8 @@ import type { Module } from "../module.js";
 import { RedisModule } from "../redis.js";
 import { WebhookPartitionModule } from "./partition.js";
 import { WebhookQueueProducerModule } from "./queue.js";
+
+const RESUME_TOKEN_KEY_PREFIX = "webhook:resumetoken:";
 
 interface CollectionState {
   changeStream: mongo.ChangeStream;
@@ -303,7 +308,9 @@ export class WebhookChangeStreamModule implements Module {
   }
 
   private async loadResumeToken(coll: string): Promise<unknown> {
-    const raw = await this.redisModule.redis.get(`webhook:resumetoken:${coll}`);
+    const raw = await this.redisModule.redis.get(
+      `${RESUME_TOKEN_KEY_PREFIX}${coll}`
+    );
     if (!raw) return undefined;
     try {
       return JSON.parse(raw).token;
@@ -314,13 +321,13 @@ export class WebhookChangeStreamModule implements Module {
 
   private async saveResumeToken(coll: string, token: unknown): Promise<void> {
     await this.redisModule.redis.set(
-      `webhook:resumetoken:${coll}`,
+      `${RESUME_TOKEN_KEY_PREFIX}${coll}`,
       JSON.stringify({
         token,
         updatedAt: Date.now(),
         owner: this.partition.instanceId,
       }),
-      { EX: 3600 }
+      { PX: WEBHOOK_RESUME_TOKEN_TTL_MS }
     );
   }
 }
