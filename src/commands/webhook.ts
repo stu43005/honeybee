@@ -1,5 +1,4 @@
 import type { DocumentType } from "@typegoose/typegoose";
-import type { WebhookJob } from "../interfaces.js";
 import axios, { AxiosError } from "axios";
 import {
   HTTPError,
@@ -8,13 +7,16 @@ import {
   type RouteLike,
 } from "discord.js";
 import jsonTemplates, { type JsonTemplate } from "json-templates";
-import { groupBy, isEqual } from "lodash-es";
+import { isEqual } from "lodash-es";
 import { mongo } from "mongoose";
 import http from "node:http";
 import https from "node:https";
 import { setInterval, setTimeout } from "node:timers/promises";
 import pProps from "p-props";
-import PQueue from "p-queue";
+import {
+  WEBHOOK_RESULT_FOLLOW_TTL_MS,
+  WEBHOOK_RESULT_NON_FOLLOW_TTL_MS,
+} from "../constants.js";
 import {
   checkIsDiscordWebhookUrl,
   defaultInsertMethod,
@@ -23,15 +25,12 @@ import {
   fixLongText,
   templatePreset,
 } from "../data/webhook.js";
+import type { WebhookJob } from "../interfaces.js";
 import ChannelModel from "../models/Channel.js";
 import VideoModel, { Video } from "../models/Video.js";
 import WebhookModel, { type Webhook } from "../models/Webhook.js";
 import WebhookResultModel from "../models/WebhookResult.js";
 import { Application } from "../modules/application.js";
-import {
-  claimWebhookResult,
-  type WebhookResultIdentifier,
-} from "../modules/webhook/claim.js";
 import { getCacheInstance } from "../modules/cache.js";
 import { type WatcherResultDocument } from "../modules/collection-watcher.js";
 import {
@@ -40,12 +39,19 @@ import {
   importAllModels,
   MongodbModule,
 } from "../modules/db.js";
+import { RedisModule } from "../modules/redis.js";
 import { isMatching } from "../modules/matching.js";
 import {
-  WEBHOOK_RESULT_FOLLOW_TTL_MS,
-  WEBHOOK_RESULT_NON_FOLLOW_TTL_MS,
-} from "../constants.js";
-import { flatObjectKey, secondsToHms, setIfDefine } from "../util.js";
+  claimWebhookResult,
+  type WebhookResultIdentifier,
+} from "../modules/webhook/claim.js";
+import { WebhookChangeStreamModule } from "../modules/webhook/changestream.js";
+import { WebhookPartitionModule } from "../modules/webhook/partition.js";
+import {
+  WebhookQueueConsumerModule,
+  WebhookQueueProducerModule,
+} from "../modules/webhook/queue.js";
+import { secondsToHms } from "../util.js";
 
 const axiosInstance = axios.create({
   timeout: 4000,
@@ -386,44 +392,16 @@ async function processWebhookEvent(
   }
 }
 
-function validateWebhook(webhook: DocumentType<Webhook>) {
-  // validation
-  const error = webhook.validateSync();
-  if (error) {
-    documentLog(
-      webhook,
-      "<!> [ERROR] The format of the webhook is incorrect.",
-      error
-    );
-    return false;
-  }
-  return true;
-}
-
-interface CollectionSetting {
-  changeStream?: mongo.ChangeStream;
-  changeStreamMatch?: any;
-  webhooks: DocumentType<Webhook>[];
-}
-
 export async function runWebhook() {
   await importAllModels();
   const app = new Application();
+
+  // Infrastructure modules — init first, close last
   app.use(new MongodbModule());
-
-  const collectionSettings = new Map<string, CollectionSetting>();
-  const bufferChange = new Map<
-    string,
-    {
-      webhook: DocumentType<Webhook>;
-      data?: WatcherResultDocument;
-    }
-  >();
-
   app.use({
     name: "discord-rest-client",
     async close() {
-      // Wait until all requests are done
+      // wait for all pending Discord REST handlers to flush
       for (const [, handler] of discordRest.handlers) {
         while (!handler.inactive) {
           await setTimeout(100);
@@ -431,279 +409,47 @@ export async function runWebhook() {
       }
     },
   });
+  app.use(new RedisModule());
 
-  const processWebhookQueue = new PQueue();
-  app.use({
-    name: "process-webhook-queue",
-    async close() {
-      // Wait until all processing are done
-      await processWebhookQueue.onIdle();
-    },
+  // Webhook-domain modules — registered in init order (first registered
+  // inits first). Application.close() runs LIFO, so partition closes FIRST
+  // (registered last). LIFO close order becomes:
+  //   partition → changestream → producer → consumer → redis → discord → mongo
+  //
+  // partition closing first DELs its instance key from Redis and publishes
+  // rebalance; peers notice us leaving and start reassigning collections.
+  // changestream then closes our local streams and writes the final resume
+  // tokens. The brief overlap — this instance's streams still alive while
+  // peers are starting to take over — is tolerated by bee-queue setId dedup
+  // plus the WebhookResult idempotency layer.
+  const consumerModule = new WebhookQueueConsumerModule();
+  // Producer needs `app` to resolve RedisModule via app.get at init() time;
+  // scheduleAndEnqueue is exposed as a method on this module (queue + redis
+  // dependencies are bound here, not threaded through callsites).
+  const producerModule = new WebhookQueueProducerModule(app);
+  const changeStreamModule = new WebhookChangeStreamModule(app);
+  // Partition needs `app` to resolve RedisModule for the main command
+  // connection AND its shared subscriber (RedisModule.getSubscriber()).
+  const partitionModule = new WebhookPartitionModule(app);
+
+  // Worker handler (Layer 4 concern; wired here because it depends on
+  // webhook.ts's processWebhookEvent which stays in this file)
+  consumerModule.setHandler(async (job) => {
+    try {
+      const ctx = await loadJobContext(job.data);
+      if (!ctx) return; // webhook or document gone
+      await processWebhookEvent(ctx.webhook, ctx.data);
+    } catch (error) {
+      documentLog(job.data.coll, "<!> [ERROR] worker handler failed:", error);
+      throw error; // let bee-queue retry
+    }
   });
 
-  app.use({
-    name: "remove-webhook",
-    async close() {
-      // Stop all change streams
-      for (const coll of collectionSettings.keys()) {
-        await removeWebhook(coll);
-      }
-    },
-  });
+  app.use(consumerModule);
+  app.use(producerModule);
+  app.use(changeStreamModule);
+  app.use(partitionModule);
 
   await app.init();
-
-  global.setInterval(() => {
-    for (const [key, { webhook, data }] of bufferChange) {
-      bufferChange.delete(key);
-      if (data) {
-        processWebhookQueue
-          .add(() => processWebhookEvent(webhook, data))
-          .catch((error) => {
-            documentLog(webhook, "<!> [ERROR]", error);
-          });
-      }
-    }
-  }, 5000);
-
-  function prepareWebhookEvent(
-    webhook: DocumentType<Webhook>,
-    data: WatcherResultDocument
-  ) {
-    try {
-      if (!webhook.followUpdate && data.operationType === "update")
-        return false;
-      if (webhook.match && !isMatching(data.fullDocument, webhook.match))
-        return false;
-
-      if (webhook.followUpdate) {
-        const cacheKey = createWebhookResultCacheKey(
-          createWebhookResultIdentifier(webhook, data)
-        );
-        if (bufferChange.has(cacheKey)) {
-          // buffer change
-          bufferChange.set(cacheKey, { webhook, data });
-          return false;
-        } else {
-          // mark next record as buffer
-          bufferChange.set(cacheKey, { webhook });
-        }
-      }
-
-      return true;
-    } catch (error) {
-      documentLog(webhook, "<!> [ERROR]", error);
-      return false;
-    }
-  }
-
-  async function closeChangeStream(
-    coll: string,
-    changeStream: mongo.ChangeStream
-  ) {
-    try {
-      await changeStream.close();
-      changeStream.removeAllListeners();
-      return changeStream.resumeToken;
-    } catch (error) {
-      documentLog(
-        coll,
-        "<!> [FATAL] Unable to close the previous change stream.",
-        error
-      );
-      process.exit(1);
-    }
-  }
-
-  async function removeWebhook(coll: string) {
-    const collectionSetting = collectionSettings.get(coll);
-    if (collectionSetting) {
-      collectionSettings.delete(coll);
-    }
-    const previous = collectionSetting?.changeStream;
-    if (previous) {
-      const resumeToken = await closeChangeStream(coll, previous);
-      return resumeToken;
-    }
-  }
-
-  async function startChangeStream(
-    coll: string,
-    collectionSetting: CollectionSetting
-  ) {
-    // close previous change stream if exists
-    const resumeAfter = collectionSetting.changeStream
-      ? await closeChangeStream(coll, collectionSetting.changeStream)
-      : undefined;
-
-    const model = getModelByCollectionName(coll);
-    if (!model) {
-      documentLog(
-        coll,
-        `<!> [ERROR] Unable to get model (unknown collection "${coll}")`
-      );
-      return;
-    }
-    const changeStream = model.watch(
-      [{ $match: collectionSetting.changeStreamMatch }],
-      {
-        resumeAfter: resumeAfter,
-        fullDocument: "updateLookup",
-        readPreference: "secondaryPreferred",
-      }
-    );
-    changeStream.on(
-      "change",
-      (changeStreamData: mongo.ChangeStreamDocument) => {
-        if (
-          changeStreamData.operationType !== "insert" &&
-          changeStreamData.operationType !== "update"
-        ) {
-          return;
-        }
-        if (!("documentKey" in changeStreamData)) return;
-        if (
-          !("fullDocument" in changeStreamData) ||
-          !changeStreamData.fullDocument
-        ) {
-          documentLog(
-            coll,
-            "<!> [ERROR] missing fullDocument",
-            changeStreamData.documentKey
-          );
-          return;
-        }
-
-        const data: WatcherResultDocument = {
-          documentKey: changeStreamData.documentKey,
-          fullDocument: new model(changeStreamData.fullDocument),
-          operationType: changeStreamData.operationType,
-          ns: changeStreamData.ns,
-        };
-
-        for (const webhook of collectionSetting.webhooks) {
-          if (prepareWebhookEvent(webhook, data)) {
-            processWebhookQueue
-              .add(() => processWebhookEvent(webhook, data))
-              .catch((error) => {
-                documentLog(webhook, "<!> [ERROR]", error);
-              });
-          }
-        }
-      }
-    );
-    return changeStream;
-  }
-
-  function changeStreamIsValid(changeStream?: mongo.ChangeStream) {
-    return changeStream && changeStream.closed === false;
-  }
-
-  async function setupWebhook(coll: string, webhooks: DocumentType<Webhook>[]) {
-    try {
-      const collectionSetting: CollectionSetting = collectionSettings.get(
-        coll
-      ) ?? { webhooks: [] };
-
-      const changeStreamMatch = {
-        $or: webhooks.map((webhook) =>
-          flatObjectKey({
-            operationType: webhook.followUpdate
-              ? { $in: ["insert", "update"] }
-              : "insert",
-            ...setIfDefine("fullDocument", webhook.match),
-          })
-        ),
-      };
-
-      // check if match expression is the same of previous
-      if (
-        changeStreamIsValid(collectionSetting.changeStream) &&
-        collectionSetting.changeStreamMatch &&
-        isEqual(changeStreamMatch, collectionSetting.changeStreamMatch)
-      ) {
-        collectionSetting.webhooks = webhooks;
-        return;
-      }
-
-      collectionSetting.webhooks = webhooks;
-      collectionSetting.changeStreamMatch = changeStreamMatch;
-      collectionSetting.changeStream = await startChangeStream(
-        coll,
-        collectionSetting
-      );
-      if (collectionSetting.changeStream) {
-        collectionSettings.set(coll, collectionSetting);
-        documentLog(
-          coll,
-          `start listening (match length: ${changeStreamMatch.$or.length})`
-        );
-      }
-    } catch (error) {
-      documentLog(coll, "<!> [FATAL] Unable to create change stream.", error);
-      process.exit(1);
-    }
-  }
-
-  async function setupWebhooks() {
-    try {
-      await setTimeout(5000);
-      const allWebhooks = await WebhookModel.findEnabled();
-      const groups = groupBy(
-        allWebhooks
-          .filter(validateWebhook)
-          .flatMap((webhook) =>
-            webhook.colls.map((coll) => ({ webhook, coll }))
-          ),
-        ({ coll }) => coll
-      );
-      for (const entry of Object.entries(groups)) {
-        const coll = entry[0];
-        const webhooks = entry[1].map(({ webhook }) => webhook);
-        await setupWebhook(coll, webhooks);
-      }
-      // Stop unnecessary changestreams
-      for (const coll of collectionSettings.keys()) {
-        if (!(coll in groups)) {
-          await removeWebhook(coll);
-        }
-      }
-    } catch (error) {
-      documentLog("global", "<!> [FATAL] Unable to setup webhooks.", error);
-      process.exit(1);
-    }
-  }
-
-  const setupWebhooksQueue = new PQueue({ concurrency: 1 });
-  app.use({
-    name: "setup-webhooks-queue",
-    async close() {
-      // Wait until all setup are done
-      await setupWebhooksQueue.onIdle();
-    },
-  });
-
-  const webhooksChangeStream = WebhookModel.watch([
-    {
-      $match: {
-        operationType: { $in: ["insert", "update", "replace", "delete"] },
-      },
-    },
-  ]).on("change", (data: mongo.ChangeStreamDocument<Webhook>) => {
-    documentLog(data, data.operationType.toUpperCase());
-    if (setupWebhooksQueue.size < 2)
-      void setupWebhooksQueue.add(() => setupWebhooks());
-  });
-  app.use({
-    name: "webhook-change-stream",
-    async close() {
-      // Stop change stream
-      await webhooksChangeStream.close();
-    },
-  });
-
-  await setupWebhooksQueue.add(() => setupWebhooks());
   console.log("webhook is ready");
 }
-
-void loadJobContext;
