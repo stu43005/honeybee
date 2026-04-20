@@ -1,4 +1,5 @@
 import type { DocumentType } from "@typegoose/typegoose";
+import type { WebhookJob } from "../interfaces.js";
 import axios, { AxiosError } from "axios";
 import {
   HTTPError,
@@ -237,6 +238,30 @@ async function getWebhookResult(
     }
   }
   return null;
+}
+
+async function loadJobContext(job: WebhookJob): Promise<{
+  webhook: DocumentType<Webhook>;
+  data: WatcherResultDocument;
+} | null> {
+  const webhook = await WebhookModel.findById(job.webhookId).exec();
+  if (!webhook || !webhook.enabled) return null;
+
+  const model = getModelByCollectionName(job.coll);
+  if (!model) return null;
+
+  const fullDocument = await model.findById(job.docId).exec();
+  if (!fullDocument) return null;
+
+  return {
+    webhook,
+    data: {
+      documentKey: { _id: new mongo.BSON.ObjectId(job.docId) },
+      fullDocument,
+      operationType: job.operationType,
+      ns: { db: model.db.name, coll: job.coll },
+    } as WatcherResultDocument,
+  };
 }
 
 async function processWebhookEvent(
@@ -680,3 +705,5 @@ export async function runWebhook() {
   await setupWebhooksQueue.add(() => setupWebhooks());
   console.log("webhook is ready");
 }
+
+void loadJobContext;
