@@ -27,6 +27,10 @@ import VideoModel, { Video } from "../models/Video.js";
 import WebhookModel, { type Webhook } from "../models/Webhook.js";
 import WebhookResultModel from "../models/WebhookResult.js";
 import { Application } from "../modules/application.js";
+import {
+  claimWebhookResult,
+  type WebhookResultIdentifier,
+} from "../modules/webhook/claim.js";
 import { getCacheInstance } from "../modules/cache.js";
 import { type WatcherResultDocument } from "../modules/collection-watcher.js";
 import {
@@ -183,11 +187,6 @@ function getChannel(channelId?: string) {
   );
 }
 
-type WebhookResultIdentifier = {
-  webhookId: string;
-  coll: string;
-  docId: string;
-};
 function createWebhookResultIdentifier(
   webhook: DocumentType<Webhook>,
   data: WatcherResultDocument
@@ -339,18 +338,20 @@ async function processWebhookEvent(
     return;
   }
 
-  await WebhookResultModel.updateOne(
+  const decision = await claimWebhookResult(
+    webhook,
     resultIdentifier,
-    {
-      $setOnInsert: resultIdentifier,
-      $set: {
-        method: method,
-        url: url,
-        body: body,
-      },
-    },
-    { upsert: true }
+    method,
+    url,
+    body
   );
+  if (decision.action === "skip") {
+    documentLog(
+      webhook,
+      `[idempotent-skip] ${decision.reason} for ${resultIdentifier.coll}:${resultIdentifier.docId}`
+    );
+    return;
+  }
   void cache.del(createWebhookResultCacheKey(resultIdentifier));
 
   if (checkIsDiscordWebhookUrl(url)) {
