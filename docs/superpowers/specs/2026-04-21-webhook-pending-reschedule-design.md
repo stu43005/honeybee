@@ -23,9 +23,10 @@
 
 ```
 Producer（coalesce 分支）:
+  SET webhook:pending:{jobId}       ← 先 SET，再判斷 in-flight（消除 race）
   getJob(jobId) !== null  →  in-flight
-    → SET webhook:pending:{jobId}   ← 新增：標記「有尚未處理的變更」
-    → return "coalesced"
+    → unwatch, return "coalesced"
+  （not in-flight → 走正常 immediate/delayed 分支；新建 job 的 ① 會 DEL pending，無害）
 
 Worker（job 開始時）:
   DEL webhook:pending:{jobId}       ← 清除 job 啟動前累積的 pending
@@ -37,12 +38,36 @@ Worker（job 結束時，handler return 前）:
     await producer.scheduleAndEnqueue(job.data, Date.now(), cooldown)
 ```
 
+### 為什麼「先 SET 再判斷 in-flight」消除了 race condition
+
+舊設計：`isJobInFlight → unwatch → SET pending` 存在 race：worker 可能在 unwatch 與 SET pending 之間完成 ③（check pending → false → 不 reschedule），pending 被 SET 後無人清除，變更遺漏。
+
+新設計：**先 SET pending，再檢查 in-flight**：
+
+- 若 in-flight：worker 在 ③ 時看到 pending → 觸發 reschedule ✓
+- 若 not in-flight（worker 在我們 SET 之前已完成）：isJobInFlight 返回 false → 走 immediate/delayed 分支建立新 job → 新 job 的 ① DEL pending，無害 ✓
+- 競態邊界：若 worker 的 ③ 恰好在我們 SET 前完成、且 job 已從 hash 移除，則 isJobInFlight 返回 false，我們自行建立新 job，不依賴 worker 的 reschedule ✓
+
 ### 為什麼「開始時 DEL」能自然區分 active 與非 active
 
 - **Job 處於 waiting/delayed**：pending flag 在 DEL 之前就已設定。Worker 啟動時清除 pending，接著讀 document（此時文件已是最新）→ 結束時無 pending → 不觸發 reschedule。正確：waiting/delayed job 本就會在觸發時讀最新狀態。
 - **Job 處於 active（正在讀文件中）**：pending flag 在 DEL 之後才設定 → 結束時有 pending → 觸發 reschedule，補上漏掉的變更。
 
 不需要另設 `webhook:active:{jobId}` 標記，「開始時 DEL」本身即是正確的邊界。
+
+### 關鍵不變式
+
+本機制依賴以下 handler 執行順序：
+
+1. ① `DEL pending` 必須**先於** ② handler 讀取 document
+2. ③ `EXISTS pending` 必須**後於** ② handler 完成所有可觀察變更
+
+滿足此不變式時：
+
+- 任何在 ① 之後、③ 之前 SET 的 pending flag 都會被 ③ 看到 → 觸發 reschedule
+- 任何在 ① 之前 SET 的 pending flag，對應的變更已被 ② 讀入 → DEL 後不 reschedule 正確
+
+bee-queue 保證 ①→②→③ 在單一 handler invocation 內順序執行，故不變式成立。
 
 ---
 
@@ -82,19 +107,24 @@ export function buildPendingKey(jobId: string): string {
 
 ## Producer 變更（scheduleAndEnqueue）
 
-coalesce 分支增加一行 SET：
+**先 SET pending，再檢查 in-flight**，消除舊設計的 race window：
 
 ```typescript
 // src/modules/webhook/queue.ts — scheduleAndEnqueue()
 
+// 先 SET pending，再判斷 in-flight，以消除 race：
+// 若先判斷再 SET，worker 可能在兩者之間完成 ③（check pending → false → 不 reschedule），
+// 造成 pending 被 SET 後無人清除，變更遺漏。
+await redis.set(buildPendingKey(jobId), "1", {
+  PX: WEBHOOK_FOLLOW_UPDATE_COOLDOWN_KEY_TTL_MS,
+});
+
 if (await isJobInFlight(queue, jobId)) {
   await redis.unwatch();
-  // 標記「有尚未處理的變更」供 worker 結束時檢查
-  await redis.set(buildPendingKey(jobId), "1", {
-    PX: WEBHOOK_FOLLOW_UPDATE_COOLDOWN_KEY_TTL_MS,
-  });
   return "coalesced";
 }
+// not in-flight：走 immediate/delayed 分支正常建立新 job，
+// 新 job 的 ① 會 DEL pending，無害。
 ```
 
 **改動範圍**：僅 `scheduleAndEnqueue` 純函數本體。`WebhookQueueProducerModule.scheduleAndEnqueue` wrapper 不需改動。
@@ -169,11 +199,17 @@ async init(): Promise<void> {
 
 - **① `DEL pending`（handler 前）失敗**：例外向上傳，bee-queue 重試整個 job；重試時再次執行 ① → 正確。
 - **② `handler` 本身的例外**：依現有行為向上傳，bee-queue 重試。此行為不受本 patch 影響。
-- **③ `EXISTS` / `DEL` / `scheduleAndEnqueue`（handler 後）失敗**：例外向上傳，bee-queue 重試整個 job（handler 重跑一次）。前提：webhook handler（② 的業務邏輯）必須是冪等的（與現有 bee-queue 重試語義一致）。重跑後若 ③ 成功，reschedule 一次；若再次失敗則繼續重試直至超過 retries 上限。
+- **③ `EXISTS` / `DEL` / `scheduleAndEnqueue`（handler 後）失敗**：例外向上傳，bee-queue 重試整個 job（handler 重跑一次）。**冪等前提**：handler 的業務邏輯冪等性由 `claimWebhookResult`（`src/modules/webhook/claim.ts`）保障——相同 `(webhookId, coll, docId)` 且 body 未變化時返回 `action: "skip"`，使重跑不會實際重送 webhook。重跑後若 ③ 成功，reschedule 一次；若再次失敗則繼續重試直至超過 retries 上限。
 
 ### Registration 順序
 
-完整順序：`RedisModule` → `WebhookQueueProducerModule` → `WebhookQueueConsumerModule`。Consumer 的 `init()` 同時依賴 `app.get("redis")` 和 `app.get("webhook-queue-producer")`，兩者都必須先於 consumer 完成初始化。
+**破壞性變更**：當前 `src/commands/webhook.ts` 的 consumer 在 producer 之前被 `app.register()`。本 patch 之後必須翻轉為：
+
+```text
+RedisModule → WebhookQueueProducerModule → WebhookQueueConsumerModule
+```
+
+Consumer 的 `init()` 現在同時依賴 `app.get("redis")` 和 `app.get("webhook-queue-producer")`，兩者都必須先於 consumer 完成初始化。實作者需在 `src/commands/webhook.ts`（或 wiring 位置）找到對應的 `app.register` 呼叫並調整順序。
 
 LIFO 關閉：consumer 先關閉（停止接收新 job），producer 與 redis 後關閉，確保 ③ 的 reschedule 在 shutdown 期間仍能正常執行。
 
@@ -207,6 +243,7 @@ LIFO 關閉：consumer 先關閉（停止接收新 job），producer 與 redis �
 | ③ scheduleAndEnqueue 失敗                      | 例外向上傳，bee-queue 重試 job（handler 重跑一次，依賴 handler 冪等性）；重試時 ① DEL pending，重試完成後再次到達 ③；若成功則 reschedule 一次                                                                                                                                          |
 | Producer SET pending 失敗（Redis 瞬斷）        | 例外向上傳至 `scheduleAndEnqueue` 呼叫端（changeStream handler）。changeStream handler 必須 catch 並 log error，不可靜默丟棄（同現有設計：任何 scheduleAndEnqueue 例外都需 log 後繼續）。若 job 仍 in-flight，下一個 changeStream 事件到來時會再次進入 coalesce 分支並重試 SET pending |
 | ③ scheduleAndEnqueue 返回 "coalesced"          | 此期間又有新 event 搶先建立了 job，pending 已由新 job 接手，無需補救                                                                                                                                                                                                                   |
+| Worker 處理時間 ≥ cooldown                     | 完成時 `now >= nextAllowed` → ③ 的 scheduleAndEnqueue 走 immediate 分支，立即推入；相鄰觸發間隔 = worker 處理時間 ≥ cooldown，不變量維持                                                                                                                                               |
 | Reschedule 時 nextAllowed 已過期（key TTL 到） | `now >= 0` → immediate 分支，正常推入                                                                                                                                                                                                                                                  |
 | Non-follow-update webhook                      | pending key 不存在，DEL 與 EXISTS 均為 O(1) no-op，無副作用                                                                                                                                                                                                                            |
 
@@ -214,7 +251,7 @@ LIFO 關閉：consumer 先關閉（停止接收新 job），producer 與 redis �
 
 ## 測試需求
 
-1. **Active 期間有變更**：primary job active 時 SET pending → worker 完成後觸發 reschedule
+1. **Active 期間有變更**：使用 `Deferred`（或 `sleep`）讓 handler 暫停，模擬 active 狀態：(a) 啟動 job，(b) handler 暫停中時 producer 呼叫 `scheduleAndEnqueue` → 返回 `"coalesced"` 且 pending key 存在，(c) resolve handler，(d) 驗證 ③ 觸發 reschedule（spy `producer.scheduleAndEnqueue` 或觀察 queue 新增 job）。涵蓋 worker 處理時間 < cooldown 與 ≥ cooldown 兩種情境。
 2. **Delayed job 清除 pending**：delayed job 啟動時 DEL pending → 不觸發 reschedule（變更已被 worker 讀取）
 3. **兩次 coalesce**：primary active 期間兩次 SET pending（同一 key，冪等）→ worker 只 reschedule 一次
 4. **reschedule 後無新變更**：reschedule job 完成後 pending 不存在 → 不再 reschedule
