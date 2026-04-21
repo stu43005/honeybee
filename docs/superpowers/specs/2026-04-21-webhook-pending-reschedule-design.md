@@ -165,9 +165,17 @@ async init(): Promise<void> {
 }
 ```
 
+### 錯誤處理規範
+
+- **① `DEL pending`（handler 前）失敗**：例外向上傳，bee-queue 重試整個 job；重試時再次執行 ① → 正確。
+- **② `handler` 本身的例外**：依現有行為向上傳，bee-queue 重試。此行為不受本 patch 影響。
+- **③ `EXISTS` / `DEL` / `scheduleAndEnqueue`（handler 後）失敗**：例外向上傳，bee-queue 重試整個 job（handler 重跑一次）。前提：webhook handler（② 的業務邏輯）必須是冪等的（與現有 bee-queue 重試語義一致）。重跑後若 ③ 成功，reschedule 一次；若再次失敗則繼續重試直至超過 retries 上限。
+
 ### Registration 順序
 
-`WebhookQueueConsumerModule` 必須在 `WebhookQueueProducerModule` 之後註冊，才能在 `init()` 的 `app.get("webhook-queue-producer")` 成功。LIFO 關閉順序不受影響（consumer 先關閉，producer 後關閉）。
+完整順序：`RedisModule` → `WebhookQueueProducerModule` → `WebhookQueueConsumerModule`。Consumer 的 `init()` 同時依賴 `app.get("redis")` 和 `app.get("webhook-queue-producer")`，兩者都必須先於 consumer 完成初始化。
+
+LIFO 關閉：consumer 先關閉（停止接收新 job），producer 與 redis 後關閉，確保 ③ 的 reschedule 在 shutdown 期間仍能正常執行。
 
 ---
 
@@ -186,18 +194,21 @@ async init(): Promise<void> {
 
 **t=1 的變更不再遺漏** ✓，相鄰觸發間隔仍 ≥5s（t=0 → t=5）✓
 
+**t=2 reschedule 的計算說明**：Delayed 分支以 `nextAllowed + cooldown`（= 5+5 = 10）更新 nextKey（非 `now + cooldown`），確保下一次觸發距本次觸發仍 ≥ cooldown。`delayUntil = now + (nextAllowed - now) = nextAllowed = 5`，因此 reschedule job 在 t=5 觸發，與 primary job 觸發時間（t=0）間隔恰好 5s ≥ cooldown。
+
 ---
 
 ## 邊界情況
 
-| 情況                                           | 行為                                                                                                             |
-| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Worker crash，pending flag 已設                | bee-queue stall 後重試；重試時 ① DEL pending，重新執行完整流程，reschedule 邏輯在重試完成後正常觸發              |
-| ① DEL 失敗（Redis 瞬斷）                       | 例外向上傳，bee-queue 重試整個 job；重試時再次 DEL → 正確                                                        |
-| ③ scheduleAndEnqueue 失敗                      | 例外向上傳，bee-queue 重試 job；重試時 ① DEL pending，重試完成後再次到達 ③ → 可能多排一次 reschedule，冪等層兜底 |
-| ③ scheduleAndEnqueue 返回 "coalesced"          | 此期間又有新 event 搶先建立了 job，pending 已由新 job 接手，無需補救                                             |
-| Reschedule 時 nextAllowed 已過期（key TTL 到） | `now >= 0` → immediate 分支，正常推入                                                                            |
-| Non-follow-update webhook                      | pending key 不存在，DEL 與 EXISTS 均為 O(1) no-op，無副作用                                                      |
+| 情況                                           | 行為                                                                                                                                                                                                                                                                                   |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Worker crash，pending flag 已設                | bee-queue stall 後重試；重試時 ① DEL pending，重新執行完整流程，reschedule 邏輯在重試完成後正常觸發                                                                                                                                                                                    |
+| ① DEL 失敗（Redis 瞬斷）                       | 例外向上傳，bee-queue 重試整個 job；重試時再次 DEL → 正確                                                                                                                                                                                                                              |
+| ③ scheduleAndEnqueue 失敗                      | 例外向上傳，bee-queue 重試 job（handler 重跑一次，依賴 handler 冪等性）；重試時 ① DEL pending，重試完成後再次到達 ③；若成功則 reschedule 一次                                                                                                                                          |
+| Producer SET pending 失敗（Redis 瞬斷）        | 例外向上傳至 `scheduleAndEnqueue` 呼叫端（changeStream handler）。changeStream handler 必須 catch 並 log error，不可靜默丟棄（同現有設計：任何 scheduleAndEnqueue 例外都需 log 後繼續）。若 job 仍 in-flight，下一個 changeStream 事件到來時會再次進入 coalesce 分支並重試 SET pending |
+| ③ scheduleAndEnqueue 返回 "coalesced"          | 此期間又有新 event 搶先建立了 job，pending 已由新 job 接手，無需補救                                                                                                                                                                                                                   |
+| Reschedule 時 nextAllowed 已過期（key TTL 到） | `now >= 0` → immediate 分支，正常推入                                                                                                                                                                                                                                                  |
+| Non-follow-update webhook                      | pending key 不存在，DEL 與 EXISTS 均為 O(1) no-op，無副作用                                                                                                                                                                                                                            |
 
 ---
 
@@ -207,7 +218,7 @@ async init(): Promise<void> {
 2. **Delayed job 清除 pending**：delayed job 啟動時 DEL pending → 不觸發 reschedule（變更已被 worker 讀取）
 3. **兩次 coalesce**：primary active 期間兩次 SET pending（同一 key，冪等）→ worker 只 reschedule 一次
 4. **reschedule 後無新變更**：reschedule job 完成後 pending 不存在 → 不再 reschedule
-5. **buildPendingKey**：格式正確（`webhook:pending:{jobId}`）
+5. **buildPendingKey**：對任意 `WebhookJob`，`buildPendingKey(buildJobId(job))` 回傳 `webhook:pending:${webhookId}:${coll}:${docId}`，與 `buildNextKey` 共用相同 `buildJobId` 串接規則
 
 ---
 
