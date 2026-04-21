@@ -21,12 +21,14 @@
 
 ### 核心機制
 
-```
-Producer（coalesce 分支）:
-  SET webhook:pending:{jobId}       ← 先 SET，再判斷 in-flight（消除 race）
+```text
+Producer（WATCH loop 之前）:
+  SET webhook:pending:{jobId}       ← 在整個 WATCH loop 之前一次性 SET
+
+Producer（WATCH loop 內，coalesce 分支）:
   getJob(jobId) !== null  →  in-flight
     → unwatch, return "coalesced"
-  （not in-flight → 走正常 immediate/delayed 分支；新建 job 的 ① 會 DEL pending，無害）
+  （not in-flight → 走正常 immediate/delayed/fallback 分支；新建 job 的 ① 會 DEL pending，無害）
 
 Worker（job 開始時）:
   DEL webhook:pending:{jobId}       ← 清除 job 啟動前累積的 pending
@@ -38,15 +40,21 @@ Worker（job 結束時，handler return 前）:
     await producer.scheduleAndEnqueue(job.data, Date.now(), cooldown)
 ```
 
-### 為什麼「先 SET 再判斷 in-flight」消除了 race condition
+### 為什麼 SET pending 必須在 WATCH loop 之前
 
-舊設計：`isJobInFlight → unwatch → SET pending` 存在 race：worker 可能在 unwatch 與 SET pending 之間完成 ③（check pending → false → 不 reschedule），pending 被 SET 後無人清除，變更遺漏。
+1. **避免 WATCH session 中混入非 MULTI 寫入**：`redis.watch(nextKey)` 後、`multi().exec()` 前執行 `redis.set(pendingKey, ...)` 雖然在 Redis server 層面不影響 WATCH 語義（只有 nextKey 的修改才會讓 EXEC 失敗），但語義上應分開：WATCH/MULTI/EXEC 用於 nextKey 的原子更新，pending flag 的 SET 是獨立的 best-effort 操作，放在迴圈外更清晰且無干擾風險。
+2. **避免每次 WatchError retry 重複 SET**：SET pending 在迴圈外只執行一次，idempotent（同一 key，同一值）。
 
-新設計：**先 SET pending，再檢查 in-flight**：
+### 為什麼「先 SET 再判斷 in-flight」大幅縮小 race window
+
+舊設計：`isJobInFlight → unwatch → SET pending` 的 race window 是「in-flight check 到 SET pending」這段時間。若 worker 在此期間完成 ③（check pending → false），pending 被孤立。
+
+新設計（SET 在 WATCH loop 之前）：race window 大幅縮小至 **worker ③ 的 EXISTS 呼叫到 handler return 之間**（通常為微秒級）：
 
 - 若 in-flight：worker 在 ③ 時看到 pending → 觸發 reschedule ✓
-- 若 not in-flight（worker 在我們 SET 之前已完成）：isJobInFlight 返回 false → 走 immediate/delayed 分支建立新 job → 新 job 的 ① DEL pending，無害 ✓
-- 競態邊界：若 worker 的 ③ 恰好在我們 SET 前完成、且 job 已從 hash 移除，則 isJobInFlight 返回 false，我們自行建立新 job，不依賴 worker 的 reschedule ✓
+- 若 not in-flight（worker 在 SET 之前已完成，或 EXISTS 到 return 之間已完成）：isJobInFlight 返回 false → 走 immediate/delayed 分支建立新 job → 新 job 的 ① DEL pending，無害 ✓
+
+**殘餘 race（極窄）**：worker ③ 的 EXISTS 執行結果為 false（pending 尚未設定），隨後 producer 的 SET 執行、producer 的 isJobInFlight 仍返回 true（job 尚未從 hash 移除），producer 返回 "coalesced"，worker handler return 後 job 從 hash 移除，pending flag 孤立直至 15s TTL 過期。此 race 窗口為微秒級，後續有新 changeStream 事件時仍會被正常處理；接受此為已知限制。
 
 ### 為什麼「開始時 DEL」能自然區分 active 與非 active
 
@@ -107,27 +115,40 @@ export function buildPendingKey(jobId: string): string {
 
 ## Producer 變更（scheduleAndEnqueue）
 
-**先 SET pending，再檢查 in-flight**，消除舊設計的 race window：
+SET pending 在 WATCH loop **之前**執行（一次性，不受 WatchError retry 影響）：
 
 ```typescript
 // src/modules/webhook/queue.ts — scheduleAndEnqueue()
 
-// 先 SET pending，再判斷 in-flight，以消除 race：
-// 若先判斷再 SET，worker 可能在兩者之間完成 ③（check pending → false → 不 reschedule），
-// 造成 pending 被 SET 後無人清除，變更遺漏。
-await redis.set(buildPendingKey(jobId), "1", {
+const jobId = buildJobId(job);
+const nextKey = buildNextKey(jobId);
+const pendingKey = buildPendingKey(jobId);
+
+// SET pending 在 WATCH loop 之前：
+// 1. 避免在 WATCH session 中混入非 MULTI 寫入（語義更清晰）
+// 2. 只 SET 一次，不因 WatchError retry 重複執行
+// 3. 大幅縮小「isJobInFlight 判斷時 job 已完成但 pending 未 SET」的 race window
+await redis.set(pendingKey, "1", {
   PX: WEBHOOK_FOLLOW_UPDATE_COOLDOWN_KEY_TTL_MS,
 });
 
-if (await isJobInFlight(queue, jobId)) {
-  await redis.unwatch();
-  return "coalesced";
+let lastNextAllowed = 0;
+for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+  await redis.watch(nextKey);
+  // ...（現有 GET nextKey + isJobInFlight + immediate/delayed 邏輯不變）
+
+  if (await isJobInFlight(queue, jobId)) {
+    await redis.unwatch();
+    return "coalesced";
+    // pending 保留，worker ③ 會清除並觸發 reschedule
+  }
+  // not in-flight：走 immediate/delayed 分支，新建 job 的 ① 會 DEL pending，無害
 }
-// not in-flight：走 immediate/delayed 分支正常建立新 job，
-// 新 job 的 ① 會 DEL pending，無害。
+
+// fallback-delayed：新建 job 的 ① 同樣會 DEL pending，無害
 ```
 
-**改動範圍**：僅 `scheduleAndEnqueue` 純函數本體。`WebhookQueueProducerModule.scheduleAndEnqueue` wrapper 不需改動。
+**改動範圍**：僅 `scheduleAndEnqueue` 純函數本體（`SET pending` 一行提至 `for` loop 前）。`WebhookQueueProducerModule.scheduleAndEnqueue` wrapper 不需改動。
 
 **Non-follow-update webhook**（§3.8）不受影響：non-follow-update 走快速路徑（直接 `createJob().setId().save()`），不進 WATCH/MULTI/EXEC 迴圈，也不進 coalesce 分支。
 
@@ -203,15 +224,31 @@ async init(): Promise<void> {
 
 ### Registration 順序
 
-**破壞性變更**：當前 `src/commands/webhook.ts` 的 consumer 在 producer 之前被 `app.register()`。本 patch 之後必須翻轉為：
+**破壞性變更**：當前 `src/commands/webhook.ts` 的建構順序為：
+`consumer → producer → changeStream → partition`
+（LIFO close：`partition → changeStream → producer → consumer → redis`，consumer 最後關閉）
+
+本 patch 之後必須改為：
+`producer → consumer → changeStream → partition`
+（LIFO close：`partition → changeStream → consumer → producer → redis`，consumer 先於 producer 關閉）
 
 ```text
-RedisModule → WebhookQueueProducerModule → WebhookQueueConsumerModule
+app.register(producerModule)      // 1st — init first
+app.register(consumerModule)      // 2nd — init after producer (depends on app.get("webhook-queue-producer"))
+app.register(changeStreamModule)  // 3rd — changeStream calls producer.scheduleAndEnqueue; close before consumer
+app.register(partitionModule)     // 4th — init last, close first
 ```
 
-Consumer 的 `init()` 現在同時依賴 `app.get("redis")` 和 `app.get("webhook-queue-producer")`，兩者都必須先於 consumer 完成初始化。實作者需在 `src/commands/webhook.ts`（或 wiring 位置）找到對應的 `app.register` 呼叫並調整順序。
+**LIFO close 正確性驗證**：
 
-LIFO 關閉：consumer 先關閉（停止接收新 job），producer 與 redis 後關閉，確保 ③ 的 reschedule 在 shutdown 期間仍能正常執行。
+- `partition` 先關閉：DEL instance key + 廣播 rebalance，peers 開始接管 changeStream
+- `changeStream` 關閉：drain setupQueue，close 所有 collection changeStream，**不再**呼叫 `scheduleAndEnqueue`
+- `consumer` 關閉：`queue.close(SHUTDOWN_TIMEOUT)` 等待 in-flight handler（含 ③ reschedule）完成
+- `producer` 關閉：此時 consumer 已關，`scheduleAndEnqueue` 在 ③ 中已完成或已超時
+
+此順序確保：consumer 關閉時 producer 仍可用（③ reschedule 不會 use-after-close）。
+
+**破壞性 API 變更**：`WebhookQueueConsumerModule` constructor signature 由 `()` 變為 `(app: Application)`。`src/commands/webhook.ts` 中的 `new WebhookQueueConsumerModule()` 必須更新為 `new WebhookQueueConsumerModule(app)`。
 
 ---
 
@@ -241,6 +278,7 @@ LIFO 關閉：consumer 先關閉（停止接收新 job），producer 與 redis �
 | Worker crash，pending flag 已設                | bee-queue stall 後重試；重試時 ① DEL pending，重新執行完整流程，reschedule 邏輯在重試完成後正常觸發                                                                                                                                                                                    |
 | ① DEL 失敗（Redis 瞬斷）                       | 例外向上傳，bee-queue 重試整個 job；重試時再次 DEL → 正確                                                                                                                                                                                                                              |
 | ③ scheduleAndEnqueue 失敗                      | 例外向上傳，bee-queue 重試 job（handler 重跑一次，依賴 handler 冪等性）；重試時 ① DEL pending，重試完成後再次到達 ③；若成功則 reschedule 一次                                                                                                                                          |
+| Handler retries 耗盡（job 永久失敗）           | `removeOnFailure:true` 清除 job；若最後一次 retry 的 ① DEL 後有 changeStream 事件 SET pending，pending 會於 15s TTL 後孤立過期，該次變更遺漏。**已知限制**：與現有設計「Redis 故障時 save() 失敗事件可能遺漏」的可接受失敗模式一致；下次文件再次變更時會觸發新 job 補上                |
 | Producer SET pending 失敗（Redis 瞬斷）        | 例外向上傳至 `scheduleAndEnqueue` 呼叫端（changeStream handler）。changeStream handler 必須 catch 並 log error，不可靜默丟棄（同現有設計：任何 scheduleAndEnqueue 例外都需 log 後繼續）。若 job 仍 in-flight，下一個 changeStream 事件到來時會再次進入 coalesce 分支並重試 SET pending |
 | ③ scheduleAndEnqueue 返回 "coalesced"          | 此期間又有新 event 搶先建立了 job，pending 已由新 job 接手，無需補救                                                                                                                                                                                                                   |
 | Worker 處理時間 ≥ cooldown                     | 完成時 `now >= nextAllowed` → ③ 的 scheduleAndEnqueue 走 immediate 分支，立即推入；相鄰觸發間隔 = worker 處理時間 ≥ cooldown，不變量維持                                                                                                                                               |
@@ -251,7 +289,7 @@ LIFO 關閉：consumer 先關閉（停止接收新 job），producer 與 redis �
 
 ## 測試需求
 
-1. **Active 期間有變更**：使用 `Deferred`（或 `sleep`）讓 handler 暫停，模擬 active 狀態：(a) 啟動 job，(b) handler 暫停中時 producer 呼叫 `scheduleAndEnqueue` → 返回 `"coalesced"` 且 pending key 存在，(c) resolve handler，(d) 驗證 ③ 觸發 reschedule（spy `producer.scheduleAndEnqueue` 或觀察 queue 新增 job）。涵蓋 worker 處理時間 < cooldown 與 ≥ cooldown 兩種情境。
+1. **Active 期間有變更**：使用 `Deferred`（或 `sleep`）讓 handler 暫停，模擬 active 狀態：(a) 啟動 job，(b) handler 暫停中時 producer 呼叫 `scheduleAndEnqueue` → 返回 `"coalesced"` 且 pending key 存在，(c) resolve handler，(d) 驗證 `producer.scheduleAndEnqueue` 被呼叫一次且參數為：`job.data` 等於原 job.data（相同 webhookId/coll/docId/operationType）、`now` ≥ resolve handler 的時間點、`cooldown` 為預設 `WEBHOOK_FOLLOW_UPDATE_COOLDOWN_MS`。涵蓋 worker 處理時間 < cooldown 與 ≥ cooldown 兩種情境。
 2. **Delayed job 清除 pending**：delayed job 啟動時 DEL pending → 不觸發 reschedule（變更已被 worker 讀取）
 3. **兩次 coalesce**：primary active 期間兩次 SET pending（同一 key，冪等）→ worker 只 reschedule 一次
 4. **reschedule 後無新變更**：reschedule job 完成後 pending 不存在 → 不再 reschedule
@@ -261,9 +299,9 @@ LIFO 關閉：consumer 先關閉（停止接收新 job），producer 與 redis �
 
 ## 影響範圍
 
-| 元件                                        | 變更                                                                                                               |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `src/modules/webhook/queue.ts`              | `scheduleAndEnqueue` coalesce 分支新增 SET pending；新增 `buildPendingKey` helper                                  |
-| `src/modules/webhook/queue.ts`              | `WebhookQueueConsumerModule`：constructor 接收 `app`；`init()` 取得 redis/producer；`queue.process()` 包裝 handler |
-| `src/modules/webhook/queue.spec.ts`         | 新增上述測試案例                                                                                                   |
-| `src/commands/webhook.ts`（或 wiring 位置） | `WebhookQueueConsumerModule` 建構時傳入 `app`；確保 registration 順序正確                                          |
+| 元件                                | 變更                                                                                                                                                                 |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/modules/webhook/queue.ts`      | `scheduleAndEnqueue`：SET pending 移至 WATCH loop 之前；新增 `buildPendingKey` helper                                                                                |
+| `src/modules/webhook/queue.ts`      | `WebhookQueueConsumerModule`：constructor `()` → `(app: Application)`（破壞性 API 變更）；`init()` 取得 redis/producer；`queue.process()` 包裝 handler 加入 ①②③ 邏輯 |
+| `src/modules/webhook/queue.spec.ts` | 新增上述測試案例                                                                                                                                                     |
+| `src/commands/webhook.ts`           | `new WebhookQueueConsumerModule()` → `new WebhookQueueConsumerModule(app)`；調整 register 順序為 `producer → consumer → changeStream → partition`                    |
