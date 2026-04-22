@@ -63,7 +63,7 @@ describe("buildPendingKey", () => {
 - [ ] **Step 3: Run test to verify it fails**
 
 ```bash
-npx jest src/modules/webhook/queue.spec.ts --testNamePattern="buildPendingKey"
+NODE_OPTIONS='--experimental-vm-modules' npx jest src/modules/webhook/queue.spec.ts --testNamePattern="buildPendingKey"
 ```
 
 Expected: FAIL — `buildPendingKey` is not exported from `./queue.js`
@@ -89,7 +89,7 @@ export function buildPendingKey(jobId: string): string {
 - [ ] **Step 5: Run test to verify it passes**
 
 ```bash
-npx jest src/modules/webhook/queue.spec.ts --testNamePattern="buildPendingKey"
+NODE_OPTIONS='--experimental-vm-modules' npx jest src/modules/webhook/queue.spec.ts --testNamePattern="buildPendingKey"
 ```
 
 Expected: PASS
@@ -97,7 +97,7 @@ Expected: PASS
 - [ ] **Step 6: Run all queue tests to verify no regressions**
 
 ```bash
-npx jest src/modules/webhook/queue.spec.ts
+NODE_OPTIONS='--experimental-vm-modules' npx jest src/modules/webhook/queue.spec.ts
 ```
 
 Expected: all PASS
@@ -155,7 +155,7 @@ it("sets pending key before entering WATCH loop", async () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-npx jest src/modules/webhook/queue.spec.ts --testNamePattern="sets pending key"
+NODE_OPTIONS='--experimental-vm-modules' npx jest src/modules/webhook/queue.spec.ts --testNamePattern="sets pending key"
 ```
 
 Expected: FAIL — `setPendingIdx` is -1 (SET not called before WATCH loop)
@@ -186,7 +186,7 @@ let lastNextAllowed = 0;
 - [ ] **Step 4: Run test to verify it passes**
 
 ```bash
-npx jest src/modules/webhook/queue.spec.ts --testNamePattern="sets pending key"
+NODE_OPTIONS='--experimental-vm-modules' npx jest src/modules/webhook/queue.spec.ts --testNamePattern="sets pending key"
 ```
 
 Expected: PASS
@@ -194,7 +194,7 @@ Expected: PASS
 - [ ] **Step 5: Run all queue tests to verify no regressions**
 
 ```bash
-npx jest src/modules/webhook/queue.spec.ts
+NODE_OPTIONS='--experimental-vm-modules' npx jest src/modules/webhook/queue.spec.ts
 ```
 
 Expected: all PASS — existing tests assert `redis.set` with `toHaveBeenCalled()` (not arg-checked), so the new unconditional SET does not break them.
@@ -399,6 +399,8 @@ describe("WebhookQueueConsumerModule", () => {
     expect(producer.scheduleAndEnqueue).toHaveBeenCalledWith(
       expect.objectContaining({ ...jobData, operationType: "update" })
     );
+    // Verify consumer relies on producer defaults for now/cooldown (single-arg call)
+    expect(producer.scheduleAndEnqueue.mock.calls[0]).toHaveLength(1);
   });
 
   it("does not reschedule when no pending flag at job completion", async () => {
@@ -417,11 +419,14 @@ describe("WebhookQueueConsumerModule", () => {
     expect(producer.scheduleAndEnqueue).not.toHaveBeenCalled();
   });
 
-  it("reschedules exactly once even when succeeded fires multiple times (DEL makes it idempotent)", async () => {
+  it("pending DEL in succeeded listener prevents double-reschedule (multiple coalesced SETs → one reschedule)", async () => {
+    // Multiple changeStream events during active processing each SET the same pending
+    // key (idempotent in Redis). ③ DELs the flag before rescheduling, so a second
+    // EXISTS call on the same key returns 0 — no double-reschedule.
     const fakeQueue = new FakeQueue();
     const redis = createConsumerRedis(0);
     let existsCallCount = 0;
-    const existsValues = [1, 0]; // first call: pending present; second call: already DELed
+    const existsValues = [1, 0]; // first call: pending present; second call: already DELed by ③
     redis.exists.mockImplementation(() =>
       Promise.resolve(existsValues[existsCallCount++] ?? 0)
     );
@@ -431,15 +436,67 @@ describe("WebhookQueueConsumerModule", () => {
 
     await fakeQueue.triggerJob(jobData);
 
-    fakeQueue.emitSucceeded(jobData); // first: EXISTS=1 → reschedule
+    fakeQueue.emitSucceeded(jobData); // first check: EXISTS=1 → reschedule + DEL
     const snap1 = Array.from(mod.pendingSucceededWork);
     await Promise.allSettled(snap1);
 
-    fakeQueue.emitSucceeded(jobData); // second: EXISTS=0 (DELed by ③) → no reschedule
+    fakeQueue.emitSucceeded(jobData); // second check: EXISTS=0 (DELed by ③) → no reschedule
     const snap2 = Array.from(mod.pendingSucceededWork);
     await Promise.allSettled(snap2);
 
     expect(producer.scheduleAndEnqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("job-start DEL clears a pre-existing pending flag (delayed job reads fresh state, no reschedule)", async () => {
+    // Spec test 3: pending SET before the job started (e.g., a producer SET while the
+    // job was waiting/delayed). Worker ① DEL clears it before handler reads the doc
+    // (which already has the latest state). ③ EXISTS=0 → no reschedule.
+    const fakeQueue = new FakeQueue();
+    // Stateful redis: del removes the key, exists reports its presence
+    const pendingKeys = new Set<string>([pendingKey]); // pre-existing pending
+    const redis: ConsumerRedis = {
+      del: jest
+        .fn<(key: string) => Promise<number>>()
+        .mockImplementation((k) => {
+          const had = pendingKeys.delete(k);
+          return Promise.resolve(had ? 1 : 0);
+        }),
+      exists: jest
+        .fn<(key: string) => Promise<number>>()
+        .mockImplementation((k) => Promise.resolve(pendingKeys.has(k) ? 1 : 0)),
+    };
+    const producer = createMockProducer();
+    const mod = makeModule(redis, producer, fakeQueue);
+    await mod.init();
+
+    // ① DEL clears the pre-existing pending flag before handler runs
+    await fakeQueue.triggerJob(jobData);
+    // ③ EXISTS=0 (DELed by ①) → no reschedule
+    fakeQueue.emitSucceeded(jobData);
+    await Promise.allSettled(Array.from(mod.pendingSucceededWork));
+
+    expect(redis.del).toHaveBeenCalledWith(pendingKey);
+    expect(producer.scheduleAndEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("reschedules regardless of job processing duration (processing >= cooldown path)", async () => {
+    // Spec test 2: consumer always calls scheduleAndEnqueue({…, operationType:'update'})
+    // with one argument; immediate-vs-delayed branch selection lives inside the producer
+    // wrapper (WebhookQueueProducerModule.scheduleAndEnqueue) and is not tested here.
+    const fakeQueue = new FakeQueue();
+    const redis = createConsumerRedis(1);
+    const producer = createMockProducer();
+    const mod = makeModule(redis, producer, fakeQueue);
+    await mod.init();
+
+    await fakeQueue.triggerJob(jobData);
+    fakeQueue.emitSucceeded(jobData);
+    await Promise.allSettled(Array.from(mod.pendingSucceededWork));
+
+    expect(producer.scheduleAndEnqueue).toHaveBeenCalledTimes(1);
+    expect(producer.scheduleAndEnqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ ...jobData, operationType: "update" })
+    );
   });
 
   it("close() drains pending succeeded work before returning", async () => {
@@ -463,7 +520,7 @@ describe("WebhookQueueConsumerModule", () => {
 - [ ] **Step 4: Run the new tests to verify they fail**
 
 ```bash
-npx jest src/modules/webhook/queue.spec.ts --testNamePattern="WebhookQueueConsumerModule"
+NODE_OPTIONS='--experimental-vm-modules' npx jest src/modules/webhook/queue.spec.ts --testNamePattern="WebhookQueueConsumerModule"
 ```
 
 Expected: FAIL — `WebhookQueueConsumerModule` constructor does not accept `app` argument; `pendingSucceededWork` property does not exist.
@@ -583,7 +640,7 @@ export class WebhookQueueConsumerModule implements Module {
 - [ ] **Step 7: Run all queue tests to verify they pass**
 
 ```bash
-npx jest src/modules/webhook/queue.spec.ts
+NODE_OPTIONS='--experimental-vm-modules' npx jest src/modules/webhook/queue.spec.ts
 ```
 
 Expected: all PASS
@@ -613,11 +670,22 @@ git commit -m "feat(webhook): add pending reschedule to WebhookQueueConsumerModu
 
 - [ ] **Step 1: Update module construction and registration**
 
-In `src/commands/webhook.ts`, inside `runWebhook()`, replace the block from `const consumerModule` through `app.use(partitionModule)`:
+In `src/commands/webhook.ts`, inside `runWebhook()`, replace the block starting from the `// Webhook-domain modules` comment through `app.use(partitionModule)`:
 
 **Current:**
 
 ```typescript
+// Webhook-domain modules — registered in init order (first registered
+// inits first). Application.close() runs LIFO, so partition closes FIRST
+// (registered last). LIFO close order becomes:
+//   partition → changestream → producer → consumer → redis → discord → mongo
+//
+// partition closing first DELs its instance key from Redis and publishes
+// rebalance; peers notice us leaving and start reassigning collections.
+// changestream then closes our local streams and writes the final resume
+// tokens. The brief overlap — this instance's streams still alive while
+// peers are starting to take over — is tolerated by bee-queue setId dedup
+// plus the WebhookResult idempotency layer.
 const consumerModule = new WebhookQueueConsumerModule();
 // Producer needs `app` to resolve RedisModule via app.get at init() time;
 // scheduleAndEnqueue is exposed as a method on this module (queue + redis
@@ -650,6 +718,21 @@ app.use(partitionModule);
 **Replace with:**
 
 ```typescript
+// Webhook-domain modules — registered in init order (first registered
+// inits first). Application.close() runs LIFO, so partition closes FIRST
+// (registered last). LIFO close order becomes:
+//   partition → changestream → consumer → producer → redis → discord → mongo
+//
+// partition closing first DELs its instance key from Redis and publishes
+// rebalance; peers notice us leaving and start reassigning collections.
+// changestream then closes our local streams and writes the final resume
+// tokens. consumer drains in-flight jobs and pending reschedules before
+// closing. producer closes after consumer, so scheduleAndEnqueue calls
+// issued during consumer.close() remain safe. The brief overlap — this
+// instance's streams still alive while peers are starting to take over —
+// is tolerated by bee-queue setId dedup plus the WebhookResult idempotency
+// layer.
+//
 // Producer needs `app` to resolve RedisModule via app.get at init() time;
 // scheduleAndEnqueue is exposed as a method on this module (queue + redis
 // dependencies are bound here, not threaded through callsites).
@@ -674,12 +757,6 @@ consumerModule.setHandler(async (job) => {
   }
 });
 
-// Registration order determines LIFO close sequence:
-//   partition → changestream → consumer → producer → redis → discord → mongo
-//
-// consumer drains in-flight jobs and pending reschedules before closing.
-// producer closes after consumer, so scheduleAndEnqueue calls in consumer.close()
-// are safe. partition closes first, initiating rebalance to peers.
 app.use(producerModule);
 app.use(consumerModule);
 app.use(changeStreamModule);
@@ -697,7 +774,7 @@ Expected: no errors
 - [ ] **Step 3: Run all webhook-related tests**
 
 ```bash
-npx jest src/modules/webhook/
+NODE_OPTIONS='--experimental-vm-modules' npx jest src/modules/webhook/
 ```
 
 Expected: all PASS
