@@ -448,8 +448,8 @@ describe("WebhookQueueConsumerModule", () => {
   });
 
   it("job-start DEL clears a pre-existing pending flag (delayed job reads fresh state, no reschedule)", async () => {
-    // Spec test 3: pending SET before the job started (e.g., a producer SET while the
-    // job was waiting/delayed). Worker ① DEL clears it before handler reads the doc
+    // Scenario: pending was SET before the job started (e.g., while the job was
+    // waiting/delayed). Worker ① DEL clears it before handler reads the doc
     // (which already has the latest state). ③ EXISTS=0 → no reschedule.
     const fakeQueue = new FakeQueue();
     // Stateful redis: del removes the key, exists reports its presence
@@ -480,9 +480,9 @@ describe("WebhookQueueConsumerModule", () => {
   });
 
   it("reschedules regardless of job processing duration (processing >= cooldown path)", async () => {
-    // Spec test 2: consumer always calls scheduleAndEnqueue({…, operationType:'update'})
-    // with one argument; immediate-vs-delayed branch selection lives inside the producer
-    // wrapper (WebhookQueueProducerModule.scheduleAndEnqueue) and is not tested here.
+    // Consumer always calls scheduleAndEnqueue({…, operationType:'update'}) with one
+    // argument; immediate-vs-delayed branch selection lives inside the producer wrapper
+    // (WebhookQueueProducerModule.scheduleAndEnqueue) and is not tested here.
     const fakeQueue = new FakeQueue();
     const redis = createConsumerRedis(1);
     const producer = createMockProducer();
