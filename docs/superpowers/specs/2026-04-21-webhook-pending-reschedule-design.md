@@ -60,7 +60,10 @@ Worker（queue.on("succeeded") 內，job 從 hash 移除後）:
 
 **透過 `succeeded` 事件消除殘餘 race**：bee-queue 在原子性移除 job 的 jobs hash 後才 emit `succeeded`。`succeeded` 觸發時，任何並發 producer 呼叫 `isJobInFlight` 均返回 false，會走 immediate/delayed 分支建立新 job（非 coalesce）。換言之，`succeeded` listener 執行 ③ 時，「producer 已 SET pending 但仍判斷 in-flight → coalesced」的場景已不可能發生——job 不再在 hash 中，producer 無法再 coalesce。殘餘 race **已徹底消除**。
 
-**並發 producer 在 `succeeded` 後建立新 job 的安全性**：若 `succeeded` listener 的 EXISTS 與一個 producer 的 `createJob().setId().save()` 並發，兩者可能同時嘗試建立相同 jobId 的 job，bee-queue `setId` 使用 `HSETNX` 保證只有一個 job 真正進入佇列。
+**並發 producer 在 `succeeded` 後建立新 job 的安全性**：兩種並發場景均安全：
+
+1. **不同 producer 並發**：`succeeded` listener 的 EXISTS 與另一個 producer 的 `createJob().setId().save()` 並發，兩者均嘗試建立相同 jobId 的 job，bee-queue `setId` 使用 `HSETNX` 保證只有一個 job 真正進入佇列，勝出者的 ① DEL pending，保持一致性。
+2. **同一 producer 跨越 `succeeded`**：producer SET pending → worker 剛好完成，③ 執行（EXISTS→DEL→reschedule 建立 job Jr）→ 同一 producer 繼續走 isJobInFlight=false 分支（job 已不在 hash），也建立 job Jp。Jr 與 Jp 有相同 jobId，`HSETNX` 只讓其中一個進入佇列；勝出 job 的 ① DEL 清除任何殘留 pending，行為正確。
 
 ### 為什麼「開始時 DEL」能自然區分 active 與非 active
 
@@ -200,8 +203,8 @@ async init(): Promise<void> {
 `queue.process()` 只負責 ① 與 ②；③ 移至 `queue.on("succeeded")` 中執行（此時 job 已從 hash 移除）：
 
 ```typescript
-// 新增私有成員（shutdown drain 用）
-private pendingSucceededWork = new Set<Promise<void>>();
+// shutdown drain — readonly（非 private）讓測試可直接 await pendingSucceededWork
+readonly pendingSucceededWork = new Set<Promise<void>>();
 private closed = false;
 
 async init(): Promise<void> {
@@ -262,6 +265,10 @@ async close(): Promise<void> {
 }
 ```
 
+### 多節點正確性
+
+`queue.on("succeeded")` 在 worker queue（`isWorker: true`）上是 **本地 EventEmitter emit**，不透過 Redis pub/sub 廣播。因此只有實際處理該 job 的節點會觸發 ③；其他節點不受影響。Pending flag 存於 Redis（跨節點共享），reschedule 後的新 job 進入共享佇列，任一節點均可接手處理。
+
 ### 錯誤處理規範
 
 - **① `DEL pending`（handler 前）失敗**：例外向上傳，bee-queue 重試整個 job；重試時再次執行 ① → 正確。
@@ -309,8 +316,8 @@ app.register(partitionModule)     // 4th — init last, close first
 | t=0  | A                             | 0→5         | 立即推入，worker 啟動：① DEL pending（no-op），② 讀 doc                           | —            |
 | t=1  | B                             | —           | in-flight → coalesced，SET pending                                                | "1"          |
 | t=2  | worker handler 完成（②結束）  | —           | \_finishJob multi.exec：HDEL jobs hash + PUBLISH；job 從 hash 移除                | "1"          |
-| t=2  | succeeded 事件觸發（③）       | —           | EXISTS pending="1" → DEL → scheduleAndEnqueue({…, operationType:"update"}, now=2) | cleared      |
-| t=2  | reschedule                    | 5→10        | now=2 < nextAllowed=5 → delayed, delayUntil=5                                     | —            |
+| t=2+ | succeeded 事件觸發（③）       | —           | EXISTS pending="1" → DEL → scheduleAndEnqueue({…, operationType:"update"}, now=2) | cleared      |
+| t=2+ | reschedule                    | 5→10        | now=2 < nextAllowed=5 → delayed, delayUntil=5                                     | —            |
 | t=5  | bee-queue 觸發 reschedule job | —           | ① DEL pending（no-op），② 讀最新 doc（operationType:"update"，捕捉 t=1 變更）     | —            |
 | t=7  | worker 完成                   | —           | succeeded listener：EXISTS pending=0 → 結束                                       | —            |
 
@@ -332,7 +339,7 @@ app.register(partitionModule)     // 4th — init last, close first
 | ③ scheduleAndEnqueue 返回 "coalesced"                | 此期間又有新 event 搶先建立了 job，pending 已由新 job 接手，無需補救                                                                                                                                                                                                                                                                                                                      |
 | Worker 處理時間 ≥ cooldown                           | 完成時 `now >= nextAllowed` → ③ 的 scheduleAndEnqueue 走 immediate 分支，立即推入；相鄰觸發間隔 = worker 處理時間 ≥ cooldown，不變量維持                                                                                                                                                                                                                                                  |
 | Reschedule 時 nextAllowed 已過期（key TTL 到）       | `now >= 0` → immediate 分支，正常推入                                                                                                                                                                                                                                                                                                                                                     |
-| Non-follow-update webhook                            | changeStream 只匹配 insert；同一 docId 的二次 insert 在 MongoDB 中不可能發生，故 active 期間不會有新事件觸發 coalesce，pending 不會被二次 SET。Worker ① DEL pending（no-op），③ EXISTS 返回 0，不觸發 reschedule；無副作用                                                                                                                                                                |
+| Non-follow-update webhook                            | changeStream 只匹配 insert；同一 docId 的二次 insert 在 MongoDB 中不可能發生，故 active 期間不會有新事件觸發 coalesce。Producer 於每次呼叫時均會 SET pending（WATCH loop 之前），Worker ① DEL 清除該次 SET（有效刪除，非 no-op），③ EXISTS 返回 0，不觸發 reschedule；無副作用                                                                                                            |
 
 ---
 
