@@ -157,7 +157,7 @@ for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
 
 **改動範圍**：僅 `scheduleAndEnqueue` 純函數本體（`SET pending` 一行提至 `for` loop 前）。`WebhookQueueProducerModule.scheduleAndEnqueue` wrapper 不需改動。
 
-**Non-follow-update webhook**（`followUpdate: false`）不受影響：non-follow-update 走快速路徑（直接 `createJob().setId().save()`），不進 WATCH/MULTI/EXEC 迴圈，也不進 coalesce 分支。
+**Non-follow-update webhook**（`followUpdate: false`）：`scheduleAndEnqueue` 不區分 `followUpdate`，所有呼叫均走同一 WATCH/MULTI/EXEC 路徑。因此 pending flag 同樣可能被 SET，reschedule 同樣可能觸發。但在 `processWebhookEvent` 中，`followUpdate: false` 的 webhook 永遠取得 `hasPreviousResponse = false`，reschedule 的 `operationType: "update"` 不影響發送路徑（仍走 insertUrl）。此行為在實際中風險極低，因為 non-follow-update 的 coalesce 場景（同一 docId 重複 insert）在 MongoDB 正常操作下極為罕見。
 
 ---
 
@@ -202,6 +202,7 @@ async init(): Promise<void> {
 ```typescript
 // 新增私有成員（shutdown drain 用）
 private pendingSucceededWork = new Set<Promise<void>>();
+private closed = false;
 
 async init(): Promise<void> {
   // ...（依賴取得）
@@ -223,6 +224,9 @@ async init(): Promise<void> {
   // ③ 在 job 成功完成並從 hash 移除後
   // bee-queue 在原子性移除 job 後才 emit succeeded，故 isJobInFlight 已返回 false
   this.queue.on("succeeded", (job: BeeQueue.Job<WebhookJob>) => {
+    // guard：close() timeout 後仍有 job 完成時，不再加入 pendingSucceededWork
+    // 以防呼叫已關閉的 producer；這些 job 的 pending flag 將於 TTL 後過期
+    if (this.closed) return;
     const work = (async () => {
       const jobId = buildJobId(job.data);
       const pendingKey = buildPendingKey(jobId);
@@ -249,9 +253,11 @@ async close(): Promise<void> {
   await this.queue.close(SHUTDOWN_TIMEOUT);
   // bee-queue.close() 等待 activeJobs（①② handler），但 succeeded listener 的 async work
   // 是在 activeJobs 解除後才觸發的 .then() 鏈，不在 close() 追蹤範圍內。
-  // setImmediate 讓已排隊的 microtask（succeeded emit）有機會執行並登記 work，
-  // 再統一等待全部完成後才讓 producer 關閉。
+  // setImmediate 讓已排隊的 microtask（succeeded emit）有機會執行並登記 work。
   await new Promise((resolve) => setImmediate(resolve));
+  // setImmediate 完成後設為 closed：此後的 succeeded 事件不再加入 pendingSucceededWork
+  // （適用於 close() timeout 後仍有 job 在執行的情況，這些 job 的 pending flag 將於 TTL 後過期）
+  this.closed = true;
   await Promise.allSettled(Array.from(this.pendingSucceededWork));
 }
 ```
@@ -326,15 +332,16 @@ app.register(partitionModule)     // 4th — init last, close first
 | ③ scheduleAndEnqueue 返回 "coalesced"                | 此期間又有新 event 搶先建立了 job，pending 已由新 job 接手，無需補救                                                                                                                                                                                                                                                                                                                      |
 | Worker 處理時間 ≥ cooldown                           | 完成時 `now >= nextAllowed` → ③ 的 scheduleAndEnqueue 走 immediate 分支，立即推入；相鄰觸發間隔 = worker 處理時間 ≥ cooldown，不變量維持                                                                                                                                                                                                                                                  |
 | Reschedule 時 nextAllowed 已過期（key TTL 到）       | `now >= 0` → immediate 分支，正常推入                                                                                                                                                                                                                                                                                                                                                     |
-| Non-follow-update webhook                            | pending key 不存在，DEL 與 EXISTS 均為 O(1) no-op，無副作用                                                                                                                                                                                                                                                                                                                               |
+| Non-follow-update webhook                            | changeStream 只匹配 insert；同一 docId 的二次 insert 在 MongoDB 中不可能發生，故 active 期間不會有新事件觸發 coalesce，pending 不會被二次 SET。Worker ① DEL pending（no-op），③ EXISTS 返回 0，不觸發 reschedule；無副作用                                                                                                                                                                |
 
 ---
 
 ## 測試需求
 
 1. **Active 期間有變更（處理時間 < cooldown）**：handler 暫停中（t < cooldown），producer 呼叫
-   `scheduleAndEnqueue` → 返回 `"coalesced"`，pending 存在；resolve handler → 等待 `succeeded`
-   觸發 → spy on `producer.scheduleAndEnqueue` 驗證：第一個引數
+   `scheduleAndEnqueue` → 返回 `"coalesced"`，pending 存在；resolve handler → 等待
+   `pendingSucceededWork` drain 完成（`await Promise.allSettled(consumerModule.pendingSucceededWork)`）
+   → spy on `producer.scheduleAndEnqueue` 驗證：第一個引數
    `{ ...job.data, operationType: "update" }`，`now` ≥ handler resolve 時間點，`cooldown` 為
    預設 `WEBHOOK_FOLLOW_UPDATE_COOLDOWN_MS`；被呼叫恰好一次。
 
