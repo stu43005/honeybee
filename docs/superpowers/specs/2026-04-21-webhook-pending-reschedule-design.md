@@ -38,9 +38,10 @@ Worker（queue.process() 內，執行 handler）:
 
 Worker（queue.on("succeeded") 內，job 從 hash 移除後）:
   const hasPending = await redis.exists(pendingKey)
-  if (hasPending):
+  if (hasPending > 0):
     await redis.del(pendingKey)
-    await producer.scheduleAndEnqueue(job.data)
+    await producer.scheduleAndEnqueue({ ...job.data, operationType: "update" })
+    ← reschedule 一律以 "update" 發送，因為 pending 代表文件在處理中已變更
 ```
 
 ### 為什麼 SET pending 必須在 WATCH loop 之前
@@ -156,7 +157,7 @@ for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
 
 **改動範圍**：僅 `scheduleAndEnqueue` 純函數本體（`SET pending` 一行提至 `for` loop 前）。`WebhookQueueProducerModule.scheduleAndEnqueue` wrapper 不需改動。
 
-**Non-follow-update webhook**（§3.8）不受影響：non-follow-update 走快速路徑（直接 `createJob().setId().save()`），不進 WATCH/MULTI/EXEC 迴圈，也不進 coalesce 分支。
+**Non-follow-update webhook**（`followUpdate: false`）不受影響：non-follow-update 走快速路徑（直接 `createJob().setId().save()`），不進 WATCH/MULTI/EXEC 迴圈，也不進 coalesce 分支。
 
 ---
 
@@ -199,6 +200,9 @@ async init(): Promise<void> {
 `queue.process()` 只負責 ① 與 ②；③ 移至 `queue.on("succeeded")` 中執行（此時 job 已從 hash 移除）：
 
 ```typescript
+// 新增私有成員（shutdown drain 用）
+private pendingSucceededWork = new Set<Promise<void>>();
+
 async init(): Promise<void> {
   // ...（依賴取得）
 
@@ -217,22 +221,38 @@ async init(): Promise<void> {
   });
 
   // ③ 在 job 成功完成並從 hash 移除後
-  this.queue.on("succeeded", async (job: BeeQueue.Job<WebhookJob>) => {
-    const jobId = buildJobId(job.data);
-    const pendingKey = buildPendingKey(jobId);
-
-    try {
-      const hasPending = await this.redis.exists(pendingKey);
-      if (hasPending) {
+  // bee-queue 在原子性移除 job 後才 emit succeeded，故 isJobInFlight 已返回 false
+  this.queue.on("succeeded", (job: BeeQueue.Job<WebhookJob>) => {
+    const work = (async () => {
+      const jobId = buildJobId(job.data);
+      const pendingKey = buildPendingKey(jobId);
+      const hasPending = await this.redis.exists(pendingKey); // node-redis returns number
+      if (hasPending > 0) {
         await this.redis.del(pendingKey);
-        await this.producer.scheduleAndEnqueue(job.data);
+        // reschedule 一律以 "update"：pending 代表文件在處理中已變更
+        await this.producer.scheduleAndEnqueue({
+          ...job.data,
+          operationType: "update",
+        });
         // 預設 now=Date.now()、cooldown=WEBHOOK_FOLLOW_UPDATE_COOLDOWN_MS
       }
-    } catch (error) {
+    })().catch((error) => {
       documentLog(job.data.coll, "<!> [WARN] post-job pending check failed:", error);
       // pending flag 將於 15s TTL 後過期，或由下次 changeStream 事件清除
-    }
+    });
+    this.pendingSucceededWork.add(work);
+    void work.finally(() => this.pendingSucceededWork.delete(work));
   });
+}
+
+async close(): Promise<void> {
+  await this.queue.close(SHUTDOWN_TIMEOUT);
+  // bee-queue.close() 等待 activeJobs（①② handler），但 succeeded listener 的 async work
+  // 是在 activeJobs 解除後才觸發的 .then() 鏈，不在 close() 追蹤範圍內。
+  // setImmediate 讓已排隊的 microtask（succeeded emit）有機會執行並登記 work，
+  // 再統一等待全部完成後才讓 producer 關閉。
+  await new Promise((resolve) => setImmediate(resolve));
+  await Promise.allSettled(Array.from(this.pendingSucceededWork));
 }
 ```
 
@@ -263,10 +283,12 @@ app.register(partitionModule)     // 4th — init last, close first
 
 - `partition` 先關閉：DEL instance key + 廣播 rebalance，peers 開始接管 changeStream
 - `changeStream` 關閉：drain setupQueue，close 所有 collection changeStream，**不再**呼叫 `scheduleAndEnqueue`
-- `consumer` 關閉：`queue.close(SHUTDOWN_TIMEOUT)` 等待 in-flight handler（含 ③ reschedule）完成
-- `producer` 關閉：此時 consumer 已關，`scheduleAndEnqueue` 在 ③ 中已完成或已超時
+- `consumer` 關閉：`queue.close(SHUTDOWN_TIMEOUT)` 等待 in-flight handler（①②），隨後 `setImmediate` 讓剩餘 succeeded emit 觸發，最後 `Promise.allSettled(pendingSucceededWork)` 等待所有 ③ async work 完成
+- `producer` 關閉：此時 consumer 已關，所有 ③ `scheduleAndEnqueue` 已完成，不會 use-after-close
 
-此順序確保：consumer 關閉時 producer 仍可用（③ reschedule 不會 use-after-close）。
+此順序確保：consumer 的整個 `close()` 返回前，所有 ③ reschedule 均已向 producer 提交。
+
+**注意**：bee-queue 的 `queue.close(timeout)` 只等待 `activeJobs`（handler 執行），不等待 `succeeded` listener 的 async work（`succeeded` emit 在 `_finishJob().then()` 鏈中觸發，晚於 `activeJobs` 清除）。`pendingSucceededWork` Set 追蹤這些 async work，使 `consumer.close()` 能完整 drain。
 
 **破壞性 API 變更**：`WebhookQueueConsumerModule` constructor signature 由 `()` 變為 `(app: Application)`。`src/commands/webhook.ts` 中的 `new WebhookQueueConsumerModule()` 必須更新為 `new WebhookQueueConsumerModule(app)`。
 
@@ -276,14 +298,15 @@ app.register(partitionModule)     // 4th — init last, close first
 
 **參數**：cooldown=5s，worker 處理需 2s
 
-| 時間 | 事件                          | nextAllowed | 動作                                                           | pending flag |
-| ---- | ----------------------------- | ----------- | -------------------------------------------------------------- | ------------ |
-| t=0  | A                             | 0→5         | 立即推入，worker 啟動：DEL pending（no-op），讀 doc            | —            |
-| t=1  | B                             | —           | in-flight → coalesced，SET pending                             | "1"          |
-| t=2  | worker 完成                   | —           | check pending="1" → DEL → scheduleAndEnqueue(now=2)            | cleared      |
-| t=2  | reschedule                    | 5→10        | now=2 < nextAllowed=5 → delayed, delayUntil=5                  | —            |
-| t=5  | bee-queue 觸發 reschedule job | —           | worker 啟動：DEL pending（no-op），讀最新 doc（捕捉 t=1 變更） | —            |
-| t=7  | worker 完成                   | —           | check pending → 不存在 → 結束                                  | —            |
+| 時間 | 事件                          | nextAllowed | 動作                                                                              | pending flag |
+| ---- | ----------------------------- | ----------- | --------------------------------------------------------------------------------- | ------------ |
+| t=0  | A                             | 0→5         | 立即推入，worker 啟動：① DEL pending（no-op），② 讀 doc                           | —            |
+| t=1  | B                             | —           | in-flight → coalesced，SET pending                                                | "1"          |
+| t=2  | worker handler 完成（②結束）  | —           | \_finishJob multi.exec：HDEL jobs hash + PUBLISH；job 從 hash 移除                | "1"          |
+| t=2  | succeeded 事件觸發（③）       | —           | EXISTS pending="1" → DEL → scheduleAndEnqueue({…, operationType:"update"}, now=2) | cleared      |
+| t=2  | reschedule                    | 5→10        | now=2 < nextAllowed=5 → delayed, delayUntil=5                                     | —            |
+| t=5  | bee-queue 觸發 reschedule job | —           | ① DEL pending（no-op），② 讀最新 doc（operationType:"update"，捕捉 t=1 變更）     | —            |
+| t=7  | worker 完成                   | —           | succeeded listener：EXISTS pending=0 → 結束                                       | —            |
 
 **t=1 的變更不再遺漏** ✓，相鄰觸發間隔仍 ≥5s（t=0 → t=5）✓
 
@@ -293,35 +316,48 @@ app.register(partitionModule)     // 4th — init last, close first
 
 ## 邊界情況
 
-| 情況                                                 | 行為                                                                                                                                                                                                                                                                                   |
-| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Worker crash，pending flag 已設                      | bee-queue stall 後重試；重試時 ① DEL pending，重新執行完整流程，reschedule 邏輯在重試完成後正常觸發                                                                                                                                                                                    |
-| ① DEL 失敗（Redis 瞬斷）                             | 例外向上傳，bee-queue 重試整個 job；重試時再次 DEL → 正確                                                                                                                                                                                                                              |
-| ③ scheduleAndEnqueue 失敗（`succeeded` listener 內） | catch 後 log warning；job 已完成，不觸發 bee-queue retry。pending flag 於 15s TTL 後過期，或由下次 changeStream 事件重新觸發（producer isJobInFlight=false → 建立新 job）補上                                                                                                          |
-| Handler retries 耗盡（job 永久失敗）                 | `removeOnFailure:true` 清除 job；若最後一次 retry 的 ① DEL 後有 changeStream 事件 SET pending，pending 會於 15s TTL 後孤立過期，該次變更遺漏。**已知限制**：與現有設計「Redis 故障時 save() 失敗事件可能遺漏」的可接受失敗模式一致；下次文件再次變更時會觸發新 job 補上                |
-| Producer SET pending 失敗（Redis 瞬斷）              | 例外向上傳至 `scheduleAndEnqueue` 呼叫端（changeStream handler）。changeStream handler 必須 catch 並 log error，不可靜默丟棄（同現有設計：任何 scheduleAndEnqueue 例外都需 log 後繼續）。若 job 仍 in-flight，下一個 changeStream 事件到來時會再次進入 coalesce 分支並重試 SET pending |
-| ③ scheduleAndEnqueue 返回 "coalesced"                | 此期間又有新 event 搶先建立了 job，pending 已由新 job 接手，無需補救                                                                                                                                                                                                                   |
-| Worker 處理時間 ≥ cooldown                           | 完成時 `now >= nextAllowed` → ③ 的 scheduleAndEnqueue 走 immediate 分支，立即推入；相鄰觸發間隔 = worker 處理時間 ≥ cooldown，不變量維持                                                                                                                                               |
-| Reschedule 時 nextAllowed 已過期（key TTL 到）       | `now >= 0` → immediate 分支，正常推入                                                                                                                                                                                                                                                  |
-| Non-follow-update webhook                            | pending key 不存在，DEL 與 EXISTS 均為 O(1) no-op，無副作用                                                                                                                                                                                                                            |
+| 情況                                                 | 行為                                                                                                                                                                                                                                                                                                                                                                                      |
+| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Worker crash / stall（pending 存在）                 | bee-queue stall（stallInterval=30s）後將 job 從 active 移回 waiting 並重試；重試時 ① DEL pending，② 讀最新 doc（包含 stall 期間的所有變更），③ EXISTS → 0 → 不 reschedule（已讀入最新狀態）。**Stall 期間 pending 仍可被 SET（job 仍在 hash 中）**，但只要 ② 讀到最新狀態即正確；TTL(15s) < stallInterval(30s) 時若無新事件 SET pending，stall 後 pending 已過期，但 ② 依然讀到最新 doc ✓ |
+| ① DEL 失敗（Redis 瞬斷）                             | 例外向上傳，bee-queue 重試整個 job；重試時再次 DEL → 正確                                                                                                                                                                                                                                                                                                                                 |
+| ③ scheduleAndEnqueue 失敗（`succeeded` listener 內） | catch 後 log warning；job 已完成，不觸發 bee-queue retry。pending flag 於 15s TTL 後過期，或由下次 changeStream 事件重新觸發（producer isJobInFlight=false → 建立新 job）補上                                                                                                                                                                                                             |
+| Handler retries 耗盡（job 永久失敗）                 | `removeOnFailure:true` 清除 job；若最後一次 retry 的 ① DEL 後有 changeStream 事件 SET pending，pending 會於 15s TTL 後孤立過期，該次變更遺漏。**已知限制**：與現有設計「Redis 故障時 save() 失敗事件可能遺漏」的可接受失敗模式一致；下次文件再次變更時會觸發新 job 補上                                                                                                                   |
+| Producer SET pending 失敗（Redis 瞬斷）              | 例外向上傳至 `scheduleAndEnqueue` 呼叫端（changeStream handler）。changeStream handler 必須 catch 並 log error，不可靜默丟棄（同現有設計：任何 scheduleAndEnqueue 例外都需 log 後繼續）。若 job 仍 in-flight，下一個 changeStream 事件到來時會再次進入 coalesce 分支並重試 SET pending                                                                                                    |
+| ③ scheduleAndEnqueue 返回 "coalesced"                | 此期間又有新 event 搶先建立了 job，pending 已由新 job 接手，無需補救                                                                                                                                                                                                                                                                                                                      |
+| Worker 處理時間 ≥ cooldown                           | 完成時 `now >= nextAllowed` → ③ 的 scheduleAndEnqueue 走 immediate 分支，立即推入；相鄰觸發間隔 = worker 處理時間 ≥ cooldown，不變量維持                                                                                                                                                                                                                                                  |
+| Reschedule 時 nextAllowed 已過期（key TTL 到）       | `now >= 0` → immediate 分支，正常推入                                                                                                                                                                                                                                                                                                                                                     |
+| Non-follow-update webhook                            | pending key 不存在，DEL 與 EXISTS 均為 O(1) no-op，無副作用                                                                                                                                                                                                                                                                                                                               |
 
 ---
 
 ## 測試需求
 
-1. **Active 期間有變更**：使用 `Deferred`（或 `sleep`）讓 handler 暫停，模擬 active 狀態：(a) 啟動 job，(b) handler 暫停中時 producer 呼叫 `scheduleAndEnqueue` → 返回 `"coalesced"` 且 pending key 存在，(c) resolve handler，(d) 等待 `succeeded` 事件觸發，(e) 驗證 `producer.scheduleAndEnqueue` 被呼叫一次且參數為：`job.data` 等於原 job.data（相同 webhookId/coll/docId/operationType）、`now` ≥ resolve handler 的時間點、`cooldown` 為預設 `WEBHOOK_FOLLOW_UPDATE_COOLDOWN_MS`。涵蓋 worker 處理時間 < cooldown 與 ≥ cooldown 兩種情境。
-2. **Delayed job 清除 pending**：delayed job 啟動時 DEL pending → 不觸發 reschedule（變更已被 worker 讀取）
-3. **兩次 coalesce**：primary active 期間兩次 SET pending（同一 key，冪等）→ worker 只 reschedule 一次
-4. **reschedule 後無新變更**：reschedule job 完成後 pending 不存在 → 不再 reschedule
-5. **buildPendingKey**：對任意 `WebhookJob`，`buildPendingKey(buildJobId(job))` 回傳 `webhook:pending:${webhookId}:${coll}:${docId}`，與 `buildNextKey` 共用相同 `buildJobId` 串接規則
+1. **Active 期間有變更（處理時間 < cooldown）**：handler 暫停中（t < cooldown），producer 呼叫
+   `scheduleAndEnqueue` → 返回 `"coalesced"`，pending 存在；resolve handler → 等待 `succeeded`
+   觸發 → spy on `producer.scheduleAndEnqueue` 驗證：第一個引數
+   `{ ...job.data, operationType: "update" }`，`now` ≥ handler resolve 時間點，`cooldown` 為
+   預設 `WEBHOOK_FOLLOW_UPDATE_COOLDOWN_MS`；被呼叫恰好一次。
+
+2. **Active 期間有變更（處理時間 ≥ cooldown）**：handler 執行時間 ≥ cooldown，reschedule 走
+   immediate 分支（`now >= nextAllowed`）；同上驗證第一引數 `operationType` 為 `"update"`。
+
+3. **Delayed job 清除 pending**：delayed job 啟動時 ① DEL pending → succeeded listener EXISTS → 0
+   → 不觸發 reschedule（變更在 waiting/delayed 階段，已由 ② 讀取最新狀態）。
+
+4. **兩次 coalesce**：primary active 期間兩次 SET pending（同一 key，冪等）→ worker 只 reschedule 一次。
+
+5. **reschedule 後無新變更**：reschedule job 完成後 succeeded listener EXISTS → 0 → 不再 reschedule。
+
+6. **buildPendingKey**：對任意 `WebhookJob`，`buildPendingKey(buildJobId(job))` 回傳
+   `webhook:pending:${webhookId}:${coll}:${docId}`，與 `buildNextKey` 共用相同 `buildJobId` 串接規則。
 
 ---
 
 ## 影響範圍
 
-| 元件                                | 變更                                                                                                                                                                                              |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/modules/webhook/queue.ts`      | `scheduleAndEnqueue`：SET pending 移至 WATCH loop 之前；新增 `buildPendingKey` helper                                                                                                             |
-| `src/modules/webhook/queue.ts`      | `WebhookQueueConsumerModule`：constructor `()` → `(app: Application)`（破壞性 API 變更）；`init()` 取得 redis/producer；`queue.process()` 加入 ①② 邏輯；新增 `queue.on("succeeded")` 監聽器執行 ③ |
-| `src/modules/webhook/queue.spec.ts` | 新增上述測試案例                                                                                                                                                                                  |
-| `src/commands/webhook.ts`           | `new WebhookQueueConsumerModule()` → `new WebhookQueueConsumerModule(app)`；調整 register 順序為 `producer → consumer → changeStream → partition`                                                 |
+| 元件                                | 變更                                                                                                                                                                                                                                                                                                      |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/modules/webhook/queue.ts`      | `scheduleAndEnqueue`：SET pending 移至 WATCH loop 之前；新增 `buildPendingKey` helper                                                                                                                                                                                                                     |
+| `src/modules/webhook/queue.ts`      | `WebhookQueueConsumerModule`：constructor `()` → `(app: Application)`（破壞性 API 變更）；`init()` 取得 redis/producer；`queue.process()` 加入 ①② 邏輯；新增 `queue.on("succeeded")` 監聽器執行 ③；新增 `pendingSucceededWork` Set 追蹤 async work；覆寫 `close()` 以 drain succeeded async work 後再返回 |
+| `src/modules/webhook/queue.spec.ts` | 新增上述測試案例                                                                                                                                                                                                                                                                                          |
+| `src/commands/webhook.ts`           | `new WebhookQueueConsumerModule()` → `new WebhookQueueConsumerModule(app)`；調整 register 順序為 `producer → consumer → changeStream → partition`                                                                                                                                                         |
