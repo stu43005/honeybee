@@ -69,6 +69,10 @@ export function buildNextKey(jobId: string): string {
   return `webhook:next:${jobId}`;
 }
 
+export function buildPendingKey(jobId: string): string {
+  return `webhook:pending:${jobId}`;
+}
+
 export type ScheduleResult =
   | "immediate"
   | "delayed"

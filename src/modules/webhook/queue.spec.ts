@@ -1,7 +1,7 @@
 import { describe, expect, it, jest } from "@jest/globals";
 import type BeeQueue from "bee-queue";
 import { WatchError, type RedisClientType } from "redis";
-import { scheduleAndEnqueue } from "./queue.js";
+import { scheduleAndEnqueue, buildJobId, buildPendingKey } from "./queue.js";
 import type { WebhookJob } from "../../interfaces.js";
 
 // Each exec step is either "ok" (resolves) or "watch-abort" (throws WatchError).
@@ -187,5 +187,18 @@ describe("scheduleAndEnqueue", () => {
         5000
       )
     ).rejects.toThrow("connection lost");
+  });
+});
+
+describe("buildPendingKey", () => {
+  it("returns webhook:pending: prefixed jobId", () => {
+    const job: WebhookJob = {
+      webhookId: "wh1",
+      coll: "chats",
+      docId: "doc1",
+      operationType: "update",
+    };
+    const jobId = buildJobId(job);
+    expect(buildPendingKey(jobId)).toBe("webhook:pending:wh1:chats:doc1");
   });
 });
