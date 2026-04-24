@@ -432,8 +432,8 @@ describe("WebhookQueueConsumerModule", () => {
     // key (idempotent in Redis). The succeeded listener DELs the flag before
     // rescheduling, so a second EXISTS returns 0 (the DEL already ran) — no double-reschedule.
     const fakeQueue = new FakeQueue();
-    // Stateful redis: the listener's DEL is what drives EXISTS→0 on the second emit
-    const pendingKeys = new Set<string>([pendingKey]); // pending set during active processing
+    // Stateful redis: starts empty; handler simulates two coalesced SETs; listener DEL drives EXISTS→0
+    const pendingKeys = new Set<string>();
     const redis: ConsumerRedis = {
       del: jest
         .fn<(key: string) => Promise<number>>()
@@ -446,10 +446,24 @@ describe("WebhookQueueConsumerModule", () => {
         .mockImplementation((k) => Promise.resolve(pendingKeys.has(k) ? 1 : 0)),
     };
     const producer = createMockProducer();
-    const mod = makeModule(redis, producer, fakeQueue);
+    const mockApp = createConsumerApp(redis, producer);
+    const mod = new WebhookQueueConsumerModule(
+      mockApp as unknown as Application,
+      () => fakeQueue as unknown as BeeQueue<WebhookJob>
+    );
+    // Handler simulates two coalesced changeStream events SETting the same pending key
+    // while the job is active (two SETs of the same key are idempotent in Redis).
+    mod.setHandler(
+      jest
+        .fn<(job: BeeQueue.Job<WebhookJob>) => Promise<void>>()
+        .mockImplementation(async () => {
+          pendingKeys.add(pendingKey);
+          pendingKeys.add(pendingKey); // idempotent second SET
+        })
+    );
     await mod.init();
 
-    await fakeQueue.triggerJob(jobData); // job-start DEL: no-op (key added back above for this test)
+    await fakeQueue.triggerJob(jobData); // job-start DEL: no-op (empty set); handler adds key twice
 
     fakeQueue.emitSucceeded(jobData); // listener: EXISTS=1 → DEL + reschedule
     const snap1 = Array.from(mod.pendingSucceededWork);
@@ -492,26 +506,6 @@ describe("WebhookQueueConsumerModule", () => {
 
     expect(redis.del).toHaveBeenCalledWith(pendingKey);
     expect(producer.scheduleAndEnqueue).not.toHaveBeenCalled();
-  });
-
-  it("reschedules regardless of job processing duration (processing >= cooldown path)", async () => {
-    // Consumer always calls scheduleAndEnqueue({…, operationType:'update'}) with one
-    // argument; immediate-vs-delayed branch selection lives inside the producer wrapper
-    // (WebhookQueueProducerModule.scheduleAndEnqueue) and is not tested here.
-    const fakeQueue = new FakeQueue();
-    const redis = createConsumerRedis(1);
-    const producer = createMockProducer();
-    const mod = makeModule(redis, producer, fakeQueue);
-    await mod.init();
-
-    await fakeQueue.triggerJob(jobData);
-    fakeQueue.emitSucceeded(jobData);
-    await Promise.allSettled(Array.from(mod.pendingSucceededWork));
-
-    expect(producer.scheduleAndEnqueue).toHaveBeenCalledTimes(1);
-    expect(producer.scheduleAndEnqueue).toHaveBeenCalledWith(
-      expect.objectContaining({ ...jobData, operationType: "update" })
-    );
   });
 
   it("close() drains succeeded work registered during microtask flush (setImmediate gap)", async () => {
