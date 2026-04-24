@@ -8,9 +8,7 @@ metadata:
     app.kubernetes.io/name: honeybee
     app.kubernetes.io/version: dev
 spec:
-  strategy:
-    type: Recreate
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: webhook
