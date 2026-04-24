@@ -421,12 +421,12 @@ describe("WebhookQueueConsumerModule", () => {
 
   it("pending DEL in succeeded listener prevents double-reschedule (multiple coalesced SETs → one reschedule)", async () => {
     // Multiple changeStream events during active processing each SET the same pending
-    // key (idempotent in Redis). ③ DELs the flag before rescheduling, so a second
-    // EXISTS call on the same key returns 0 — no double-reschedule.
+    // key (idempotent in Redis). The succeeded listener DELs the flag before
+    // rescheduling, so a second EXISTS call on the same key returns 0 — no double-reschedule.
     const fakeQueue = new FakeQueue();
     const redis = createConsumerRedis(0);
     let existsCallCount = 0;
-    const existsValues = [1, 0]; // first call: pending present; second call: already DELed by ③
+    const existsValues = [1, 0]; // first call: pending present; second call: already cleared by succeeded listener
     redis.exists.mockImplementation(() =>
       Promise.resolve(existsValues[existsCallCount++] ?? 0)
     );
@@ -440,7 +440,7 @@ describe("WebhookQueueConsumerModule", () => {
     const snap1 = Array.from(mod.pendingSucceededWork);
     await Promise.allSettled(snap1);
 
-    fakeQueue.emitSucceeded(jobData); // second check: EXISTS=0 (DELed by ③) → no reschedule
+    fakeQueue.emitSucceeded(jobData); // second check: EXISTS=0 (cleared by prior reschedule) → no reschedule
     const snap2 = Array.from(mod.pendingSucceededWork);
     await Promise.allSettled(snap2);
 
@@ -449,8 +449,8 @@ describe("WebhookQueueConsumerModule", () => {
 
   it("job-start DEL clears a pre-existing pending flag (delayed job reads fresh state, no reschedule)", async () => {
     // Scenario: pending was SET before the job started (e.g., while the job was
-    // waiting/delayed). Worker ① DEL clears it before handler reads the doc
-    // (which already has the latest state). ③ EXISTS=0 → no reschedule.
+    // waiting/delayed). The job-start DEL clears it before the handler reads the doc
+    // (which already has the latest state). The post-job EXISTS check returns 0 — no reschedule.
     const fakeQueue = new FakeQueue();
     // Stateful redis: del removes the key, exists reports its presence
     const pendingKeys = new Set<string>([pendingKey]); // pre-existing pending
@@ -469,9 +469,9 @@ describe("WebhookQueueConsumerModule", () => {
     const mod = makeModule(redis, producer, fakeQueue);
     await mod.init();
 
-    // ① DEL clears the pre-existing pending flag before handler runs
+    // Job-start DEL clears the pre-existing pending flag before handler runs
     await fakeQueue.triggerJob(jobData);
-    // ③ EXISTS=0 (DELed by ①) → no reschedule
+    // Post-job EXISTS=0 (cleared by job-start DEL) → no reschedule
     fakeQueue.emitSucceeded(jobData);
     await Promise.allSettled(Array.from(mod.pendingSucceededWork));
 
