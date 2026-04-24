@@ -188,6 +188,36 @@ describe("scheduleAndEnqueue", () => {
       )
     ).rejects.toThrow("connection lost");
   });
+
+  it("sets pending key before entering WATCH loop", async () => {
+    const callOrder: string[] = [];
+    const redis = createMockRedis(null);
+    (
+      redis.set as jest.Mock<(key: string) => Promise<string>>
+    ).mockImplementation((key: string) => {
+      callOrder.push(`set:${key}`);
+      return Promise.resolve("OK");
+    });
+    (redis.watch as jest.Mock<() => Promise<string>>).mockImplementation(() => {
+      callOrder.push("watch");
+      return Promise.resolve("OK");
+    });
+
+    const queue = createMockQueue(false);
+    await scheduleAndEnqueue(
+      queue as unknown as BeeQueue<WebhookJob>,
+      redis as unknown as RedisClientType,
+      sampleJob,
+      1_000_000,
+      5000
+    );
+
+    const pendingKey = buildPendingKey(buildJobId(sampleJob));
+    const setPendingIdx = callOrder.indexOf(`set:${pendingKey}`);
+    const watchIdx = callOrder.indexOf("watch");
+    expect(setPendingIdx).toBeGreaterThanOrEqual(0);
+    expect(setPendingIdx).toBeLessThan(watchIdx);
+  });
 });
 
 describe("buildPendingKey", () => {

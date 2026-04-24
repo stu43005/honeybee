@@ -101,6 +101,11 @@ export async function scheduleAndEnqueue(
 ): Promise<ScheduleResult> {
   const jobId = buildJobId(job);
   const nextKey = buildNextKey(jobId);
+  const pendingKey = buildPendingKey(jobId);
+  // SET before WATCH loop: one write regardless of WatchError retries, keeps pending race window minimal
+  await redis.set(pendingKey, "1", {
+    PX: WEBHOOK_FOLLOW_UPDATE_COOLDOWN_KEY_TTL_MS,
+  });
   let lastNextAllowed = 0;
   const MAX_RETRIES = 5;
 
