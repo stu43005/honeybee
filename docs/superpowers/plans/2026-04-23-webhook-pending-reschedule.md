@@ -254,10 +254,10 @@ In `src/modules/webhook/queue.spec.ts`, append the following after the `createMo
 
 class FakeQueue {
   private processHandler:
-    | ((job: { data: WebhookJob }) => Promise<void>)
+    | ((job: BeeQueue.Job<WebhookJob>) => Promise<void>)
     | null = null;
   private readonly succeededHandlers: Array<
-    (job: { data: WebhookJob }) => void
+    (job: BeeQueue.Job<WebhookJob>) => void
   > = [];
 
   readonly ready = jest.fn<() => Promise<void>>().mockResolvedValue(undefined);
@@ -268,12 +268,12 @@ class FakeQueue {
 
   process(
     _concurrency: number,
-    handler: (job: { data: WebhookJob }) => Promise<void>
+    handler: (job: BeeQueue.Job<WebhookJob>) => Promise<void>
   ): void {
     this.processHandler = handler;
   }
 
-  on(event: string, handler: (job: { data: WebhookJob }) => void): this {
+  on(event: string, handler: (job: BeeQueue.Job<WebhookJob>) => void): this {
     if (event === "succeeded") this.succeededHandlers.push(handler);
     return this;
   }
@@ -281,11 +281,14 @@ class FakeQueue {
   async triggerJob(jobData: WebhookJob): Promise<void> {
     if (!this.processHandler)
       throw new Error("FakeQueue: no process handler registered");
-    await this.processHandler({ data: jobData });
+    await this.processHandler({
+      data: jobData,
+    } as unknown as BeeQueue.Job<WebhookJob>);
   }
 
   emitSucceeded(jobData: WebhookJob): void {
-    for (const h of this.succeededHandlers) h({ data: jobData });
+    for (const h of this.succeededHandlers)
+      h({ data: jobData } as unknown as BeeQueue.Job<WebhookJob>);
   }
 }
 
@@ -352,7 +355,11 @@ describe("WebhookQueueConsumerModule", () => {
       mockApp as unknown as Application,
       () => fakeQueue as unknown as BeeQueue<WebhookJob>
     );
-    mod.setHandler(jest.fn<() => Promise<void>>().mockResolvedValue(undefined));
+    mod.setHandler(
+      jest
+        .fn<(job: BeeQueue.Job<WebhookJob>) => Promise<void>>()
+        .mockResolvedValue(undefined)
+    );
     return mod;
   }
 
@@ -369,17 +376,18 @@ describe("WebhookQueueConsumerModule", () => {
     const mod = makeModule(redis, producer, fakeQueue);
     // Override handler to record its invocation order
     mod.setHandler(
-      jest.fn<() => Promise<void>>().mockImplementation(() => {
-        callOrder.push("handler");
-        return Promise.resolve();
-      })
+      jest
+        .fn<(job: BeeQueue.Job<WebhookJob>) => Promise<void>>()
+        .mockImplementation(() => {
+          callOrder.push("handler");
+          return Promise.resolve();
+        })
     );
     await mod.init();
 
     await fakeQueue.triggerJob(jobData);
 
-    expect(callOrder[0]).toBe(`del:${pendingKey}`);
-    expect(callOrder[1]).toBe("handler");
+    expect(callOrder).toEqual([`del:${pendingKey}`, "handler"]);
   });
 
   it("reschedules with operationType='update' when pending flag exists at job completion", async () => {
@@ -422,25 +430,32 @@ describe("WebhookQueueConsumerModule", () => {
   it("pending DEL in succeeded listener prevents double-reschedule (multiple coalesced SETs → one reschedule)", async () => {
     // Multiple changeStream events during active processing each SET the same pending
     // key (idempotent in Redis). The succeeded listener DELs the flag before
-    // rescheduling, so a second EXISTS call on the same key returns 0 — no double-reschedule.
+    // rescheduling, so a second EXISTS returns 0 (the DEL already ran) — no double-reschedule.
     const fakeQueue = new FakeQueue();
-    const redis = createConsumerRedis(0);
-    let existsCallCount = 0;
-    const existsValues = [1, 0]; // first call: pending present; second call: already cleared by succeeded listener
-    redis.exists.mockImplementation(() =>
-      Promise.resolve(existsValues[existsCallCount++] ?? 0)
-    );
+    // Stateful redis: the listener's DEL is what drives EXISTS→0 on the second emit
+    const pendingKeys = new Set<string>([pendingKey]); // pending set during active processing
+    const redis: ConsumerRedis = {
+      del: jest
+        .fn<(key: string) => Promise<number>>()
+        .mockImplementation((k) => {
+          const had = pendingKeys.delete(k);
+          return Promise.resolve(had ? 1 : 0);
+        }),
+      exists: jest
+        .fn<(key: string) => Promise<number>>()
+        .mockImplementation((k) => Promise.resolve(pendingKeys.has(k) ? 1 : 0)),
+    };
     const producer = createMockProducer();
     const mod = makeModule(redis, producer, fakeQueue);
     await mod.init();
 
-    await fakeQueue.triggerJob(jobData);
+    await fakeQueue.triggerJob(jobData); // job-start DEL: no-op (key added back above for this test)
 
-    fakeQueue.emitSucceeded(jobData); // first check: EXISTS=1 → reschedule + DEL
+    fakeQueue.emitSucceeded(jobData); // listener: EXISTS=1 → DEL + reschedule
     const snap1 = Array.from(mod.pendingSucceededWork);
     await Promise.allSettled(snap1);
 
-    fakeQueue.emitSucceeded(jobData); // second check: EXISTS=0 (cleared by prior reschedule) → no reschedule
+    fakeQueue.emitSucceeded(jobData); // listener: EXISTS=0 (DELed by first reschedule) → no reschedule
     const snap2 = Array.from(mod.pendingSucceededWork);
     await Promise.allSettled(snap2);
 
@@ -499,7 +514,9 @@ describe("WebhookQueueConsumerModule", () => {
     );
   });
 
-  it("close() drains pending succeeded work before returning", async () => {
+  it("close() drains succeeded work registered during microtask flush (setImmediate gap)", async () => {
+    // close() must yield via setImmediate so succeeded emits queued as microtasks
+    // during queue.close() can register their work before closed=true is set.
     const fakeQueue = new FakeQueue();
     const redis = createConsumerRedis(1); // pending exists
     const producer = createMockProducer();
@@ -507,12 +524,28 @@ describe("WebhookQueueConsumerModule", () => {
     await mod.init();
 
     await fakeQueue.triggerJob(jobData);
-    fakeQueue.emitSucceeded(jobData);
+    // Schedule the emit as a microtask racing with close() — exercises the setImmediate gap
+    queueMicrotask(() => fakeQueue.emitSucceeded(jobData));
 
     await mod.close();
 
     // Producer must have been called before close() returned
     expect(producer.scheduleAndEnqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores succeeded events fired after close() completes", async () => {
+    const fakeQueue = new FakeQueue();
+    const redis = createConsumerRedis(1); // pending exists
+    const producer = createMockProducer();
+    const mod = makeModule(redis, producer, fakeQueue);
+    await mod.init();
+
+    await mod.close();
+
+    fakeQueue.emitSucceeded(jobData);
+    expect(mod.pendingSucceededWork.size).toBe(0);
+    await new Promise<void>((r) => setImmediate(r));
+    expect(producer.scheduleAndEnqueue).not.toHaveBeenCalled();
   });
 });
 ```
@@ -523,7 +556,7 @@ describe("WebhookQueueConsumerModule", () => {
 NODE_OPTIONS='--experimental-vm-modules' npx jest src/modules/webhook/queue.spec.ts --testNamePattern="WebhookQueueConsumerModule"
 ```
 
-Expected: FAIL — `WebhookQueueConsumerModule` constructor does not accept `app` argument; `pendingSucceededWork` property does not exist.
+Expected: FAIL — The new tests reference `WebhookQueueConsumerModule` APIs (constructor accepting `app` + `queueFactory`, `pendingSucceededWork` property, `close()` draining, `setHandler`/`init` flow) that do not yet exist or do not match the current implementation. Type errors or runtime errors are both acceptable failure signals.
 
 - [ ] **Step 5: Add `documentLog` import to `queue.ts`**
 
@@ -538,6 +571,20 @@ import { documentLog } from "../db.js";
 In `src/modules/webhook/queue.ts`, replace the entire `WebhookQueueConsumerModule` class (from `export class WebhookQueueConsumerModule` through its closing `}`) with:
 
 ```typescript
+/**
+ * Application module that manages the bee-queue worker lifecycle for this
+ * instance, plus the pending-flag reschedule mechanism.
+ *
+ * Registration order: must be registered AFTER RedisModule and
+ * WebhookQueueProducerModule. LIFO close means this module closes BEFORE the
+ * producer, guaranteeing that all reschedule calls emitted during drain complete
+ * while the producer's queue connection is still alive.
+ *
+ * Shutdown: close() first waits for bee-queue to drain in-flight handlers, then
+ * yields via setImmediate so queued `succeeded` microtasks can register their
+ * work, then marks the module closed (subsequent emits are ignored), then awaits
+ * all registered post-job work via Promise.allSettled.
+ */
 export class WebhookQueueConsumerModule implements Module {
   public readonly name = "webhook-queue-consumer";
   public isInit = false;
@@ -608,7 +655,7 @@ export class WebhookQueueConsumerModule implements Module {
         }
       })().catch((error) => {
         documentLog(
-          job.data.coll,
+          buildJobId(job.data),
           "<!> [WARN] post-job pending check failed:",
           error
         );
@@ -657,7 +704,7 @@ Expected: no errors
 
 ```bash
 git add src/modules/webhook/queue.ts src/modules/webhook/queue.spec.ts
-git commit -m "feat(webhook): add pending reschedule to WebhookQueueConsumerModule"
+git commit -m "feat(webhook): add pending reschedule + graceful drain to consumer module"
 ```
 
 ---
