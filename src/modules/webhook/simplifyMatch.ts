@@ -146,12 +146,32 @@ function tryMerge(a: Branch, b: Branch): Branch | null {
   const va = a.get(k)!;
   const vb = b.get(k)!;
 
+  // Rule 3: complementary in/nin (equal sets) → drop K
+  if (
+    ((va.kind === "in" && vb.kind === "nin") ||
+      (va.kind === "nin" && vb.kind === "in")) &&
+    setEqualSorted(va.set, vb.set)
+  ) {
+    const merged = new Map(a);
+    merged.delete(k);
+    return merged;
+  }
+
+  // Rule 3: complementary exists → drop K
+  if (va.kind === "exists" && vb.kind === "exists" && va.value !== vb.value) {
+    const merged = new Map(a);
+    merged.delete(k);
+    return merged;
+  }
+
+  // Rule 2: in ∪ in
   if (va.kind === "in" && vb.kind === "in") {
     const merged = new Map(a);
     merged.set(k, { kind: "in", set: setUnion(va.set, vb.set) });
     return merged;
   }
 
+  // Rule 2: nin ∩ nin
   if (va.kind === "nin" && vb.kind === "nin") {
     const inter = setIntersection(va.set, vb.set);
     const merged = new Map(a);
