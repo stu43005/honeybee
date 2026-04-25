@@ -173,6 +173,7 @@ export class WebhookChangeStreamModule implements Module {
         if (
           existing &&
           existing.changeStream.closed === false &&
+          webhooks.length === existing.webhooks.length &&
           isEqual(rawBranches, existing.rawBranches)
         ) {
           existing.webhooks = webhooks;
