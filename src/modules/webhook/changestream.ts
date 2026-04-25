@@ -16,13 +16,14 @@ import type { Module } from "../module.js";
 import { RedisModule } from "../redis.js";
 import { WebhookPartitionModule } from "./partition.js";
 import { WebhookQueueProducerModule } from "./queue.js";
+import { simplifyOrBranches } from "./simplifyMatch.js";
 
 const RESUME_TOKEN_KEY_PREFIX = "webhook:resumetoken:";
 
 interface CollectionState {
   changeStream: mongo.ChangeStream;
   tokenSaveInterval: NodeJS.Timeout;
-  changeStreamMatch: any;
+  rawBranches: any[];
   webhooks: DocumentType<Webhook>[];
 }
 
@@ -167,20 +168,40 @@ export class WebhookChangeStreamModule implements Module {
       // 2) Open or reconfigure assigned collections
       for (const coll of assigned) {
         const webhooks = byColl[coll].map(({ webhook }) => webhook);
-        const match = this.buildMatch(webhooks);
+        const rawBranches = this.buildRawBranches(webhooks);
         const existing = this.collections.get(coll);
         if (
           existing &&
           existing.changeStream.closed === false &&
-          isEqual(match, existing.changeStreamMatch)
+          isEqual(rawBranches, existing.rawBranches)
         ) {
-          // same match + still open: just refresh webhooks reference
           existing.webhooks = webhooks;
           continue;
         }
-        // new coll or match changed: close (if any) and reopen
+        const simplified = simplifyOrBranches(rawBranches);
+        if (simplified.length === 0) {
+          // Defensive: today's simplifier never drops branches, but a future rule
+          // change could regress. An empty $or would forward every event silently,
+          // so fail fast instead.
+          throw new Error(
+            `simplifyOrBranches dropped all ${rawBranches.length} branch(es) for "${coll}" — simplifier regression`
+          );
+        }
+        const match =
+          simplified.length === 1 ? simplified[0] : { $or: simplified };
         if (existing) await this.closeCollection(coll);
-        await this.openCollection(coll, webhooks, match);
+        const opened = await this.openCollection(
+          coll,
+          webhooks,
+          rawBranches,
+          match
+        );
+        if (opened) {
+          documentLog(
+            coll,
+            `start listening (branches: ${rawBranches.length} → ${simplified.length})`
+          );
+        }
       }
     } catch (error) {
       documentLog("global", "<!> [FATAL] Unable to setup webhooks.", error);
@@ -188,17 +209,15 @@ export class WebhookChangeStreamModule implements Module {
     }
   }
 
-  private buildMatch(webhooks: DocumentType<Webhook>[]): any {
-    return {
-      $or: webhooks.map((webhook) =>
-        flatObjectKey({
-          operationType: webhook.followUpdate
-            ? { $in: ["insert", "update"] }
-            : "insert",
-          ...setIfDefine("fullDocument", webhook.match),
-        })
-      ),
-    };
+  private buildRawBranches(webhooks: DocumentType<Webhook>[]): any[] {
+    return webhooks.map((webhook) =>
+      flatObjectKey({
+        operationType: webhook.followUpdate
+          ? { $in: ["insert", "update"] }
+          : "insert",
+        ...setIfDefine("fullDocument", webhook.match),
+      })
+    );
   }
 
   private validateWebhook(webhook: DocumentType<Webhook>): boolean {
@@ -217,15 +236,16 @@ export class WebhookChangeStreamModule implements Module {
   private async openCollection(
     coll: string,
     webhooks: DocumentType<Webhook>[],
+    rawBranches: any[],
     match: any
-  ): Promise<void> {
+  ): Promise<boolean> {
     const model = getModelByCollectionName(coll);
     if (!model) {
       documentLog(
         coll,
         `<!> [ERROR] Unable to get model (unknown collection "${coll}")`
       );
-      return;
+      return false;
     }
     const resumeAfter = await this.loadResumeToken(coll);
     const changeStream = model.watch([{ $match: match }], {
@@ -249,10 +269,10 @@ export class WebhookChangeStreamModule implements Module {
     this.collections.set(coll, {
       changeStream,
       tokenSaveInterval,
-      changeStreamMatch: match,
+      rawBranches,
       webhooks,
     });
-    documentLog(coll, `start listening (match length: ${match.$or.length})`);
+    return true;
   }
 
   private async closeCollection(coll: string): Promise<void> {
