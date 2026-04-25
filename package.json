@@ -52,10 +52,12 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
+    "@types/diff": "^7.0.2",
     "@types/express": "^4.17.21",
     "@types/lodash-es": "^4.17.12",
     "@types/node": "^24.12.2",
     "@types/node-fetch": "^2.6.11",
+    "diff": "^9.0.0",
     "eslint": "^9.39.4",
     "eslint-config-prettier": "^9.1.2",
     "jest": "^29.7.0",
