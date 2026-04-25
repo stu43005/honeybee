@@ -186,6 +186,13 @@ function tryMerge(a: Branch, b: Branch): Branch | null {
   return null;
 }
 
+// Equivalence-preserving but not order-confluent: reordering the same input
+// set can produce structurally different (but logically equivalent) output
+// because Rule 2 and Rule 3 race on triples like
+// `[{a:"x"}, {a:{$ne:"x"}}, {a:"y"}]`. Callers must not rely on byte-equal
+// output across reorderings — only on equivalence. The change-stream
+// reconcile diff is computed on raw branches before simplification, which
+// sidesteps this.
 export function simplifyOrBranches(
   branches: ReadonlyArray<Record<string, unknown>>
 ): Record<string, unknown>[] {

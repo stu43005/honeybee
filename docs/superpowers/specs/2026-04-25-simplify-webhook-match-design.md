@@ -186,12 +186,22 @@ repeat:
 ```
 
 The pair iteration order is fixed (ascending `i`, then ascending `j`) so the
-output is deterministic regardless of which mergeable pairs exist in the
-input. Different iteration orders may produce different intermediate states
-but the final fixpoint shape is the same up to canonicalization, because the
-merge rules form a confluent rewriting system on canonical kinds. The fixed
-order pins down the exact intermediate sequence and therefore the exact
-output.
+output is **deterministic for a fixed input order**. The merge rules are
+**not** order-confluent across reorderings of the same input set: Rule 2 and
+Rule 3 race on triples like `{ {a: "x"}, {a: {$ne: "x"}}, {a: "y"} }`,
+where pair (0, 1) under one ordering fires Rule 3 first (drop `a`, yielding
+`[{}, {a: "y"}]`) while a different ordering fires Rule 2 in∪in first on a
+different pair (yielding `[{a: {$in: ["x", "y"]}}, {a: {$ne: "x"}}]`). Both
+outputs are logically equivalent — every match-set–preservation property is
+upheld — but they are not deeply equal.
+
+This is acceptable because the reconcile diff in
+`WebhookChangeStreamModule` is computed on **raw branches** before
+simplification (see "Integration with WebhookChangeStreamModule" below).
+`buildRawBranches` is itself deterministic given a fixed webhook list, so
+the reconcile loop never sees the simplifier's order-sensitivity. Do not
+rely on `simplifyOrBranches` returning byte-identical output for reorderings
+of the same input set — only on the equivalence guarantee.
 
 Bounded by `O(n²)` per pass and at most `n - 1` successful merges, giving an
 upper bound of `O(n³)` for the overall loop. Webhook counts per collection
@@ -251,9 +261,13 @@ The output preserves the relative order of surviving branches from the input.
 When a merge replaces `branches[i]` and removes `branches[j]`, the merged
 branch occupies position `i`. Internal arrays inside merged values
 (`$in` / `$nin` element lists) are sorted by a deterministic comparator
-(JSON-stringify ascending) so that two equivalent inputs produce identical
-output regardless of original branch ordering. This determinism matters for
-the reconcile diff in the change-stream module.
+(JSON-stringify ascending) so the canonical form of each surviving value is
+independent of input order. This guarantees byte-identical output across
+runs **for a fixed input order**, but does not guarantee byte-identical
+output across reorderings of the same input set (see the "not order-confluent"
+caveat under the fixpoint loop above). The reconcile diff in the
+change-stream module sidesteps this by diffing raw branches, not simplified
+output.
 
 ## Integration with WebhookChangeStreamModule
 
