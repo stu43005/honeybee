@@ -52,3 +52,103 @@ describe("simplifyOrBranches — Rule 1 (dedupe)", () => {
     expect(out).toEqual([{ a: { $ne: "x" } }]);
   });
 });
+
+describe("simplifyOrBranches — Rule 2 (single-key merge)", () => {
+  it("merges two scalar branches differing on one key into $in", () => {
+    const out = simplifyOrBranches([
+      { a: "x", b: 1 },
+      { a: "y", b: 1 },
+    ]);
+    expect(out).toEqual([{ a: { $in: ["x", "y"] }, b: 1 }]);
+  });
+
+  it("merges scalar with $in", () => {
+    const out = simplifyOrBranches([
+      { a: "x", b: 1 },
+      { a: { $in: ["y", "z"] }, b: 1 },
+    ]);
+    expect(out).toEqual([{ a: { $in: ["x", "y", "z"] }, b: 1 }]);
+  });
+
+  it("merges $in with $in deduping overlap", () => {
+    const out = simplifyOrBranches([
+      { a: { $in: ["x", "y"] }, b: 1 },
+      { a: { $in: ["y", "z"] }, b: 1 },
+    ]);
+    expect(out).toEqual([{ a: { $in: ["x", "y", "z"] }, b: 1 }]);
+  });
+
+  it("merges two $nin branches into $nin of intersection", () => {
+    const out = simplifyOrBranches([
+      { a: { $nin: ["x", "y"] }, b: 1 },
+      { a: { $nin: ["y", "z"] }, b: 1 },
+    ]);
+    expect(out).toEqual([{ a: { $ne: "y" }, b: 1 }]);
+  });
+
+  it("drops the key when $nin intersection is empty", () => {
+    const out = simplifyOrBranches([
+      { a: { $nin: ["x"] }, b: 1 },
+      { a: { $nin: ["y"] }, b: 1 },
+    ]);
+    expect(out).toEqual([{ b: 1 }]);
+  });
+
+  it("merges $ne with $ne (canonicalized to $nin)", () => {
+    const out = simplifyOrBranches([
+      { a: { $ne: "x" }, b: 1 },
+      { a: { $ne: "y" }, b: 1 },
+    ]);
+    // $ne x ∨ $ne y → $nin (intersection of {x} and {y}) = $nin [] → drop key
+    expect(out).toEqual([{ b: 1 }]);
+  });
+
+  it("merges $ne with $ne when both are the same value (dedupes)", () => {
+    const out = simplifyOrBranches([
+      { a: { $ne: "x" }, b: 1 },
+      { a: { $ne: "x" }, b: 1 },
+    ]);
+    expect(out).toEqual([{ a: { $ne: "x" }, b: 1 }]);
+  });
+
+  it("does not merge branches with different key sets", () => {
+    const out = simplifyOrBranches([
+      { a: "x", b: 1 },
+      { a: "y", c: 2 },
+    ]);
+    expect(out).toHaveLength(2);
+  });
+
+  it("does not merge branches differing in two keys", () => {
+    const out = simplifyOrBranches([
+      { a: "x", b: 1 },
+      { a: "y", b: 2 },
+    ]);
+    expect(out).toHaveLength(2);
+  });
+
+  it("does not merge $in with $nin when sets are unequal", () => {
+    const out = simplifyOrBranches([
+      { a: { $in: ["x"] }, b: 1 },
+      { a: { $nin: ["y"] }, b: 1 },
+    ]);
+    expect(out).toHaveLength(2);
+  });
+
+  it("does not merge opaque with anything other than itself", () => {
+    const out = simplifyOrBranches([
+      { a: { $gt: 5 }, b: 1 },
+      { a: "x", b: 1 },
+    ]);
+    expect(out).toHaveLength(2);
+  });
+
+  it("collapses three scalar branches via fixpoint", () => {
+    const out = simplifyOrBranches([
+      { a: "x", b: 1 },
+      { a: "y", b: 1 },
+      { a: "z", b: 1 },
+    ]);
+    expect(out).toEqual([{ a: { $in: ["x", "y", "z"] }, b: 1 }]);
+  });
+});

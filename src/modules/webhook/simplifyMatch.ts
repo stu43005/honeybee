@@ -77,6 +77,15 @@ function setEqualSorted(a: unknown[], b: unknown[]): boolean {
   return true;
 }
 
+function setUnion(a: unknown[], b: unknown[]): unknown[] {
+  return sortDedupedSet([...a, ...b]);
+}
+
+function setIntersection(a: unknown[], b: unknown[]): unknown[] {
+  const bKeys = new Set(b.map((x) => JSON.stringify(x)));
+  return a.filter((x) => bKeys.has(JSON.stringify(x)));
+}
+
 function canonValueEqual(a: Canon, b: Canon): boolean {
   if (a.kind !== b.kind) return false;
   if (a.kind === "in" && b.kind === "in") return setEqualSorted(a.set, b.set);
@@ -124,6 +133,36 @@ function tryMerge(a: Branch, b: Branch): Branch | null {
   if (branchEqual(a, b)) {
     return new Map(a);
   }
+  if (!branchKeysEqual(a, b)) return null;
+
+  const diffKeys: string[] = [];
+  for (const [k, va] of a) {
+    const vb = b.get(k)!;
+    if (!canonValueEqual(va, vb)) diffKeys.push(k);
+  }
+  if (diffKeys.length !== 1) return null;
+
+  const k = diffKeys[0];
+  const va = a.get(k)!;
+  const vb = b.get(k)!;
+
+  if (va.kind === "in" && vb.kind === "in") {
+    const merged = new Map(a);
+    merged.set(k, { kind: "in", set: setUnion(va.set, vb.set) });
+    return merged;
+  }
+
+  if (va.kind === "nin" && vb.kind === "nin") {
+    const inter = setIntersection(va.set, vb.set);
+    const merged = new Map(a);
+    if (inter.length === 0) {
+      merged.delete(k);
+    } else {
+      merged.set(k, { kind: "nin", set: sortDedupedSet(inter) });
+    }
+    return merged;
+  }
+
   return null;
 }
 
