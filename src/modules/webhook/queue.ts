@@ -11,6 +11,7 @@ import type { WebhookJob } from "../../interfaces.js";
 import type { Application } from "../application.js";
 import type { Module } from "../module.js";
 import { RedisModule } from "../redis.js";
+import { documentLog } from "../db.js";
 
 const QUEUE_NAME = "webhook";
 
@@ -178,8 +179,17 @@ export async function scheduleAndEnqueue(
 
 /**
  * Application module that manages the bee-queue worker lifecycle for this
- * instance. Producer-side concerns (queue connection + scheduleAndEnqueue
- * API) live in WebhookQueueProducerModule below.
+ * instance, plus the pending-flag reschedule mechanism.
+ *
+ * Registration order: must be registered AFTER RedisModule and
+ * WebhookQueueProducerModule. LIFO close means this module closes BEFORE the
+ * producer, guaranteeing that all reschedule calls emitted during drain complete
+ * while the producer's queue connection is still alive.
+ *
+ * Shutdown: close() first waits for bee-queue to drain in-flight handlers, then
+ * yields via setImmediate so queued `succeeded` microtasks can register their
+ * work, then marks the module closed (subsequent emits are ignored), then awaits
+ * all registered post-job work via Promise.allSettled.
  */
 export class WebhookQueueConsumerModule implements Module {
   public readonly name = "webhook-queue-consumer";
@@ -188,9 +198,17 @@ export class WebhookQueueConsumerModule implements Module {
   public readonly queue: BeeQueue<WebhookJob>;
   private handler: ((job: BeeQueue.Job<WebhookJob>) => Promise<void>) | null =
     null;
+  private redis!: RedisClientType;
+  private producer!: WebhookQueueProducerModule;
+  readonly pendingSucceededWork = new Set<Promise<void>>();
+  private closed = false;
 
-  constructor() {
-    this.queue = createWebhookQueue({ isWorker: true });
+  constructor(
+    private readonly app: Application,
+    queueFactory: () => BeeQueue<WebhookJob> = () =>
+      createWebhookQueue({ isWorker: true })
+  ) {
+    this.queue = queueFactory();
   }
 
   /**
@@ -207,14 +225,62 @@ export class WebhookQueueConsumerModule implements Module {
         "WebhookQueueConsumerModule.init called before setHandler"
       );
     }
+    const redisModule = this.app.get<RedisModule>("redis");
+    if (!redisModule) {
+      throw new Error("WebhookQueueConsumerModule: RedisModule not found");
+    }
+    this.redis = redisModule.redis;
+
+    const producer = this.app.get<WebhookQueueProducerModule>(
+      "webhook-queue-producer"
+    );
+    if (!producer) {
+      throw new Error(
+        "WebhookQueueConsumerModule: WebhookQueueProducerModule not found"
+      );
+    }
+    this.producer = producer;
+
     await this.queue.ready();
-    this.queue.process(WEBHOOK_WORKER_CONCURRENCY, (job) => this.handler!(job));
+
+    this.queue.process(WEBHOOK_WORKER_CONCURRENCY, async (job) => {
+      const jobId = buildJobId(job.data);
+      const pendingKey = buildPendingKey(jobId);
+      await this.redis.del(pendingKey);
+      await this.handler!(job);
+    });
+
+    this.queue.on("succeeded", (job: BeeQueue.Job<WebhookJob>) => {
+      if (this.closed) return;
+      const work = (async () => {
+        const jobId = buildJobId(job.data);
+        const pendingKey = buildPendingKey(jobId);
+        const hasPending = await this.redis.exists(pendingKey);
+        if (hasPending > 0) {
+          await this.redis.del(pendingKey);
+          await this.producer.scheduleAndEnqueue({
+            ...job.data,
+            operationType: "update",
+          });
+        }
+      })().catch((error) => {
+        documentLog(
+          buildJobId(job.data),
+          "<!> [WARN] post-job pending check failed:",
+          error
+        );
+      });
+      this.pendingSucceededWork.add(work);
+      void work.finally(() => this.pendingSucceededWork.delete(work));
+    });
   }
 
   async close(): Promise<void> {
-    // bee-queue.close() stops accepting new jobs and waits up to timeout
-    // for in-flight jobs to finish
     await this.queue.close(SHUTDOWN_TIMEOUT);
+    // Let queued microtasks (succeeded emits) register their work before we mark closed.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    this.closed = true;
+    await Promise.allSettled(Array.from(this.pendingSucceededWork));
   }
 
   async healthCheck(): Promise<boolean> {

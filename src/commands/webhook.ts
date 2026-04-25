@@ -434,7 +434,7 @@ export async function runWebhook() {
   // tokens. The brief overlap — this instance's streams still alive while
   // peers are starting to take over — is tolerated by bee-queue setId dedup
   // plus the WebhookResult idempotency layer.
-  const consumerModule = new WebhookQueueConsumerModule();
+  const consumerModule = new WebhookQueueConsumerModule(app);
   // Producer needs `app` to resolve RedisModule via app.get at init() time;
   // scheduleAndEnqueue is exposed as a method on this module (queue + redis
   // dependencies are bound here, not threaded through callsites).
