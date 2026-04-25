@@ -437,11 +437,24 @@ setup.
     2. After a second reconcile with the **same** webhook set, the recorded
        `.watch` call count is unchanged (no re-open).
     3. After a third reconcile with a webhook set whose `rawBranches` differ
-       (even if the simplified shape would be identical — e.g. an added
-       webhook whose match unions cleanly into an existing `$in`), the
-       recorded `.watch` call count increments and the previous fake
-       ChangeStream's `close()` was invoked. This pins down the contract that
-       the reconcile diff is on raw branches, not on the simplified output.
+       but whose **simplified output is identical** to the previous reconcile,
+       the recorded `.watch` call count still increments and the previous
+       fake ChangeStream's `close()` was invoked. This pins down the contract
+       that the reconcile diff is on raw branches, not on the simplified
+       output.
+
+       A fixture that exhibits this exact "raw differ, simplified identical"
+       shape: configure two webhooks whose raw branches are
+       `[{ "fullDocument.channelId": "x" }, { "fullDocument.channelId": "y" }]`
+       (two scalar branches), and on the next reconcile replace them with a
+       single webhook whose raw branch is
+       `[{ "fullDocument.channelId": { $in: ["x", "y"] } }]`. Both inputs
+       produce the same simplified output (a single branch with
+       `$in: ["x", "y"]`), but `lodash.isEqual` over the raw branches sees
+       them as different (length 2 vs length 1, and the element shapes
+       differ). The test must use this or an equivalent fixture; do not use
+       "added webhook whose match unions into an existing `$in`", which
+       would change the simplified shape.
 
 ## Risks and mitigations
 
