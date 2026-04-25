@@ -426,19 +426,24 @@ export async function runWebhook() {
   // Webhook-domain modules — registered in init order (first registered
   // inits first). Application.close() runs LIFO, so partition closes FIRST
   // (registered last). LIFO close order becomes:
-  //   partition → changestream → producer → consumer → redis → discord → mongo
+  //   partition → changestream → consumer → producer → redis → discord → mongo
   //
   // partition closing first DELs its instance key from Redis and publishes
   // rebalance; peers notice us leaving and start reassigning collections.
   // changestream then closes our local streams and writes the final resume
-  // tokens. The brief overlap — this instance's streams still alive while
-  // peers are starting to take over — is tolerated by bee-queue setId dedup
-  // plus the WebhookResult idempotency layer.
-  const consumerModule = new WebhookQueueConsumerModule(app);
+  // tokens. consumer drains in-flight jobs and pending reschedules before
+  // closing. producer closes after consumer, so scheduleAndEnqueue calls
+  // issued during consumer.close() remain safe. The brief overlap — this
+  // instance's streams still alive while peers are starting to take over —
+  // is tolerated by bee-queue setId dedup plus the WebhookResult idempotency
+  // layer.
+  //
   // Producer needs `app` to resolve RedisModule via app.get at init() time;
   // scheduleAndEnqueue is exposed as a method on this module (queue + redis
   // dependencies are bound here, not threaded through callsites).
   const producerModule = new WebhookQueueProducerModule(app);
+  // Consumer needs `app` to resolve RedisModule and producer at init() time.
+  const consumerModule = new WebhookQueueConsumerModule(app);
   const changeStreamModule = new WebhookChangeStreamModule(app);
   // Partition needs `app` to resolve RedisModule for the main command
   // connection AND its shared subscriber (RedisModule.getSubscriber()).
@@ -457,8 +462,8 @@ export async function runWebhook() {
     }
   });
 
-  app.use(consumerModule);
   app.use(producerModule);
+  app.use(consumerModule);
   app.use(changeStreamModule);
   app.use(partitionModule);
 
