@@ -129,6 +129,30 @@ function branchEqual(a: Branch, b: Branch): boolean {
   return true;
 }
 
+/**
+ * Attempt to merge two branches into a single equivalent branch. Returns
+ * the merged branch on success or null if the pair cannot be merged.
+ *
+ * - Rule 1 — Dedupe: deeply equal branches collapse to one.
+ *   `A ∨ A ≡ A`.
+ * - Rule 2 — Single-key merge: branches with identical key sets that differ
+ *   on exactly one key K may merge:
+ *     - `in: A` ∨ `in: B`   → `in: A ∪ B`
+ *     - `nin: A` ∨ `nin: B` → `nin: A ∩ B` (drop K if intersection empty)
+ *   Justified by `(R ∧ K=v1) ∨ (R ∧ K=v2) ≡ R ∧ K∈{v1,v2}` and
+ *   `K ∉ A ∨ K ∉ B ≡ K ∉ (A ∩ B)`.
+ * - Rule 3 — Complementary merge: branches with identical key sets where
+ *   the two values on the differing key K are logical complements drop K
+ *   from the merged branch:
+ *     - `in: X` ∨ `nin: X` (same set) → drop K
+ *     - `exists: true` ∨ `exists: false` → drop K
+ *   Justified by `(R ∧ P) ∨ (R ∧ ¬P) ≡ R`.
+ *
+ * Rule 3 is checked before Rule 2 so an `in`/`nin` pair with equal sets
+ * triggers complementary key-drop rather than falling through (in/nin with
+ * unequal sets does not match either Rule 2 in/in or nin/nin and returns
+ * null). Opaque values participate only in Rule 1.
+ */
 function tryMerge(a: Branch, b: Branch): Branch | null {
   if (branchEqual(a, b)) {
     return new Map(a);
