@@ -631,13 +631,21 @@ git commit -m "feat(webhook): add Rule 3 complementary merge to simplifyOrBranch
 
 - Test: `src/modules/webhook/simplifyMatch.spec.ts`
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Add `isMatching` import to the top of the test file**
 
-Append to `src/modules/webhook/simplifyMatch.spec.ts`:
+In `src/modules/webhook/simplifyMatch.spec.ts`, add this import line immediately after the existing `import { simplifyOrBranches } from "./simplifyMatch.js";` line at the top of the file:
 
 ```typescript
 import { isMatching } from "../matching.js";
+```
 
+ESLint's `import/first` rule requires all imports at the top of the file — appending the import alongside the new describe blocks below would violate that rule.
+
+- [ ] **Step 2: Append the new describe blocks to the end of the test file**
+
+Append the following to the end of `src/modules/webhook/simplifyMatch.spec.ts` (do NOT include any additional import line — the import was added in Step 1):
+
+```typescript
 describe("simplifyOrBranches — equivalence preservation (property)", () => {
   // 30-doc corpus covering booleans, strings, numbers, missing fields.
   const corpus: Record<string, unknown>[] = [
@@ -801,14 +809,14 @@ describe("simplifyOrBranches — realistic shape (track.ts streams feature)", ()
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they pass**
+- [ ] **Step 3: Run tests to verify they pass**
 
 Run: `npm test -- simplifyMatch.spec.ts`
 Expected: All previously-passing tests still pass; new property/determinism/realistic-shape tests also pass without any production code changes (the simplifier is already complete).
 
 If the property test fails for a fixture, the failure pinpoints which simplification rule produced an inequivalent output — fix in `simplifyMatch.ts` and re-run.
 
-- [ ] **Step 3: Type-check and lint**
+- [ ] **Step 4: Type-check and lint**
 
 Run: `npx tsc --noEmit`
 Expected: No errors.
@@ -816,7 +824,7 @@ Expected: No errors.
 Run: `npx eslint src/modules/webhook/simplifyMatch.spec.ts`
 Expected: No errors.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/modules/webhook/simplifyMatch.spec.ts
@@ -906,13 +914,17 @@ for (const coll of assigned) {
   }
   const match = simplified.length === 1 ? simplified[0] : { $or: simplified };
   if (existing) await this.closeCollection(coll);
-  await this.openCollection(coll, webhooks, rawBranches, match);
-  documentLog(
-    coll,
-    `start listening (branches: ${rawBranches.length} → ${simplified.length})`
-  );
+  const opened = await this.openCollection(coll, webhooks, rawBranches, match);
+  if (opened) {
+    documentLog(
+      coll,
+      `start listening (branches: ${rawBranches.length} → ${simplified.length})`
+    );
+  }
 }
 ```
+
+The `if (opened)` guard preserves the baseline behavior where the "start listening" log was suppressed when `openCollection` early-returned due to an unknown collection. Without this guard, an unknown collection would log "[ERROR] Unable to get model" immediately followed by a misleading "start listening" message.
 
 - [ ] **Step 6: Update `openCollection` signature and body**
 
@@ -924,14 +936,14 @@ Replace the existing `openCollection` method (around lines 217-256) with:
     webhooks: DocumentType<Webhook>[],
     rawBranches: any[],
     match: any
-  ): Promise<void> {
+  ): Promise<boolean> {
     const model = getModelByCollectionName(coll);
     if (!model) {
       documentLog(
         coll,
         `<!> [ERROR] Unable to get model (unknown collection "${coll}")`
       );
-      return;
+      return false;
     }
     const resumeAfter = await this.loadResumeToken(coll);
     const changeStream = model.watch([{ $match: match }], {
@@ -958,6 +970,7 @@ Replace the existing `openCollection` method (around lines 217-256) with:
       rawBranches,
       webhooks,
     });
+    return true;
   }
 ```
 
@@ -1021,18 +1034,12 @@ import type { RedisModule } from "../redis.js";
 import type { WebhookPartitionModule } from "./partition.js";
 import type { WebhookQueueProducerModule } from "./queue.js";
 
-jest.unstable_mockModule("../../models/Webhook.js", () => {
-  const watch = jest.fn();
-  return {
-    __esModule: true,
-    default: {
-      findEnabled: jest.fn(),
-      watch,
-    },
-  };
-});
+jest.unstable_mockModule("../../models/Webhook.js", () => ({
+  __esModule: true,
+  default: { findEnabled: jest.fn(), watch: jest.fn() },
+}));
 
-jest.unstable_mockModule("../db.ts", () => ({
+jest.unstable_mockModule("../db.js", () => ({
   __esModule: true,
   documentLog: jest.fn(),
   getModelByCollectionName: jest.fn(),
@@ -1106,16 +1113,16 @@ describe("WebhookChangeStreamModule reconcile diff", () => {
         get: jest.fn(async () => null),
         set: jest.fn(async () => "OK"),
       },
-    } satisfies Partial<RedisModule> as any;
+    } as unknown as RedisModule;
 
     partitionStub = Object.assign(new EventEmitter(), {
       instanceId: "inst-test",
       getAssignedCollections: jest.fn((all: string[]) => all),
-    }) satisfies Partial<WebhookPartitionModule> as any;
+    }) as unknown as WebhookPartitionModule;
 
     producerStub = {
       scheduleAndEnqueue: jest.fn(async () => {}),
-    } satisfies Partial<WebhookQueueProducerModule> as any;
+    } as unknown as WebhookQueueProducerModule;
 
     app = {
       get: jest.fn((name: string) => {
@@ -1124,7 +1131,7 @@ describe("WebhookChangeStreamModule reconcile diff", () => {
         if (name === "webhook-queue-producer") return producerStub;
         return undefined;
       }),
-    } satisfies Partial<Application> as any;
+    } as unknown as Application;
 
     module = new WebhookChangeStreamModule(app);
     void module.init();
@@ -1166,8 +1173,21 @@ describe("WebhookChangeStreamModule reconcile diff", () => {
     await reconcile([whC]);
     expect(watchCalls).toHaveLength(2);
     expect(firstStream.close).toHaveBeenCalled();
+
+    // Pin down the "simplified output identical" half of the contract:
+    // the $match shape sent to model.watch must be deeply equal across the
+    // two reconciles, even though the raw branches differ. If this fails,
+    // the simplifier is producing different output for inputs that should
+    // simplify to the same shape — a regression in simplifyOrBranches.
+    expect(watchCalls[0].pipeline[0].$match).toEqual(
+      watchCalls[1].pipeline[0].$match
+    );
   });
 
+  // Defensive coverage beyond spec item 18: this test guards the
+  // `closed === false` short-circuit in setupCollections. If a future change
+  // accidentally drops that check, a driver-side closure would leave the
+  // module re-using a dead stream forever; this test catches that.
   it("re-opens the change stream when the previous one is already closed", async () => {
     const wh = makeWebhook({ match: { channelId: "x" }, followUpdate: false });
     await reconcile([wh]);
@@ -1181,12 +1201,18 @@ describe("WebhookChangeStreamModule reconcile diff", () => {
 });
 ```
 
-- [ ] **Step 3: Run the test to verify it fails initially (if there are mock issues), then passes once stubs match**
+- [ ] **Step 3: Run the test**
 
 Run: `npm test -- changestream.spec.ts`
-Expected: All three test cases pass.
+Expected: all three test cases pass on first run. Task 5's production change has already wired the simplifier and the diff, so any failure is in the stub setup (mock paths, factory shape, or fake-stream lifecycle), not in the production code.
 
-If the test fails at module-load time with errors about `jest.unstable_mockModule` or top-level `await`, confirm `package.json`'s test script uses `NODE_OPTIONS='--experimental-vm-modules' jest` (it does — confirmed earlier). If the test fails because `(module as any).setupCollections()` is undefined, the method may have been renamed; consult the latest `changestream.ts` source.
+Troubleshooting if the test fails at module-load time:
+
+- Errors mentioning `jest.unstable_mockModule` or top-level `await` — confirm `package.json`'s test script uses `NODE_OPTIONS='--experimental-vm-modules' jest`.
+- `(module as any).setupCollections is not a function` — confirm the method name in `changestream.ts` has not changed since this plan was written.
+- The mocks not taking effect (real `WebhookModel` / real `getModelByCollectionName` running) — confirm both `jest.unstable_mockModule` calls use the same `.js` specifier the production code imports from (`"../../models/Webhook.js"` and `"../db.js"`), and that the `await import(...)` calls below them use the same specifiers.
+
+If `unstable_mockModule` cannot be made to work, fall back to refactoring `WebhookChangeStreamModule` to accept its `WebhookModel` and `getModelByCollectionName` dependencies via an injected adapter (matching the existing Application DI pattern), then inject test doubles directly. That refactor is scope creep beyond this plan, so prefer fixing the mock setup first.
 
 - [ ] **Step 4: Type-check and lint**
 
