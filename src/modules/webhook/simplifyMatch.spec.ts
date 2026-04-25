@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@jest/globals";
+import { isMatching } from "../matching.js";
 import { simplifyOrBranches } from "./simplifyMatch.js";
 
 describe("simplifyOrBranches — Rule 1 (dedupe)", () => {
@@ -211,5 +212,167 @@ describe("simplifyOrBranches — Rule 3 (complementary)", () => {
       { a: { $exists: false } },
     ]);
     expect(out).toEqual([{}]);
+  });
+});
+
+describe("simplifyOrBranches — equivalence preservation (property)", () => {
+  // 30-doc corpus covering booleans, strings, numbers, missing fields.
+  const corpus: Record<string, unknown>[] = [
+    {},
+    { a: "x" },
+    { a: "y" },
+    { a: "z" },
+    { b: 1 },
+    { b: 2 },
+    { b: 3 },
+    { a: "x", b: 1 },
+    { a: "y", b: 2 },
+    { a: "z", b: 3 },
+    { a: "x", b: 2 },
+    { c: true },
+    { c: false },
+    { a: "x", c: true },
+    { a: "y", c: false },
+    { d: null },
+    { e: 5 },
+    { e: 10 },
+    { e: 15 },
+    { a: "x", b: 1, c: true },
+    { a: "y", b: 2, c: false },
+    { f: "extra" },
+    { a: "x", f: "extra" },
+    { a: "x", b: 1, e: 5 },
+    { a: "y", b: 2, e: 10 },
+    { b: 1, c: true },
+    { b: 2, c: false },
+    { a: "z", c: true, e: 5 },
+    { a: "x", b: null },
+    { a: null, b: 1 },
+  ];
+
+  function disjunctionMatches(
+    branches: Record<string, unknown>[],
+    doc: Record<string, unknown>
+  ): boolean {
+    return branches.some((branch) => isMatching(doc, branch));
+  }
+
+  const fixtures: Record<string, unknown>[][] = [
+    // Rule 1
+    [
+      { a: "x", b: 1 },
+      { a: "x", b: 1 },
+    ],
+    // Rule 2 union
+    [
+      { a: "x", b: 1 },
+      { a: "y", b: 1 },
+      { a: "z", b: 1 },
+    ],
+    // Rule 2 nin intersection
+    [
+      { a: { $nin: ["x", "y"] }, b: 1 },
+      { a: { $nin: ["y", "z"] }, b: 1 },
+    ],
+    // Rule 3 complementary in/nin
+    [
+      { a: { $in: ["x", "y"] }, b: 1 },
+      { a: { $nin: ["x", "y"] }, b: 1 },
+    ],
+    // Rule 3 complementary scalar/$ne
+    [
+      { a: "x", b: 1 },
+      { a: { $ne: "x" }, b: 1 },
+    ],
+    // Rule 3 complementary exists
+    [
+      { a: { $exists: true }, b: 1 },
+      { a: { $exists: false }, b: 1 },
+    ],
+    // No-op: branches with different key sets
+    [
+      { a: "x", b: 1 },
+      { a: "y", c: 2 },
+    ],
+    // No-op: branches differing in two keys
+    [
+      { a: "x", b: 1 },
+      { a: "y", b: 2 },
+    ],
+    // Mixed: convergence via Rule 3 then Rule 1
+    [{ a: { $in: ["x"] }, b: 1 }, { a: { $nin: ["x"] }, b: 1 }, { b: 1 }],
+  ];
+
+  it.each(fixtures)(
+    "simplification preserves match set for fixture %#",
+    (...fixture) => {
+      const branches = fixture;
+      const simplified = simplifyOrBranches(branches);
+      for (const doc of corpus) {
+        expect(disjunctionMatches(simplified, doc)).toBe(
+          disjunctionMatches(branches, doc)
+        );
+      }
+    }
+  );
+});
+
+describe("simplifyOrBranches — determinism", () => {
+  it("returns the same output for the same input regardless of branch order", () => {
+    const a = simplifyOrBranches([
+      { a: "x", b: 1 },
+      { a: "y", b: 1 },
+      { a: "z", b: 1 },
+    ]);
+    const b = simplifyOrBranches([
+      { a: "z", b: 1 },
+      { a: "y", b: 1 },
+      { a: "x", b: 1 },
+    ]);
+    expect(a).toEqual(b);
+  });
+
+  it("returns deterministic $in element order regardless of input order", () => {
+    const a = simplifyOrBranches([{ a: "b" }, { a: "a" }, { a: "c" }]);
+    const b = simplifyOrBranches([{ a: "c" }, { a: "a" }, { a: "b" }]);
+    expect(a).toEqual(b);
+  });
+});
+
+describe("simplifyOrBranches — realistic shape (track.ts streams feature)", () => {
+  it("collapses three streams-feature webhook branches with different channelIds into a single $in branch", () => {
+    // Shape mirrors what buildRawBranches produces for the streams feature
+    // when followUpdate=true (operationType becomes {$in:["insert","update"]})
+    // and match has channelId and status.
+    const op = { $in: ["insert", "update"] };
+    const branches = [
+      {
+        operationType: op,
+        "fullDocument.channelId": "UCa",
+        "fullDocument.status": { $in: ["live", "past", "missing"] },
+        "fullDocument.uploadedVideo": { $ne: true },
+      },
+      {
+        operationType: op,
+        "fullDocument.channelId": "UCb",
+        "fullDocument.status": { $in: ["live", "past", "missing"] },
+        "fullDocument.uploadedVideo": { $ne: true },
+      },
+      {
+        operationType: op,
+        "fullDocument.channelId": "UCc",
+        "fullDocument.status": { $in: ["live", "past", "missing"] },
+        "fullDocument.uploadedVideo": { $ne: true },
+      },
+    ];
+    const out = simplifyOrBranches(branches);
+    expect(out).toEqual([
+      {
+        operationType: op,
+        "fullDocument.channelId": { $in: ["UCa", "UCb", "UCc"] },
+        "fullDocument.status": { $in: ["live", "missing", "past"] },
+        "fullDocument.uploadedVideo": { $ne: true },
+      },
+    ]);
   });
 });
