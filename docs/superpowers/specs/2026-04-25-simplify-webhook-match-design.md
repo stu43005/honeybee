@@ -63,7 +63,17 @@ Out of scope:
 - **Reconcile cost.** The reconcile loop in `setupCollections` runs on every
   meta-stream event and every partition rebalance. The simplification step
   must not add cost to reconciles where the underlying webhook configs did
-  not change.
+  not change. The reconcile diff uses `lodash.isEqual`, which is
+  order-insensitive on plain object keys, so non-deterministic key ordering
+  in `flatObjectKey` output does not cause spurious re-opens.
+- **Element types in `$in` / `$nin`.** Element comparison and union/
+  intersection operations are defined for JSON scalars only (string, number,
+  boolean, `null`). If any element of an `$in` / `$nin` array is a non-scalar
+  (object, array, regex, etc.), the entire value is classified as `opaque`
+  by the canonicalizer (see "Value canonicalization" below) and only
+  participates in dedupe. This is sufficient for every shape in
+  [src/data/track.ts](../../../src/data/track.ts), where `$in` / `$nin`
+  payloads are channel-id strings.
 
 ## Approach
 
@@ -89,47 +99,68 @@ rule is provably equivalence-preserving:
 If two branches are deeply equal, drop one.
 Justification: `A ∨ A ≡ A`.
 
+**Note on canonicalization regime.** Rules 2 and 3 are defined in terms of
+the canonical kinds produced by the "Value canonicalization" section below
+(`in`, `nin`, `exists`, `opaque`). Each comparison canonicalizes its inputs
+on the fly; merged values stay in canonical form throughout the fixpoint
+loop. **Denormalization to surface form happens exactly once, at the end of
+the loop, on the surviving branches.** This avoids surface↔canonical
+round-trips on every pass.
+
 #### Rule 2 — Single-key merge
 
 For two branches with **identical key sets**, identify the keys whose values
-differ (deep equality). If exactly one key differs, attempt to merge:
+differ (deep equality on canonical form). If exactly one key K differs,
+attempt to merge by canonical kind of the two values on K:
 
-| Form of value on differing key K     | Form of other branch's value on K      | Merge result                                                          |
-| ------------------------------------ | -------------------------------------- | --------------------------------------------------------------------- |
-| Equality scalar `x`, or `{$in: [x]}` | Equality scalar `y`, or `{$in: [y]}`   | `{$in: [x, y]}` (deduped)                                             |
-| Equality scalar `x`, or `{$in: [x]}` | `{$in: A}`                             | `{$in: A ∪ {x}}`                                                      |
-| `{$in: A}`                           | `{$in: B}`                             | `{$in: A ∪ B}`                                                        |
-| `{$nin: A}`                          | `{$nin: B}`                            | `{$nin: A ∩ B}` (drop K entirely if intersection is empty)            |
-| `{$ne: x}`                           | `{$ne: y}`                             | (canonicalize to `{$nin: [x]}` / `{$nin: [y]}`, then apply $nin rule) |
-| Any value `v`                        | Logical complement of `v` (see Rule 3) | apply Rule 3 instead                                                  |
-| Any other shape                      | —                                      | skip (no merge for this pair)                                         |
+| Kind on K (branch A)                               | Kind on K (branch B)       | Merge result on K                                                                                                        |
+| -------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `in: A`                                            | `in: B`                    | `in: A ∪ B`                                                                                                              |
+| `nin: A`                                           | `nin: B`                   | `nin: A ∩ B` (if A ∩ B is empty, **drop K from the merged branch entirely**, reducing the branch's key set — see note 8) |
+| `in: X`                                            | `nin: X` (X equal as sets) | drop K — handled by Rule 3                                                                                               |
+| `exists: true`                                     | `exists: false`            | drop K — handled by Rule 3                                                                                               |
+| `in` ↔ `nin` (sets unequal)                        | —                          | skip                                                                                                                     |
+| `opaque` ↔ anything other than deep-equal `opaque` | —                          | skip                                                                                                                     |
+| Any other combination                              | —                          | skip                                                                                                                     |
 
 The merged branch is identical to the input branches except on K, where it
-holds the merged value. After merge, denormalize singleton `$in`/`$nin` of one
-element back to the natural form (`{$in: [x]}` → `x`, `{$nin: [x]}` → `{$ne: x}`).
+holds the merged value (or has K removed for the empty-intersection case).
 
 Justification: for the union case,
 `(R ∧ K=v1) ∨ (R ∧ K=v2) ≡ R ∧ (K=v1 ∨ K=v2) ≡ R ∧ K∈{v1,v2}` where R is the
 shared remainder. For the `$nin` intersection,
-`K ∉ A ∨ K ∉ B ≡ K ∉ (A ∩ B)`.
+`K ∉ A ∨ K ∉ B ≡ K ∉ (A ∩ B)`. When `A ∩ B = ∅`, `K ∉ ∅` is true for every
+document (whether K exists or not), so the K constraint is identically true
+and dropping it preserves equivalence.
+
+**Reduced-key-set branches re-enter the loop.** After a `nin ∩ nin = ∅` drop
+or a Rule 3 drop, the merged branch has fewer keys than either input. On the
+next fixpoint pass it is compared against all surviving branches under the
+"identical key sets" gate, and may now merge with a branch that previously
+had its key set. This is how the chats/chatsOtherChannels pair, after Rule 3
+drops `originChannelId`, becomes mergeable with neighbouring branches that
+share the reduced shape.
 
 #### Rule 3 — Complementary merge
 
 For two branches with identical key sets where exactly one key K differs and
-the two values are **logical complements** on K, drop the key K entirely from
-the merged branch (which is otherwise identical to either input).
+the two canonical values on K are **logical complements**, drop K from the
+merged branch (which is otherwise identical to either input).
 
-Recognized complementary pairs:
+Canonical complementary pairs (all surface-form examples reduce to these
+after canonicalization):
 
-| Value A           | Value B (complement of A)                                                   |
-| ----------------- | --------------------------------------------------------------------------- |
-| Scalar `x`        | `{$ne: x}`                                                                  |
-| `{$in: X}`        | `{$nin: X}` (where X compared as a set, deep-equal as a multiset of values) |
-| `{$exists: true}` | `{$exists: false}`                                                          |
-| `true`            | `{$ne: true}`                                                               |
-| `false`           | `{$ne: false}`                                                              |
+| Canonical A    | Canonical B (complement)        |
+| -------------- | ------------------------------- |
+| `in: X`        | `nin: X` (X deep-equal as sets) |
+| `exists: true` | `exists: false`                 |
 
-Boolean-equality cases reduce to the first row after canonicalization.
+Surface-form examples that canonicalize into the `in` ↔ `nin` row:
+
+- scalar `x` ↔ `{$ne: x}` → `in: [x]` ↔ `nin: [x]`
+- `true` ↔ `{$ne: true}` → `in: [true]` ↔ `nin: [true]`
+- `false` ↔ `{$ne: false}` → `in: [false]` ↔ `nin: [false]`
+- `{$in: X}` ↔ `{$nin: X}` directly
 
 Justification: `(R ∧ P) ∨ (R ∧ ¬P) ≡ R` where P is any predicate on a single
 field K, regardless of whether the document has K defined.
@@ -141,10 +172,11 @@ combined branch drops `originChannelId` entirely.
 
 #### Fixpoint loop
 
-```
+```text
 repeat:
   changed = false
-  for each pair (i, j) with i < j in the current branches array:
+  for each pair (i, j) with i < j in the current branches array, in
+      ascending (i, j) order:
     if branches[i] and branches[j] can merge under Rule 1, 2, or 3:
       replace branches[i] with the merged branch
       remove branches[j]
@@ -152,6 +184,14 @@ repeat:
       break out of the inner loops and start the next iteration
   if not changed: stop
 ```
+
+The pair iteration order is fixed (ascending `i`, then ascending `j`) so the
+output is deterministic regardless of which mergeable pairs exist in the
+input. Different iteration orders may produce different intermediate states
+but the final fixpoint shape is the same up to canonicalization, because the
+merge rules form a confluent rewriting system on canonical kinds. The fixed
+order pins down the exact intermediate sequence and therefore the exact
+output.
 
 Bounded by `O(n²)` per pass and at most `n - 1` successful merges, giving an
 upper bound of `O(n³)` for the overall loop. Webhook counts per collection
@@ -171,14 +211,28 @@ Internal helper used by Rules 2 and 3 to compare and combine values:
 | `{$exists: false}`                                                                | `{__kind: "exists", value: false}`      |
 | Anything else (e.g. `$gt`, regex, object with multiple operators, nested matches) | `{__kind: "opaque", value: <original>}` |
 
-Set membership uses deep equality on elements; sets are stored as deduped
-arrays. After merge, results are denormalized back to surface form, with
-single-element `$in`/`$nin` collapsed to scalar / `$ne`.
+Set elements are restricted to JSON scalars (string, number, boolean,
+`null`). If an `$in` / `$nin` array contains any non-scalar element (object,
+array, regex, date, `ObjectId`, etc.), the entire value canonicalizes as
+`opaque` rather than `in` / `nin`. This bounds the equality / set-union /
+set-intersection logic to comparisons over scalars, where deep equality is
+unambiguous and matches MongoDB's BSON value equality for the types in use
+in [src/data/track.ts](../../../src/data/track.ts).
 
-`opaque` values can only participate in dedupe (Rule 1) or in complementary
-matches when literally one input is the other's `__kind: "opaque"` mirror —
-which by definition the simplifier cannot recognize, so opaque values are
-treated as merge-blocking unless deep-equal.
+Sets are stored internally as deduped arrays sorted by JSON-stringify
+ascending. Set equality is "same length and pairwise deep-equal after sort";
+set union dedupes by the same comparator; set intersection keeps elements
+present in both.
+
+After the fixpoint loop terminates, surviving canonical values are
+denormalized back to surface form once: `in: [x]` → `x`, `nin: [x]` →
+`{$ne: x}`, `in: [...]` (length ≥ 2) → `{$in: [...]}`, `nin: [...]` (length
+≥ 2) → `{$nin: [...]}`, `exists: v` → `{$exists: v}`, `opaque: v` → `v`
+(unchanged).
+
+`opaque` values participate only in Rule 1 dedupe (when the underlying
+surface values are deep-equal). They never participate in Rule 2 or Rule 3
+because the simplifier has no semantic information about them.
 
 ### Result shape
 
@@ -256,18 +310,30 @@ for (const coll of assigned) {
     continue;
   }
   const simplified = simplifyOrBranches(rawBranches);
+  if (simplified.length === 0) {
+    throw new Error(
+      `simplifyOrBranches reduced ${rawBranches.length} branch(es) to 0 for "${coll}"`
+    );
+  }
   const match = simplified.length === 1 ? simplified[0] : { $or: simplified };
   if (existing) await this.closeCollection(coll);
   await this.openCollection(coll, webhooks, rawBranches, match);
+  documentLog(
+    coll,
+    `start listening (branches: ${rawBranches.length} → ${simplified.length})`
+  );
 }
 ```
 
-`openCollection`'s signature changes: it now receives `rawBranches` (stored in
-state for future diffs) and `match` (passed straight to
-`model.watch([{ $match: match }], …)`). The log line that previously read
-`match length: ${match.$or.length}` becomes
-`branches: ${rawBranches.length} → ${simplified.length}` so the simplification
-ratio is observable in production logs.
+`openCollection`'s signature changes from `(coll, webhooks, match)` to
+`(coll, webhooks, rawBranches, match)`. It stores `rawBranches` in
+`CollectionState` for future diffs and passes `match` straight to
+`model.watch([{ $match: match }], …)`.
+
+The previous "start listening" log line that lived **inside** `openCollection`
+moves out to `setupCollections` (shown above) so it can reference both
+`rawBranches.length` and `simplified.length`. The single log line replaces
+the previous `match length: ${match.$or.length}` log.
 
 `buildMatch` is removed; its callers all go through `buildRawBranches` +
 `simplifyOrBranches`.
@@ -277,17 +343,20 @@ ratio is observable in production logs.
 - **Empty `simplified`.** Cannot happen for a non-empty input under the rules
   above (every merge keeps at least one branch). If `rawBranches` is empty,
   the collection should not have been added to `assigned` in the first place.
-  Guard with an explicit check that throws if `simplified.length === 0` after
-  a non-empty input — this catches bugs in the simplifier rather than silently
-  opening a stream with an empty match (which would forward every event).
+  The guard in `setupCollections` (shown above) throws if
+  `simplified.length === 0` for a non-empty input — this catches bugs in the
+  simplifier rather than silently opening a stream with an empty match (which
+  would forward every event).
 - **`simplified.length === 1`.** Emit the single branch directly with no
   `$or` wrapper. This is a small but real saving, since the change-stream
   pipeline is sent on every event evaluation.
 
 ## Test plan
 
-Tests live in `src/modules/webhook/simplifyMatch.test.ts` and run under the
-existing Jest setup.
+Tests live in `src/modules/webhook/simplifyMatch.spec.ts` (matching the
+`.spec.ts` naming convention used by the neighbouring `claim.spec.ts`,
+`partition.spec.ts`, and `queue.spec.ts`) and run under the existing Jest
+setup.
 
 ### Rule-level unit tests
 
@@ -340,15 +409,39 @@ existing Jest setup.
 
 ### Integration test
 
-18. In the existing change-stream test file (or a new one alongside it),
-    construct a `WebhookChangeStreamModule` instance, drive `setupCollections`
-    with a webhook set, then call `setupCollections` again with the same
-    webhook set, and assert the change stream was not re-opened (i.e. the
-    `closed === false && isEqual(rawBranches, …)` short-circuit fires).
-    Then drive `setupCollections` once more with a webhook set that has the
-    same simplified shape but different raw branches (e.g. add a webhook
-    whose match unions cleanly into an existing `$in`); assert the stream is
-    re-opened, because the diff is on raw branches, not simplified output.
+18. New file `src/modules/webhook/changestream.spec.ts`. The project does
+    **not** depend on `mongodb-memory-server`, so this test does not spin up
+    a real MongoDB. Instead it stubs the two MongoDB seams used by the
+    module:
+    - `WebhookModel.findEnabled` — replaced with a Jest mock that returns a
+      handcrafted webhook list.
+    - The model returned from `getModelByCollectionName` — replaced with a
+      stub that exposes a `.watch(pipeline, options)` method returning a
+      fake `ChangeStream` (an `EventEmitter` plus `closed: false`,
+      `close()`, `removeAllListeners()`, `resumeToken: undefined`). Each
+      `.watch` call records its `pipeline` argument so the test can assert
+      the `$match` shape.
+
+    The test also stubs `RedisModule` (resume-token get/set become no-ops)
+    and `WebhookPartitionModule` (`getAssignedCollections` returns its input
+    set, `instanceId` returns a constant). With these stubs the test
+    constructs a `WebhookChangeStreamModule`, calls `init()`, and then
+    drives the private `setupCollections` path by emitting `rebalance` on
+    the partition stub (or by calling `setupCollections` via a small
+    `(module as any)` cast — pick whichever the surrounding file already
+    uses for `partition.spec.ts`).
+
+    The assertions are:
+    1. After the first reconcile with a given webhook set, exactly one
+       `.watch` call was recorded for the relevant collection.
+    2. After a second reconcile with the **same** webhook set, the recorded
+       `.watch` call count is unchanged (no re-open).
+    3. After a third reconcile with a webhook set whose `rawBranches` differ
+       (even if the simplified shape would be identical — e.g. an added
+       webhook whose match unions cleanly into an existing `$in`), the
+       recorded `.watch` call count increments and the previous fake
+       ChangeStream's `close()` was invoked. This pins down the contract that
+       the reconcile diff is on raw branches, not on the simplified output.
 
 ## Risks and mitigations
 
