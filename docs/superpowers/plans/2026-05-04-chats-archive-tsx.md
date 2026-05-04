@@ -708,8 +708,9 @@ The largest template: page shell + 9 row-cell components + class computation + C
         </td>
         <td>{doc.authorName ?? ""}</td>
         <td>
-          Purchased <span class="gift-count">{doc.amount}</span> membership
-          gift(s)
+          {"Purchased "}
+          <span class="gift-count">{doc.amount}</span>
+          {" membership gift(s)"}
         </td>
       </>
     );
