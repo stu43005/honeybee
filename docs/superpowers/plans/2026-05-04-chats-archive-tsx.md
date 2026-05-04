@@ -48,10 +48,12 @@ Before any changes, capture HTML output from the current code against a develope
 - [ ] **Step 2: Run dev runner against local DB; save output**
 
   ```bash
-  CHAT_ARCHIVE_DIR=/tmp/chats-archive-baseline node dist/components/chats-archive.js
+  CHAT_ARCHIVE_DIR=/tmp/chats-archive-baseline node --env-file=.env dist/components/chats-archive.js
   ```
 
   Pick `CHAT_ARCHIVE_DIR` to a fresh path. Then keep that directory aside (do NOT delete; this is the baseline).
+
+  `--env-file=.env` loads `MONGO_URI` (and other env vars) from the project root `.env`. The file already exists; the project does not bundle a dotenv runtime so this Node-native flag (Node 20.6+) is the canonical loader.
 
   Expected: HTML files written under `/tmp/chats-archive-baseline/`. At minimum, ensure the run produces:
   - `index.html` (live + past tabs)
@@ -1994,10 +1996,10 @@ Reduce the entry file from ~927 lines to ~80 lines: agenda registration, `archiv
 - [ ] **Step 3: Run dev runner against same local DB; produce new output**
 
   ```bash
-  CHAT_ARCHIVE_DIR=/tmp/chats-archive-new node dist/components/chats-archive.js
+  CHAT_ARCHIVE_DIR=/tmp/chats-archive-new node --env-file=.env dist/components/chats-archive.js
   ```
 
-  Expected: completes without errors, files written under `/tmp/chats-archive-new/`.
+  Expected: completes without errors, files written under `/tmp/chats-archive-new/`. `--env-file=.env` loads `MONGO_URI` from the project-root `.env` (same as the Pre-flight baseline run).
 
 - [ ] **Step 4: Visual diff against baseline**
 
