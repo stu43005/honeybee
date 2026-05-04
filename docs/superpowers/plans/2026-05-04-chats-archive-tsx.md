@@ -86,13 +86,23 @@ Before any changes, capture HTML output from the current code against a develope
 
   Place alongside existing entries. Do not modify any other key.
 
-- [ ] **Step 2: Install hono dependency**
+- [ ] **Step 2: Verify hono dependency is present and installed**
+
+  At plan-writing time, `package.json` already declares `"hono": "^4.12.16"` (line 63). Run:
 
   ```bash
-  npm install hono@^4.12.16
+  npm install
   ```
 
-  Expected: `package.json` `dependencies` gains `"hono": "^4.12.16"`. `package-lock.json` updates.
+  Expected: `node_modules/hono` exists at version satisfying `^4.12.16`. Confirm:
+
+  ```bash
+  node -e "console.log(require('hono/package.json').version)"
+  ```
+
+  Expected output: `4.12.16` (or a later 4.x).
+
+  Fallback (only if `package.json` no longer contains the entry by the time this task runs): manually add `"hono": "^4.12.16",` to `dependencies` in alphabetical order, then run `npm install`. Do not use `npm install hono@^4.12.16` because npm rewrites the caret range to the highest matching version.
 
 - [ ] **Step 3: Verify build still passes (no source changes yet)**
 
@@ -104,9 +114,11 @@ Before any changes, capture HTML output from the current code against a develope
 
 - [ ] **Step 4: Commit**
 
+  Stage the changed files. `package.json` is unchanged if hono was already present (a no-op `git add`). `package-lock.json` may have updated.
+
   ```bash
   git add tsconfig.json package.json package-lock.json
-  git commit -m "chore(deps): add hono and JSX tsconfig for chats-archive refactor"
+  git commit -m "chore(tsconfig): add JSX options for chats-archive refactor"
   ```
 
 ---
@@ -1021,6 +1033,72 @@ The largest template: page shell + 9 row-cell components + class computation + C
     );
   }
 
+  function PageHead({ video }: { video: DocumentType<Video> }) {
+    return (
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>{video.title}</title>
+        <style dangerouslySetInnerHTML={{ __html: PAGE_CSS }} />
+      </head>
+    );
+  }
+
+  function HeaderBlock({
+    video,
+    currencies,
+    jpySum,
+  }: {
+    video: DocumentType<Video>;
+    currencies: CurrencyAgg[];
+    jpySum: number;
+  }) {
+    return (
+      <table>
+        <tr>
+          <td>
+            <h1>
+              <a href={VideoModel.getUrl(video)}>{video.title}</a>
+            </h1>
+            <img
+              class="video-thumbnail small"
+              src={VideoModel.getVideoThumbnails(video).maxres}
+              onclick="this.classList.toggle('small')"
+            />
+          </td>
+        </tr>
+        <tr>
+          <td>
+            <CurrencyTable currencies={currencies} jpySum={jpySum} />
+          </td>
+        </tr>
+      </table>
+    );
+  }
+
+  function ChatTableHead() {
+    return (
+      <tr>
+        <th>No.</th>
+        <th>Timestamp</th>
+        <th>Currency</th>
+        <th></th>
+        <th>Icon</th>
+        <th>Author</th>
+        <th>Message</th>
+      </tr>
+    );
+  }
+
+  function TogglesScript() {
+    return (
+      <script
+        type="text/javascript"
+        dangerouslySetInnerHTML={{ __html: TOGGLE_SCRIPT }}
+      />
+    );
+  }
+
   function VideoArchivePage(props: {
     video: DocumentType<Video>;
     currencies: CurrencyAgg[];
@@ -1029,51 +1107,17 @@ The largest template: page shell + 9 row-cell components + class computation + C
     const { video, currencies, jpySum } = props;
     return (
       <html lang="ja">
-        <head>
-          <meta charset="UTF-8" />
-          <meta
-            name="viewport"
-            content="width=device-width, initial-scale=1.0"
-          />
-          <title>{video.title}</title>
-          <style dangerouslySetInnerHTML={{ __html: PAGE_CSS }} />
-        </head>
+        <PageHead video={video} />
         <body>
-          <table>
-            <tr>
-              <td>
-                <h1>
-                  <a href={VideoModel.getUrl(video)}>{video.title}</a>
-                </h1>
-                <img
-                  class="video-thumbnail small"
-                  src={VideoModel.getVideoThumbnails(video).maxres}
-                  onclick="this.classList.toggle('small')"
-                />
-              </td>
-            </tr>
-            <tr>
-              <td>
-                <CurrencyTable currencies={currencies} jpySum={jpySum} />
-              </td>
-            </tr>
-          </table>
+          <HeaderBlock video={video} currencies={currencies} jpySum={jpySum} />
           <hr />
           <ToggleControls />
           <hr />
           <table id="chats-table" border="1">
-            <tr>
-              <th>No.</th>
-              <th>Timestamp</th>
-              <th>Currency</th>
-              <th></th>
-              <th>Icon</th>
-              <th>Author</th>
-              <th>Message</th>
-            </tr>
+            <ChatTableHead />
             {raw(ROWS_MARKER)}
           </table>
-          <script dangerouslySetInnerHTML={{ __html: TOGGLE_SCRIPT }} />
+          <TogglesScript />
         </body>
       </html>
     );
@@ -1104,7 +1148,7 @@ The largest template: page shell + 9 row-cell components + class computation + C
   npx tsc --noEmit && npm run lint -- src/components/chats-archive/templates/VideoArchive.tsx
   ```
 
-  Expected: PASS both. If lint flags `style` attribute (CSS-in-string), it is supported by hono/jsx — silence specific rules if needed in this file.
+  Expected: PASS both. If lint flags the inline `style` attribute (CSS-in-string) or the inline `onclick` handler on the thumbnail `<img>`, both are supported by hono/jsx and must remain to preserve thumbnail click-to-toggle and the in-line `<style>` / `<script>` bodies. Silence the offending rules with file-scoped `/* eslint-disable react/no-unknown-property */` (or the project-specific rule names) at the top of `VideoArchive.tsx`. Do not change the DOM output.
 
 - [ ] **Step 7: Commit**
 
