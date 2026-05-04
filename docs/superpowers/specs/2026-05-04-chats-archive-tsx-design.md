@@ -74,8 +74,11 @@ Only `hono/jsx` and `hono/html` submodules are imported.
 
 ```
 src/components/
-├── chats-archive.ts                       # control layer (no JSX, .ts)
+├── chats-archive.ts                       # entry: agenda registration + archiveAllChats + dev runner (no JSX)
 └── chats-archive/
+    ├── archive-video.ts                   # control: per-video archive (archiveVideo + multiCursorOrderedPeek)
+    ├── gen-index-file.ts                  # control: top-level index page
+    ├── gen-channel-index-file.ts          # control: per-channel index page
     └── templates/
         ├── format.tsx                     # formatCurrency, FormattedTimestamp, getTimestamp, getVideoPath
         ├── VideoArchive.tsx               # per-video page shell + 9 ChatRow variants
@@ -86,18 +89,29 @@ src/components/
 
 Approximate sizes:
 
-| File                             | Approx. lines |
-| -------------------------------- | ------------- |
-| `chats-archive.ts`               | ~250          |
-| `templates/format.tsx`           | ~60           |
-| `templates/VideoArchive.tsx`     | ~280          |
-| `templates/IndexPage.tsx`        | ~80           |
-| `templates/ChannelIndexPage.tsx` | ~60           |
-| `templates/VideoCard.tsx`        | ~70           |
+| File                                      | Approx. lines |
+| ----------------------------------------- | ------------- |
+| `chats-archive.ts`                        | ~80           |
+| `chats-archive/archive-video.ts`          | ~120          |
+| `chats-archive/gen-index-file.ts`         | ~70           |
+| `chats-archive/gen-channel-index-file.ts` | ~50           |
+| `templates/format.tsx`                    | ~60           |
+| `templates/VideoArchive.tsx`              | ~280          |
+| `templates/IndexPage.tsx`                 | ~80           |
+| `templates/ChannelIndexPage.tsx`          | ~60           |
+| `templates/VideoCard.tsx`                 | ~70           |
 
 ### Control vs. presentation boundary
 
-- **Control layer (`chats-archive.ts`)** owns: Agenda registration; DB cursor open/iterate (`VideoModel`, `VideoStatsModel`, `ChatModel`, `SuperChatModel`, `SuperStickerModel`, `MembershipModel`, `MembershipGiftModel`, `MembershipGiftPurchaseModel`, `MilestoneModel`, `PollModel`, `RaidModel`, `ChannelModel`); `multiCursorOrderedPeek`; `recalcVideoHbStats` invocation; file IO (`createWriteStream`, `mkdir`, `rename`, `unlink`); `archiveVideo` / `genIndexFile` / `genChannelIndexFile` / `archiveAllChats` orchestration; the `isMain(import.meta)` dev runner.
+The control layer is split into four files by responsibility:
+
+- **`chats-archive.ts`** (entry) owns: Agenda registration (`chatsArchive`, `agenda.define("chats archive", ...)`, `agenda.define("chats archive index", ...)`); the `archiveAllChats` outer loop (which iterates `VideoStatsModel.getVideoIdsWithoutFlag` and calls `archiveVideo` per video, then sets the processed flag); the per-video `await job?.touch()` between videos (existing behavior, preserved); the `isMain(import.meta)` dev runner block; default export `chatsArchive(app)`. Imports `archiveVideo` from `./chats-archive/archive-video.js` and `genIndexFile` from `./chats-archive/gen-index-file.js`.
+- **`chats-archive/archive-video.ts`** owns: `archiveVideo(videoId, job?)`; the merged-cursor reader `multiCursorOrderedPeek` (private, file-local; only used here); cursor opens for `Chat` (owner) / `Chat` (moderator) / `SuperChat` / `SuperSticker` / `Membership` / `MembershipGift` / `MembershipGiftPurchase` / `Milestone` / `Poll` / `Raid`; computation of `currencies` and `jpySum` from `VideoStatsModel` aggregates before calling `renderVideoArchiveShell`; file IO for the per-video HTML (`createWriteStream`, `mkdir`, `rename`, `unlink`, tmp-file → final-file); per-row `await job?.touch()` keepalive inside the row loop. Exports `archiveVideo`.
+- **`chats-archive/gen-index-file.ts`** owns: top-level `genIndexFile()`; iterating `VideoModel.findLiveVideos(48)` and `VideoModel.findRecentlyEndedVideos(48)` with the existing skip predicates preserved; `isDirect` recalc step (`recalcVideoHbStats` + re-fetch when running via `isMain`); `await video.getChannel()` per video; the placeholder+split write of head/between/tail; the per-channel index regen loop at the end (calls `genChannelIndexFile` for each channel that contributed at least one video). Imports `archiveVideo` from `./archive-video.js` (for the `if (isDirect) await archiveVideo(...)` dev-mode call) and `genChannelIndexFile` from `./gen-channel-index-file.js`. Exports `genIndexFile`.
+- **`chats-archive/gen-channel-index-file.ts`** owns: `genChannelIndexFile(channelId)`; channel lookup via `ChannelModel.findByChannelId`; `VideoModel.find({ channelId, uploadedVideo: { $ne: true } })` cursor with sort/limit/populate preserved; `isDirect` recalc step; the placeholder+split write of head/tail; `count === 0 → unlink` branch. Imports `archiveVideo` from `./archive-video.js`. Exports `genChannelIndexFile`.
+
+All four control-layer files share the same rules: DB cursor open/iterate, `recalcVideoHbStats` invocation, file IO, and JSX-string concatenation via `ws.write(await render*(...))`. None of them import from the other control-layer files except via the explicit imports listed above (no circular).
+
 - **Presentation layer (`templates/*.tsx`)** owns: HTML structure, CSS strings, toggle script string, JSX components. Components accept **plain props** only — never raw mongoose documents traversed for fields the component does not name. (Where it is more ergonomic to pass a `DocumentType<Video>` because the component reads many of its fields, that is allowed; the rule is no DB calls, no mongoose-specific operations like `.populate()` or `.find()`, no IO.) Read-only access to `doc.collection.name` for switch dispatch in `<ChatRow>` is explicitly permitted, since it is a synchronous in-memory property read used solely for discriminating which sub-component to render and does not initiate any DB activity.
 
 ## 6. Streaming Hot-Path Mechanism
@@ -394,15 +408,17 @@ The control layer (not the component) handles `recalcVideoHbStats` invocation an
 
 ## 9. Migration / PR Structure
 
-**Single PR.** The 6 files are tightly coupled (control-layer imports each template's public API); splitting risks intermediate states that fail to build or fail to produce HTML.
+**Single PR.** The 9 files are tightly coupled (control-layer files import each template's public API); splitting risks intermediate states that fail to build or fail to produce HTML.
 
 Subagent-Driven Development plan (per user-global CLAUDE.md):
 
 - Implementer subagents (sonnet, parallel where independent):
-  - **A** — `tsconfig.json` JSX option, `package.json` add `hono`, control-layer rewrite `chats-archive.ts`. May proceed in parallel with B/C/D because the templates' public API signatures are fixed by §6/§7.
+  - **A** — `tsconfig.json` JSX option, `package.json` add `hono`, entry rewrite `chats-archive.ts` (agenda registration + `archiveAllChats` + dev runner). May proceed in parallel with B/C/D/E/F because the templates' and control-layer files' public API signatures are fixed by §5/§6/§7.
   - **B** — `templates/format.tsx`, `templates/VideoCard.tsx`.
   - **C** — `templates/VideoArchive.tsx` (largest: page shell + 9 row variants).
   - **D** — `templates/IndexPage.tsx`, `templates/ChannelIndexPage.tsx`.
+  - **E** — `chats-archive/archive-video.ts` (per-video control: cursors, `multiCursorOrderedPeek`, currencies/jpySum computation, file IO, per-row touch).
+  - **F** — `chats-archive/gen-index-file.ts` and `chats-archive/gen-channel-index-file.ts` (index control: cursors, isDirect recalc, per-channel regen loop, file IO).
 - Spec Reviewer (opus): verifies §6/§7/§8 are honored, public API signatures match exactly, `<!DOCTYPE>` prepending and ROWS_MARKER splitting are correctly implemented, no template imports DB models, every behavioral diff in §8 is preserved (especially the no-trailing-`<br/>` poll join). Spec Reviewer must include concrete patch suggestions, not just descriptions.
 - Code Quality Reviewer (sonnet): naming, dead code, lint conformance.
 - Final Code Reviewer (opus): integration audit; runs the validation checklist (§10) end-to-end.
