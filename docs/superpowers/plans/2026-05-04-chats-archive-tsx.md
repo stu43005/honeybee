@@ -86,15 +86,21 @@ Before any changes, capture HTML output from the current code against a develope
 
   Place alongside existing entries. Do not modify any other key.
 
-- [ ] **Step 2: Verify hono dependency is present and installed**
+- [ ] **Step 2: Move hono from devDependencies to dependencies**
 
-  At plan-writing time, `package.json` already declares `"hono": "^4.12.16"` (line 63). Run:
+  At plan-writing time, `package.json` declares `"hono": "^4.12.16"` in **`devDependencies`** (line 63). This is incorrect: hono is imported at runtime by `templates/*.tsx`, so it must be in `dependencies`.
+
+  Manually edit `package.json`:
+  - Remove the `"hono": "^4.12.16",` line from `devDependencies`.
+  - Add `"hono": "^4.12.16",` to `dependencies` in alphabetical order (between `"holodex.js"` and `"json-templates"`).
+
+  Then run:
 
   ```bash
   npm install
   ```
 
-  Expected: `node_modules/hono` exists at version satisfying `^4.12.16`. Confirm:
+  Confirm:
 
   ```bash
   node -e "console.log(require('hono/package.json').version)"
@@ -102,7 +108,7 @@ Before any changes, capture HTML output from the current code against a develope
 
   Expected output: `4.12.16` (or a later 4.x).
 
-  Fallback (only if `package.json` no longer contains the entry by the time this task runs): manually add `"hono": "^4.12.16",` to `dependencies` in alphabetical order, then run `npm install`. Do not use `npm install hono@^4.12.16` because npm rewrites the caret range to the highest matching version.
+  Note: do not use `npm install hono@^4.12.16` because npm would rewrite the caret range to the highest matching version, drifting from the spec-required `^4.12.16` literal.
 
 - [ ] **Step 3: Verify build still passes (no source changes yet)**
 
@@ -114,11 +120,9 @@ Before any changes, capture HTML output from the current code against a develope
 
 - [ ] **Step 4: Commit**
 
-  Stage the changed files. `package.json` is unchanged if hono was already present (a no-op `git add`). `package-lock.json` may have updated.
-
   ```bash
   git add tsconfig.json package.json package-lock.json
-  git commit -m "chore(tsconfig): add JSX options for chats-archive refactor"
+  git commit -m "chore: move hono to dependencies and add JSX tsconfig"
   ```
 
 ---
