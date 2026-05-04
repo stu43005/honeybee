@@ -103,10 +103,10 @@ Before any changes, capture HTML output from the current code against a develope
   Confirm:
 
   ```bash
-  node -e "console.log(require('hono/package.json').version)"
+  grep '"version"' node_modules/hono/package.json | head -1
   ```
 
-  Expected output: `4.12.16` (or a later 4.x).
+  Expected: a line containing `"version": "4.12.16"` (or a later 4.x). The project is ESM (`"type": "module"`) and hono's `exports` map does not expose `./package.json`, so `require('hono/package.json')` would fail — use the `grep` approach instead.
 
   Note: do not use `npm install hono@^4.12.16` because npm would rewrite the caret range to the highest matching version, drifting from the spec-required `^4.12.16` literal.
 
