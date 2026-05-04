@@ -14,7 +14,7 @@
 - Top-level index page (`genIndexFile`) — live + past video cards.
 - Per-channel index page (`genChannelIndexFile`) — recent videos for one channel.
 
-Current implementation builds HTML with template strings written directly to a `fs.createWriteStream` (`ws.write(...)`). Per-video rows are streamed as they are read from a merged Mongo cursor (`multiCursorOrderedPeek`). The job calls `await job?.touch()` once per row to maintain Agenda's lock; Agenda internally throttles the persisted touch to once per half-timeout, so per-row cost is negligible.
+Current implementation builds HTML with template strings written directly to a `fs.createWriteStream` (`ws.write(...)`). Per-video rows are streamed as they are read from a merged Mongo cursor (`multiCursorOrderedPeek`). The current code calls `await job?.touch()` **once per video** in `archiveAllChats`'s outer loop (between videos); `archiveVideo` itself does not receive `job` and never touches the lock during the row loop. For very long live streams (tens of thousands of rows) a single video's row loop can therefore approach Agenda's lock timeout. This refactor takes the opportunity to add a per-row `await job?.touch()` inside `archiveVideo` (Agenda internally throttles the persisted touch to once per half-timeout, so per-row cost is negligible). The signature of `archiveVideo` therefore changes to accept an optional `job?: Job` parameter that `archiveAllChats` forwards.
 
 User-supplied content (`video.title`, `chat.authorName`, `milestone.message`, etc.) is currently **not HTML-escaped** when interpolated into template strings, which is a latent XSS risk. `chat.message` has been confirmed by the user to be plain text (not HTML-rich), so auto-escaping is a clean improvement with no rendering regression.
 
@@ -22,7 +22,7 @@ User-supplied content (`video.title`, `chat.authorName`, `milestone.message`, et
 
 1. Replace template-string HTML in `chats-archive.ts` with `hono/jsx` TSX components.
 2. Preserve row-by-row streaming for the per-video archive page.
-3. Preserve `await job?.touch()` keepalive inside the row loop.
+3. Add per-row `await job?.touch()` keepalive inside `archiveVideo`'s row loop (a deliberate enhancement over the current per-video touch in `archiveAllChats`; see §1 last paragraph). Pass `job` explicitly through `archiveVideo(videoId, job?)`.
 4. Split the file by responsibility: control layer (`.ts`, no JSX) vs. presentation layer (`.tsx`).
 5. Auto-escape user-supplied content via hono/jsx default escaping.
 6. Keep the dev runner (`isMain(import.meta)` block) functional for manual verification.
@@ -98,7 +98,7 @@ Approximate sizes:
 ### Control vs. presentation boundary
 
 - **Control layer (`chats-archive.ts`)** owns: Agenda registration; DB cursor open/iterate (`VideoModel`, `VideoStatsModel`, `ChatModel`, `SuperChatModel`, `SuperStickerModel`, `MembershipModel`, `MembershipGiftModel`, `MembershipGiftPurchaseModel`, `MilestoneModel`, `PollModel`, `RaidModel`, `ChannelModel`); `multiCursorOrderedPeek`; `recalcVideoHbStats` invocation; file IO (`createWriteStream`, `mkdir`, `rename`, `unlink`); `archiveVideo` / `genIndexFile` / `genChannelIndexFile` / `archiveAllChats` orchestration; the `isMain(import.meta)` dev runner.
-- **Presentation layer (`templates/*.tsx`)** owns: HTML structure, CSS strings, toggle script string, JSX components. Components accept **plain props** only — never raw mongoose documents traversed for fields the component does not name. (Where it is more ergonomic to pass a `DocumentType<Video>` because the component reads many of its fields, that is allowed; the rule is no DB calls, no mongoose-specific operations like `.populate()` or `.find()`, no IO.)
+- **Presentation layer (`templates/*.tsx`)** owns: HTML structure, CSS strings, toggle script string, JSX components. Components accept **plain props** only — never raw mongoose documents traversed for fields the component does not name. (Where it is more ergonomic to pass a `DocumentType<Video>` because the component reads many of its fields, that is allowed; the rule is no DB calls, no mongoose-specific operations like `.populate()` or `.find()`, no IO.) Read-only access to `doc.collection.name` for switch dispatch in `<ChatRow>` is explicitly permitted, since it is a synchronous in-memory property read used solely for discriminating which sub-component to render and does not initiate any DB activity.
 
 ## 6. Streaming Hot-Path Mechanism
 
@@ -179,13 +179,19 @@ export async function renderChannelIndexShell(props: {
 }): Promise<[head: string, tail: string]>;
 ```
 
-`genIndexFile` flow:
+`genIndexFile` flow (the `isDirect` flag mirrors the existing `backfill` parameter on `videoCard`: when running as the dev runner via `isMain`, recalc HbStats and re-fetch the video before rendering, so the card shows fresh stats):
 
 ```ts
 const [head, between, tail] = await renderIndexShell();
 ws.write(head);
-for await (const video of liveVideosCursor) {
+const isDirect = isMain(import.meta);
+for await (let video of liveVideosCursor) {
   // existing skip logic preserved
+  if (isDirect) {
+    await recalcVideoHbStats([video.id]);
+    const updated = await VideoModel.findByVideoId(video.id);
+    if (updated) video = updated;
+  }
   channelIds.add(video.channelId);
   ws.write(
     await renderVideoCard({
@@ -195,11 +201,16 @@ for await (const video of liveVideosCursor) {
       hbStats: video.hbStats,
     })
   );
-  if (isMain(import.meta)) await archiveVideo(video.id);
+  if (isDirect) await archiveVideo(video.id);
 }
 ws.write(between);
-for await (const video of pastVideosCursor) {
+for await (let video of pastVideosCursor) {
   // existing skip logic preserved
+  if (isDirect) {
+    await recalcVideoHbStats([video.id]);
+    const updated = await VideoModel.findByVideoId(video.id);
+    if (updated) video = updated;
+  }
   channelIds.add(video.channelId);
   ws.write(
     await renderVideoCard({
@@ -209,13 +220,13 @@ for await (const video of pastVideosCursor) {
       hbStats: video.hbStats,
     })
   );
-  if (isMain(import.meta)) await archiveVideo(video.id);
+  if (isDirect) await archiveVideo(video.id);
 }
 ws.write(tail);
 ws.end();
 ```
 
-`genChannelIndexFile` follows the same pattern with one shell tuple. The `count === 0 → unlink` branch is preserved.
+`genChannelIndexFile` follows the same single-shell-tuple pattern (`renderChannelIndexShell({ channel })` returns `[head, tail]`) and applies the same `isDirect` recalc step before each `renderVideoCard`. The `count === 0 → unlink` branch is preserved.
 
 ### Why this avoids "for await inside JSX"
 
@@ -271,23 +282,41 @@ Internal components (private to file):
 
 - `<VideoArchivePage>` — full page JSX with `raw(ROWS_MARKER)` placeholder.
 - `<PageHead>` — `<head>` block; CSS injected via `<style dangerouslySetInnerHTML={{ __html: PAGE_CSS }} />`.
-- `<HeaderBlock>` — title/thumbnail and the currency stats table at the top.
-- `<CurrencyTable>` — receives computed `currencies` and `jpySum` arrays.
-- `<ToggleControls>` — the fixed checkbox UI.
+- `<HeaderBlock>` — title/thumbnail row plus the currency stats table. **Preserves the existing two-row outer `<table>` wrapper from the current source (lines 196–251):** an outer `<table>` containing one `<tr><td>` for the title + thumbnail and a second `<tr><td>` for the inner `<table class="superchat-table">` currency table. This wrapper does not affect the toggle script but is part of the DOM-equivalence requirement (Goal §2.7).
+- `<CurrencyTable>` — receives computed `currencies` and `jpySum` arrays. Renders inside the second `<td>` of `<HeaderBlock>`'s outer table.
+- `<ToggleControls>` — the fixed checkbox UI. **Significance toggles 1–7 must each contain a 16×16 inline `<div>` whose `background-color` matches the existing palette exactly: 1=blue, 2=lightblue, 3=green, 4=yellow, 5=orange, 6=magenta, 7=red.** The block also contains a `toggle-all-significance` master checkbox above the seven, and toggles for `owner`, `moderator`, `memberships`, `milestones`, `membershipgifts`, `membershipgiftpurchases`, `superchats`, `superstickers` (the last two default checked), `polls`, `raids`. Layout `<br/>` breaks between groups must match the current source (lines 253–272).
 - `<ChatTableHead>` — table header `<tr>` with column titles.
 - `<TogglesScript>` — `<script dangerouslySetInnerHTML={{ __html: TOGGLE_SCRIPT }} />` at end of body.
-- `<ChatRow>` — wraps `<tr>` with id/class, dispatches inner cells via switch on `doc.collection.name`.
-- `<AuthorPhoto>` — shared element returning `<img ... />` if `src` provided, else `null`.
+- `<ChatRow>` — wraps `<tr id={doc._id} class={...}>` with id/class, emits the leading `<td style="text-align: right;">{no}</td>`, and dispatches the remaining cells via switch on `doc.collection.name`. **Author-photo dispatch rule:** `<ChatRow>` does _not_ compute author photo; each cell sub-component receives the typed `doc` as a prop and is responsible for selecting the appropriate field — non-raid variants read `doc.authorPhoto`; `<RaidCells>` reads `doc.sourcePhoto`. Both render via the shared `<AuthorPhoto src={...} />` element.
+- `<AuthorPhoto>` — shared element. When `src` is truthy: renders `<img src={src} style="height: 48px; border-radius: 50%;" loading="lazy" alt="author photo" />` followed by a literal space character (matching the current source's `+ " "` after the photo `<img>`). When `src` is falsy: renders `null`.
 - 9 row-cell components, each rendering the `<td>` cells for one row variant:
   - `<OwnerOrModeratorChatCells>` — for `chats` collection (covers both owner and moderator chats; the `class="row chats owner"` vs `class="row chats moderator"` distinction is added by `<ChatRow>`'s class computation, not by the cells).
   - `<SuperChatCells>`
   - `<SuperStickerCells>`
   - `<MembershipCells>`
   - `<MembershipGiftCells>`
-  - `<MembershipGiftPurchaseCells>` — wraps `amount` in `<span class="gift-count">{amount}</span>` so the toggle script's count-summing logic continues to work.
+  - `<MembershipGiftPurchaseCells>` — renders the doc's `amount` field (the **gift count**, not a currency value) inside `<span class="gift-count">{doc.amount}</span>`. The toggle script reads these spans and sums them to compute the total displayed in the `membershipgiftpurchases` toggle label `(count: N, total: M)`.
   - `<MilestoneCells>`
-  - `<PollCells>` — handles the prepended `createdAt` time when present, reproduces the choices `<br/>`-joined list with optional voteRatio percentage, and the `voteCount ? \`${voteCount} votes\` : ""` prefix.
-  - `<RaidCells>` — renders source author photo and the "and their viewers just joined" message.
+  - `<PollCells>` — when `poll.createdAt` is present, the time `<td>` renders BOTH timestamps separated by a literal space + `~<br/>`, mirroring the current source line 478–480 string concat. Concrete shape:
+
+    ```tsx
+    <td>
+      {poll.createdAt ? (
+        <>
+          <FormattedTimestamp video={video} timestamp={poll.createdAt} />
+          {" ~"}
+          <br />
+          <FormattedTimestamp video={video} timestamp={timestamp} />
+        </>
+      ) : (
+        <FormattedTimestamp video={video} timestamp={timestamp} />
+      )}
+    </td>
+    ```
+
+    The message `<td>` reproduces `voteCount` prefix + question + each choice line with optional voteRatio percentage, joined by `<br/>` _between_ lines (no trailing `<br/>`); see §8 row "poll.choices.map(...).join(...) trailing-`<br/>` behavior" for the exact reproduction technique.
+
+  - `<RaidCells>` — reads `doc.sourcePhoto` for the photo cell (rendered via `<AuthorPhoto>`) and `doc.sourceName` for the author and message cells. Message text: `${sourceName ?? ''} and their viewers just joined. Say hello!`.
 
 Class computation helper:
 
