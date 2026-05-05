@@ -1040,72 +1040,6 @@ The largest template: page shell + 9 row-cell components + class computation + C
     );
   }
 
-  function PageHead({ video }: { video: DocumentType<Video> }) {
-    return (
-      <head>
-        <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>{video.title}</title>
-        <style dangerouslySetInnerHTML={{ __html: PAGE_CSS }} />
-      </head>
-    );
-  }
-
-  function HeaderBlock({
-    video,
-    currencies,
-    jpySum,
-  }: {
-    video: DocumentType<Video>;
-    currencies: CurrencyAgg[];
-    jpySum: number;
-  }) {
-    return (
-      <table>
-        <tr>
-          <td>
-            <h1>
-              <a href={VideoModel.getUrl(video)}>{video.title}</a>
-            </h1>
-            <img
-              class="video-thumbnail small"
-              src={VideoModel.getVideoThumbnails(video).maxres}
-              onclick="this.classList.toggle('small')"
-            />
-          </td>
-        </tr>
-        <tr>
-          <td>
-            <CurrencyTable currencies={currencies} jpySum={jpySum} />
-          </td>
-        </tr>
-      </table>
-    );
-  }
-
-  function ChatTableHead() {
-    return (
-      <tr>
-        <th>No.</th>
-        <th>Timestamp</th>
-        <th>Currency</th>
-        <th></th>
-        <th>Icon</th>
-        <th>Author</th>
-        <th>Message</th>
-      </tr>
-    );
-  }
-
-  function TogglesScript() {
-    return (
-      <script
-        type="text/javascript"
-        dangerouslySetInnerHTML={{ __html: TOGGLE_SCRIPT }}
-      />
-    );
-  }
-
   function VideoArchivePage(props: {
     video: DocumentType<Video>;
     currencies: CurrencyAgg[];
@@ -1114,17 +1048,54 @@ The largest template: page shell + 9 row-cell components + class computation + C
     const { video, currencies, jpySum } = props;
     return (
       <html lang="ja">
-        <PageHead video={video} />
+        <head>
+          <meta charset="UTF-8" />
+          <meta
+            name="viewport"
+            content="width=device-width, initial-scale=1.0"
+          />
+          <title>{video.title}</title>
+          <style dangerouslySetInnerHTML={{ __html: PAGE_CSS }} />
+        </head>
         <body>
-          <HeaderBlock video={video} currencies={currencies} jpySum={jpySum} />
+          <table>
+            <tr>
+              <td>
+                <h1>
+                  <a href={VideoModel.getUrl(video)}>{video.title}</a>
+                </h1>
+                <img
+                  class="video-thumbnail small"
+                  src={VideoModel.getVideoThumbnails(video).maxres}
+                  onclick="this.classList.toggle('small')"
+                />
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <CurrencyTable currencies={currencies} jpySum={jpySum} />
+              </td>
+            </tr>
+          </table>
           <hr />
           <ToggleControls />
           <hr />
           <table id="chats-table" border="1">
-            <ChatTableHead />
+            <tr>
+              <th>No.</th>
+              <th>Timestamp</th>
+              <th>Currency</th>
+              <th></th>
+              <th>Icon</th>
+              <th>Author</th>
+              <th>Message</th>
+            </tr>
             {raw(ROWS_MARKER)}
           </table>
-          <TogglesScript />
+          <script
+            type="text/javascript"
+            dangerouslySetInnerHTML={{ __html: TOGGLE_SCRIPT }}
+          />
         </body>
       </html>
     );
