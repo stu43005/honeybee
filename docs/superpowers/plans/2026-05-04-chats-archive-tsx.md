@@ -923,8 +923,8 @@ The largest template: page shell + 9 row-cell components + class computation + C
   Append:
 
   ```tsx
-  interface CurrencyAgg {
-    _id: string;
+  export interface CurrencyAgg {
+    currency: string;
     amount: number;
     jpyAmount: number;
   }
@@ -946,9 +946,9 @@ The largest template: page shell + 9 row-cell components + class computation + C
         </tr>
         {currencies.map((c) => (
           <tr>
-            <td>{currencyMap[c._id]?.symbol ?? "N/A"}</td>
-            <td>{c._id ?? "N/A"}</td>
-            <td>{formatCurrency(c.amount, c._id, "decimal")}</td>
+            <td>{currencyMap[c.currency]?.symbol ?? "N/A"}</td>
+            <td>{c.currency ?? "N/A"}</td>
+            <td>{formatCurrency(c.amount, c.currency, "decimal")}</td>
             <td>{formatCurrency(Math.round(c.jpyAmount), "JPY", "decimal")}</td>
           </tr>
         ))}
@@ -1448,6 +1448,7 @@ Per-video control: opens 10 cursors (chat × 2 + 8 others), merges by timestamp,
     renderChatRow,
     renderVideoArchiveShell,
     type ChatRowDoc,
+    type CurrencyAgg,
   } from "./templates/VideoArchive.js";
 
   function getOutputFilePath(video: DocumentType<Video>): string {
@@ -1526,22 +1527,19 @@ Per-video control: opens 10 cursors (chat × 2 + 8 others), merges by timestamp,
     );
 
     const currencies = stats
-      .reduce<{ _id: string; amount: number; jpyAmount: number }[]>(
-        (acc, stat) => {
-          let currency = acc.find((c) => c._id === stat.currency);
-          if (!currency) {
-            currency = { _id: stat.currency!, amount: 0, jpyAmount: 0 };
-            acc.push(currency);
-          }
-          if (stat.type === VideoStatsType.PurchaseAmountTotal) {
-            currency.amount += stat.value;
-          } else if (stat.type === VideoStatsType.PurchaseAmountJpyTotal) {
-            currency.jpyAmount += stat.value;
-          }
-          return acc;
-        },
-        []
-      )
+      .reduce<CurrencyAgg[]>((acc, stat) => {
+        let entry = acc.find((c) => c.currency === stat.currency);
+        if (!entry) {
+          entry = { currency: stat.currency!, amount: 0, jpyAmount: 0 };
+          acc.push(entry);
+        }
+        if (stat.type === VideoStatsType.PurchaseAmountTotal) {
+          entry.amount += stat.value;
+        } else if (stat.type === VideoStatsType.PurchaseAmountJpyTotal) {
+          entry.jpyAmount += stat.value;
+        }
+        return acc;
+      }, [])
       .sort((a, b) => b.jpyAmount - a.jpyAmount);
     const jpySum = currencies.reduce(
       (acc, c) => acc + Math.round(c.jpyAmount),
