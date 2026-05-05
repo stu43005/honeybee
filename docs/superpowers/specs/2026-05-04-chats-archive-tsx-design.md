@@ -105,10 +105,10 @@ Approximate sizes:
 
 The control layer is split into four files by responsibility:
 
-- **`chats-archive.ts`** (entry) owns: Agenda registration (`chatsArchive`, `agenda.define("chats archive", ...)`, `agenda.define("chats archive index", ...)`); the `archiveAllChats` outer loop (which iterates `VideoStatsModel.getVideoIdsWithoutFlag` and calls `archiveVideo` per video, then sets the processed flag); the per-video `await job?.touch()` between videos (existing behavior, preserved); the `isMain(import.meta)` dev runner block; default export `chatsArchive(app)`. Imports `archiveVideo` from `./chats-archive/archive-video.js` and `genIndexFile` from `./chats-archive/gen-index-file.js`.
+- **`chats-archive.ts`** (entry) owns: Agenda registration (`chatsArchive`, `agenda.define("chats archive", ...)`, `agenda.define("chats archive index", () => genIndexFile())`); the `archiveAllChats` outer loop (which iterates `VideoStatsModel.getVideoIdsWithoutFlag` and calls `archiveVideo` per video, then sets the processed flag); the per-video `await job?.touch()` between videos (existing behavior, preserved); the `isMain(import.meta)` dev runner block (which calls `genIndexFile({ isDirect: true })`); default export `chatsArchive(app)`. Imports `archiveVideo` from `./chats-archive/archive-video.js` and `genIndexFile` from `./chats-archive/gen-index-file.js`. **`isMain(import.meta)` is only meaningful here** — sub-files must not call it (it would always return `false` since `chats-archive.ts` is the only entry point that would have its module URL match the process entry).
 - **`chats-archive/archive-video.ts`** owns: `archiveVideo(videoId, job?)`; the merged-cursor reader `multiCursorOrderedPeek` (private, file-local; only used here); cursor opens for `Chat` (owner) / `Chat` (moderator) / `SuperChat` / `SuperSticker` / `Membership` / `MembershipGift` / `MembershipGiftPurchase` / `Milestone` / `Poll` / `Raid`; computation of `currencies` and `jpySum` from `VideoStatsModel` aggregates before calling `renderVideoArchiveShell`; file IO for the per-video HTML (`createWriteStream`, `mkdir`, `rename`, `unlink`, tmp-file → final-file); per-row `await job?.touch()` keepalive inside the row loop. Exports `archiveVideo`.
-- **`chats-archive/gen-index-file.ts`** owns: top-level `genIndexFile()`; iterating `VideoModel.findLiveVideos(48)` and `VideoModel.findRecentlyEndedVideos(48)` with the existing skip predicates preserved; `isDirect` recalc step (`recalcVideoHbStats` + re-fetch when running via `isMain`); `await video.getChannel()` per video; the placeholder+split write of head/between/tail; the per-channel index regen loop at the end (calls `genChannelIndexFile` for each channel that contributed at least one video). Imports `archiveVideo` from `./archive-video.js` (for the `if (isDirect) await archiveVideo(...)` dev-mode call) and `genChannelIndexFile` from `./gen-channel-index-file.js`. Exports `genIndexFile`.
-- **`chats-archive/gen-channel-index-file.ts`** owns: `genChannelIndexFile(channelId)`; channel lookup via `ChannelModel.findByChannelId`; `VideoModel.find({ channelId, uploadedVideo: { $ne: true } })` cursor with sort/limit/populate preserved; `isDirect` recalc step; the placeholder+split write of head/tail; `count === 0 → unlink` branch. Imports `archiveVideo` from `./archive-video.js`. Exports `genChannelIndexFile`.
+- **`chats-archive/gen-index-file.ts`** owns: top-level `genIndexFile({ isDirect = false }: { isDirect?: boolean } = {})`; iterating `VideoModel.findLiveVideos(48)` and `VideoModel.findRecentlyEndedVideos(48)` with the existing skip predicates preserved; the `isDirect` recalc step (`recalcVideoHbStats` + re-fetch when `isDirect === true`); `await video.getChannel()` per video; the placeholder+split write of head/between/tail; the per-channel index regen loop at the end, which forwards `isDirect` to each `genChannelIndexFile(channelId, { isDirect })` call. Imports `archiveVideo` from `./archive-video.js` (for the `if (isDirect) await archiveVideo(...)` dev-mode call) and `genChannelIndexFile` from `./gen-channel-index-file.js`. Exports `genIndexFile`. Does **not** import `isMain` — the flag is provided by the caller.
+- **`chats-archive/gen-channel-index-file.ts`** owns: `genChannelIndexFile(channelId: string, { isDirect = false }: { isDirect?: boolean } = {})`; channel lookup via `ChannelModel.findByChannelId`; `VideoModel.find({ channelId, uploadedVideo: { $ne: true } })` cursor with sort/limit/populate preserved; `isDirect` recalc step (same semantics as `gen-index-file.ts`); the placeholder+split write of head/tail; `count === 0 → unlink` branch. Imports `archiveVideo` from `./archive-video.js`. Exports `genChannelIndexFile`. Does **not** import `isMain`.
 
 The three sub-files under `chats-archive/` (`archive-video.ts`, `gen-index-file.ts`, `gen-channel-index-file.ts`) share the same rules: DB cursor open/iterate, `recalcVideoHbStats` invocation (where applicable), file IO, and JSX-string concatenation via `ws.write(await render*(...))`. The entry `chats-archive.ts` is purely an orchestration shim and performs none of those operations directly. None of the four control-layer files import from each other except via the explicit imports listed above (no circular).
 
@@ -193,54 +193,61 @@ export async function renderChannelIndexShell(props: {
 }): Promise<[head: string, tail: string]>;
 ```
 
-`genIndexFile` flow (the `isDirect` flag mirrors the existing `backfill` parameter on `videoCard`: when running as the dev runner via `isMain`, recalc HbStats and re-fetch the video before rendering, so the card shows fresh stats):
+`genIndexFile` flow (the `isDirect` flag mirrors the existing `backfill` parameter on `videoCard`: when running as the dev runner, recalc HbStats and re-fetch the video before rendering, so the card shows fresh stats. The flag is **passed in** from the entry — sub-files do not call `isMain(import.meta)` themselves because their module URL never equals the process entry and the call would always return `false`):
 
 ```ts
-const [head, between, tail] = await renderIndexShell();
-ws.write(head);
-const isDirect = isMain(import.meta);
-for await (let video of liveVideosCursor) {
-  // existing skip logic preserved
-  if (isDirect) {
-    await recalcVideoHbStats([video.id]);
-    const updated = await VideoModel.findByVideoId(video.id);
-    if (updated) video = updated;
+export async function genIndexFile({
+  isDirect = false,
+}: { isDirect?: boolean } = {}): Promise<void> {
+  const [head, between, tail] = await renderIndexShell();
+  ws.write(head);
+  for await (let video of liveVideosCursor) {
+    // existing skip logic preserved
+    if (isDirect) {
+      await recalcVideoHbStats([video.id]);
+      const updated = await VideoModel.findByVideoId(video.id);
+      if (updated) video = updated;
+    }
+    channelIds.add(video.channelId);
+    ws.write(
+      await renderVideoCard({
+        video,
+        channel: await video.getChannel(),
+        basePath: "",
+        hbStats: video.hbStats,
+      })
+    );
+    if (isDirect) await archiveVideo(video.id);
   }
-  channelIds.add(video.channelId);
-  ws.write(
-    await renderVideoCard({
-      video,
-      channel: await video.getChannel(),
-      basePath: "",
-      hbStats: video.hbStats,
-    })
-  );
-  if (isDirect) await archiveVideo(video.id);
-}
-ws.write(between);
-for await (let video of pastVideosCursor) {
-  // existing skip logic preserved
-  if (isDirect) {
-    await recalcVideoHbStats([video.id]);
-    const updated = await VideoModel.findByVideoId(video.id);
-    if (updated) video = updated;
+  ws.write(between);
+  for await (let video of pastVideosCursor) {
+    // existing skip logic preserved
+    if (isDirect) {
+      await recalcVideoHbStats([video.id]);
+      const updated = await VideoModel.findByVideoId(video.id);
+      if (updated) video = updated;
+    }
+    channelIds.add(video.channelId);
+    ws.write(
+      await renderVideoCard({
+        video,
+        channel: await video.getChannel(),
+        basePath: "",
+        hbStats: video.hbStats,
+      })
+    );
+    if (isDirect) await archiveVideo(video.id);
   }
-  channelIds.add(video.channelId);
-  ws.write(
-    await renderVideoCard({
-      video,
-      channel: await video.getChannel(),
-      basePath: "",
-      hbStats: video.hbStats,
-    })
-  );
-  if (isDirect) await archiveVideo(video.id);
+  ws.write(tail);
+  ws.end();
+
+  for (const channelId of channelIds) {
+    await genChannelIndexFile(channelId, { isDirect });
+  }
 }
-ws.write(tail);
-ws.end();
 ```
 
-`genChannelIndexFile` follows the same single-shell-tuple pattern (`renderChannelIndexShell({ channel })` returns `[head, tail]`) and applies the same `isDirect` recalc step before each `renderVideoCard`. The `count === 0 → unlink` branch is preserved.
+`genChannelIndexFile(channelId, { isDirect })` follows the same single-shell-tuple pattern (`renderChannelIndexShell({ channel })` returns `[head, tail]`), receives `isDirect` from `genIndexFile`, and applies the same `isDirect` recalc step before each `renderVideoCard`. The `count === 0 → unlink` branch is preserved.
 
 ### Why this avoids "for await inside JSX"
 

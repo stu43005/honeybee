@@ -1639,13 +1639,15 @@ Done before `gen-index-file.ts` because the index file imports it.
   import { CHAT_ARCHIVE_DIR } from "../../constants.js";
   import ChannelModel from "../../models/Channel.js";
   import VideoModel from "../../models/Video.js";
-  import { isMain } from "../../utils/esm.js";
   import { archiveVideo } from "./archive-video.js";
   import { recalcVideoHbStats } from "../video-stats.js";
   import { renderChannelIndexShell } from "./templates/ChannelIndexPage.js";
   import { renderVideoCard } from "./templates/VideoCard.js";
 
-  export async function genChannelIndexFile(channelId: string): Promise<void> {
+  export async function genChannelIndexFile(
+    channelId: string,
+    { isDirect = false }: { isDirect?: boolean } = {}
+  ): Promise<void> {
     assert(CHAT_ARCHIVE_DIR, "CHAT_ARCHIVE_DIR is not defined.");
     const outputFilePath = path.join(CHAT_ARCHIVE_DIR, channelId, "index.html");
     await fsp.mkdir(path.dirname(outputFilePath), { recursive: true });
@@ -1660,7 +1662,6 @@ Done before `gen-index-file.ts` because the index file imports it.
     const [head, tail] = await renderChannelIndexShell({ channel });
     ws.write(head);
 
-    const isDirect = isMain(import.meta);
     let count = 0;
     for await (let video of VideoModel.find({
       channelId,
@@ -1724,14 +1725,15 @@ Done before `gen-index-file.ts` because the index file imports it.
   import { VideoStatus } from "holodex.js";
   import { CHAT_ARCHIVE_DIR } from "../../constants.js";
   import VideoModel from "../../models/Video.js";
-  import { isMain } from "../../utils/esm.js";
   import { archiveVideo } from "./archive-video.js";
   import { genChannelIndexFile } from "./gen-channel-index-file.js";
   import { recalcVideoHbStats } from "../video-stats.js";
   import { renderIndexShell } from "./templates/IndexPage.js";
   import { renderVideoCard } from "./templates/VideoCard.js";
 
-  export async function genIndexFile(): Promise<void> {
+  export async function genIndexFile({
+    isDirect = false,
+  }: { isDirect?: boolean } = {}): Promise<void> {
     assert(CHAT_ARCHIVE_DIR, "CHAT_ARCHIVE_DIR is not defined.");
     const outputFilePath = path.join(CHAT_ARCHIVE_DIR, "index.html");
     await fsp.mkdir(path.dirname(outputFilePath), { recursive: true });
@@ -1743,7 +1745,6 @@ Done before `gen-index-file.ts` because the index file imports it.
     ws.write(head);
 
     const channelIds = new Set<string>();
-    const isDirect = isMain(import.meta);
 
     for await (let video of VideoModel.findLiveVideos(48)
       .sort({ availableAt: 1 })
@@ -1808,7 +1809,7 @@ Done before `gen-index-file.ts` because the index file imports it.
 
     for (const channelId of channelIds) {
       try {
-        await genChannelIndexFile(channelId);
+        await genChannelIndexFile(channelId, { isDirect });
       } catch (error) {
         console.error(
           `Failed to generate channel index for ${channelId}:`,
@@ -1868,7 +1869,7 @@ Reduce the entry file from ~927 lines to ~80 lines: agenda registration, `archiv
       agenda.define("chats archive", archiveAllChats);
       void agenda.every("1 minutes", "chats archive");
 
-      agenda.define("chats archive index", genIndexFile);
+      agenda.define("chats archive index", () => genIndexFile());
       void agenda.every("10 minutes", "chats archive index");
     }
   }
@@ -1925,7 +1926,7 @@ Reduce the entry file from ~927 lines to ~80 lines: agenda registration, `archiv
     void (async () => {
       assert(MONGO_URI, "MONGO_URI should be defined.");
       await mongoose.connect(MONGO_URI);
-      await genIndexFile();
+      await genIndexFile({ isDirect: true });
       await mongoose.disconnect();
       process.exit(0);
     })();
