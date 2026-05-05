@@ -116,5 +116,6 @@ function VideoCard(props: VideoCardProps) {
 }
 
 export async function renderVideoCard(props: VideoCardProps): Promise<string> {
-  return await Promise.resolve(<VideoCard {...props} />);
+  // eslint-disable-next-line @typescript-eslint/no-base-to-string, @typescript-eslint/await-thenable
+  return await (<VideoCard {...props} />).toString();
 }
