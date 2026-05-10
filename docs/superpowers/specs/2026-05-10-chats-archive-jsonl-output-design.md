@@ -210,6 +210,12 @@ Rules:
   (same as today).
 - `totalGiftAmount` is the sum of `amount` across `membershipGiftPurchase`
   rows.
+- All `Date`-typed fields in `meta.json` (under `video.*`) and per-row
+  `timestamp` values are serialized via `JSON.stringify`'s default `Date`
+  handling, which produces ISO 8601 strings. No custom serializer is
+  introduced. Undefined optional date fields are omitted from the output
+  object before `JSON.stringify` (so they do not appear as `null` in the
+  final JSON).
 - `raidCount` increments once per emitted raid row (covering both `raid` and
   `raidOutgoing`).
 - `chatCount` is deduplicated by `chat.id`. The cursor merges
@@ -319,6 +325,14 @@ renders `?? 0` in all three positions. `stats` itself is always present.
 `VideoSummary.channel` is sourced from `await video.getChannel()` (the same
 call existing HTML pages use). `avatarUrl` is omitted from the `channel`
 object when undefined.
+
+For `data/index.json` and `data/channels/{channelId}.json`, channel lookups
+follow the existing HTML implementation's pattern — do not introduce new
+batching or caching as part of this spec. The JSON output is produced in
+the same loop the HTML output uses, sharing whatever per-video channel
+resolution that loop already performs. If a future PR optimizes the HTML
+loop to batch-resolve channels, the JSON path inherits the optimization
+automatically.
 
 ### 4.2 `data/index.json`
 
