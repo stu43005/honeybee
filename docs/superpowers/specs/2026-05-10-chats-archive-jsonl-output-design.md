@@ -199,7 +199,10 @@ Rules:
 
 - All `hb*` fields on the source `Video` document are dropped
   (`hbStatus`, `hbStart`, `hbEnd`, `hbCleanedAt`, `hbReplica`, `hbErrorCode`,
-  `hbStats`, `hbRecordReplay`, `hbIgnore`).
+  `hbStats`, `hbRecordReplay`, `hbIgnore`). The exception is the new
+  `Video.hbStats.chatsArchiveVersion` field (see §3.1), which is surfaced
+  via `VideoSummary.archiveVersion` (§4.1) — but never under the `hb*`
+  name in any output.
 - `aggregates` is computed by manager during the same cursor pass that writes
   JSONL. Counters increment on each emitted row by `type`. `currencyTable` and
   `jpyTotal` reuse the existing currency `$group` aggregation already run by
@@ -220,6 +223,33 @@ Rules:
   which falls through to `updatedAt` for Poll documents. Cursor sorting also
   uses `updatedAt: 1`, so emit order matches the existing HTML.
 
+### 3.1 Archive format version write-back
+
+A new field is added to the `Video.hbStats` Typegoose sub-schema:
+
+```ts
+chatsArchiveVersion?: number;
+```
+
+Semantics:
+
+- Absent / `undefined` / `1` — the archive for this video was produced by an
+  older code path that emits HTML only. SPA must fall back to the existing
+  `.html` artifact.
+- `2` — `archiveVideo` has successfully produced all three new artifacts
+  (`{videoId}.jsonl`, `{videoId}.meta.json`, plus the existing HTML); the
+  SPA may load `data/videos/{videoId}.{jsonl,meta.json}`.
+
+The value is bumped to `2` by `archiveVideo` only after **all** renames in
+§5.1 step 6 complete successfully (i.e., the three final-name files are in
+place on disk). The bump is a `VideoModel.updateOne({ id: videoId }, { $set:
+{ "hbStats.chatsArchiveVersion": 2 } })` call. If any rename fails, the
+version is not bumped and the SPA continues to see the prior value.
+
+No backfill: existing videos retain `undefined` until they are re-archived.
+The `manager` service does not run a separate version-bump job for historic
+data.
+
 ## 4. `data/index.json` and `data/channels/{channelId}.json`
 
 ### 4.1 `VideoSummary`
@@ -239,6 +269,7 @@ Shared shape used by both files:
   "status": "...",
   "scheduledStart?": "ISO 8601",
   "availableAt": "ISO 8601",
+  "archiveVersion": 1,
   "stats": {
     "superChatTotalJpy": 0,
     "memberCount": 0,
@@ -246,6 +277,11 @@ Shared shape used by both files:
   },
 }
 ```
+
+`archiveVersion` is sourced from `Video.hbStats.chatsArchiveVersion` (see
+§3.1). Defaults to `1` when undefined. SPA branches on this value to decide
+whether to fetch JSON artifacts (`>= 2`) or fall back to the legacy HTML
+artifact (`< 2`).
 
 `stats` is sourced from `Video.hbStats.{totalSuperChatAmountJpy,totalMembers,totalGifts}`
 but renamed so SPA consumers do not see internal naming. All three sub-fields
@@ -325,6 +361,10 @@ per-channel HTML iterates.
      `meta.json`. Renames are independent; if a later rename fails, the
      earlier ones still committed and the failed one stays as `.tmp` to be
      regenerated on the next archive run.
+7. After all three renames succeed, bump the version (§3.1):
+   `await VideoModel.updateOne({ id: videoId }, { $set: { "hbStats.chatsArchiveVersion": 2 } })`.
+   This step runs only on the success path; if any rename in step 6 fails,
+   the version is not bumped.
 
 Each `.tmp` rename is atomic per-file. With the rename order above the only
 inconsistent state SPA can observe is "no `meta.json` yet but `.jsonl`
@@ -355,18 +395,24 @@ is always written, even if both `live` and `past` are empty.)
 
 ## 6. Code organization
 
-No new modules, no new template files, no new type files. Three control-layer
-files take small additive changes:
+No new modules, no new template files, no new type files. Four files take
+small additive changes:
 
+- `src/models/Video.ts`
+  - Add `chatsArchiveVersion?: number` to the `Stats` sub-class (the existing
+    `hbStats` property type), with no `default` so undefined remains the
+    value for legacy documents.
 - `src/components/chats-archive/archive-video.ts`
   - Cursor loop gains a JSONL-emit branch and aggregate counters.
-  - End of function writes `meta.json`.
+  - Raid cursor query extended to `$or: [{ originVideoId }, { sourceVideoId }]`.
+  - End of function writes `meta.json` and bumps
+    `Video.hbStats.chatsArchiveVersion` to `2`.
 - `src/components/chats-archive/gen-index-file.ts`
   - After the live + past video loop, stringify the same `VideoSummary` list
-    and write `data/index.json`.
+    (now including `archiveVersion`) and write `data/index.json`.
 - `src/components/chats-archive/gen-channel-index-file.ts`
   - After the channel's video loop, stringify the same `VideoSummary` list
-    and write `data/channels/{channelId}.json`.
+    (now including `archiveVersion`) and write `data/channels/{channelId}.json`.
 
 Row-to-output transformation and summary-object construction live inline in
 these three files (~100 lines total). The shape is small enough that
@@ -403,3 +449,25 @@ against a Mongo with real archive data and inspecting outputs:
    per-channel HTML page; for each entry, `stats.superChatTotalJpy` /
    `memberCount` / `giftCount` match the SC / Members / Gifts numbers in the
    corresponding HTML card footer.
+8. Find a video where a chat author has both `isOwner: true` and
+   `isModerator: true` (insert a test row if none exists). Confirm the
+   produced JSONL contains exactly one row for that `chat.id`, and
+   `meta.json` `aggregates.chatCount` equals the unique-`id` count (no double
+   counting from the merged owner/moderator cursors).
+9. Run `archiveVideo` against a video whose cursors all return zero rows.
+   Confirm no `.html`, `.jsonl`, `.meta.json`, or `.tmp` siblings are left
+   behind under `{channelId}/{date}_{videoId}.*` or `data/videos/{videoId}.*`,
+   and `Video.hbStats.chatsArchiveVersion` is **not** bumped.
+10. After a normal `archiveVideo` run, `stat` the three artifacts; their
+    `mtime` ordering must satisfy `.html ≤ .jsonl ≤ .meta.json` (rename
+    order from §5.1 step 6). After the run, query the Video document and
+    confirm `hbStats.chatsArchiveVersion === 2`.
+11. Find a video that received a raid (`Raid.originVideoId === videoId`) and
+    a video that sent a raid (`Raid.sourceVideoId === videoId`). Confirm the
+    receiving video's JSONL contains a `raid` row with `sourceName` /
+    `sourcePhoto` populated; the sending video's JSONL contains a
+    `raidOutgoing` row with `originVideoId` / `originName` / `originPhoto`
+    populated. `meta.json` `aggregates.raidCount` covers both row types.
+12. In `data/index.json`, confirm a freshly archived video has
+    `archiveVersion: 2` while a legacy video (no re-archive since this
+    spec) has `archiveVersion: 1`.
