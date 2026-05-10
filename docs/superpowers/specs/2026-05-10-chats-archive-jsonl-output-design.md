@@ -250,6 +250,33 @@ No backfill: existing videos retain `undefined` until they are re-archived.
 The `manager` service does not run a separate version-bump job for historic
 data.
 
+**Recovery on `updateOne` failure.** If all renames in §5.1 step 6 succeed
+but the subsequent `updateOne` throws (Mongo unavailable, network blip),
+the error is logged and propagated. Disk has v2 artifacts but
+`chatsArchiveVersion` stays at the prior value (typically `undefined` or
+`1`); SPA will fall back to the legacy HTML for this video. The next
+`archiveVideo` invocation regenerates all artifacts (overwriting via
+`.tmp` + rename) and re-attempts the bump. Both the disk write and the
+`updateOne` are idempotent.
+
+**Idempotency.** `archiveVideo` does not check `chatsArchiveVersion` before
+running — every invocation unconditionally re-produces all three artifacts
+and re-runs the `updateOne`. Re-`$set`ting `2` on an already-`2` document
+is a no-op. No short-circuit branch is added.
+
+**Mongoose `$set` on dotted paths — implementer must verify before coding.**
+The plan must include a research step that opens
+`node_modules/mongoose` (version pinned by `package.json`) and confirms
+that `Model.updateOne({ id: videoId }, { $set: { "hbStats.chatsArchiveVersion": 2 } })`
+on a document where `hbStats === undefined` creates the parent sub-doc and
+sets the leaf, **without** triggering schema-default population for the
+sibling `Stats` fields (`handled`, `errorCount`). The CLAUDE.md global
+rule explicitly lists mongoose under "must read source, not just docs"
+for this kind of update behavior. If verification reveals different
+semantics (e.g. `$set` rejects unless parent exists), the implementer
+must use a two-step `$setOnInsert` + `$set` upsert or a `find` →
+`save` flow and update this spec section before implementing.
+
 ## 4. `data/index.json` and `data/channels/{channelId}.json`
 
 ### 4.1 `VideoSummary`
@@ -322,7 +349,13 @@ per-channel HTML iterates.
 ### 5.1 Per-video (`archiveVideo`)
 
 1. Ensure directories: `mkdir -p {CHAT_ARCHIVE_DIR}/{channelId}` and
-   `{CHAT_ARCHIVE_DIR}/data/videos`.
+   `{CHAT_ARCHIVE_DIR}/data/videos`. Then unlink any pre-existing `.tmp`
+   siblings for this video
+   (`{channelId}/{date}_{videoId}.html.tmp`,
+   `data/videos/{videoId}.jsonl.tmp`,
+   `data/videos/{videoId}.meta.json.tmp`) using `fs.rm` with
+   `{ force: true }` so a prior partially-failed run does not leak state
+   into the new run.
 2. Open three write streams (each to a `.tmp` sibling):
    - `{channelId}/{date}_{videoId}.html.tmp` (existing).
    - `data/videos/{videoId}.jsonl.tmp` (new).
@@ -333,13 +366,17 @@ per-channel HTML iterates.
 4. Extend the existing raid cursor query from `{ originVideoId: videoId }` to
    `{ $or: [{ originVideoId: videoId }, { sourceVideoId: videoId }] }` so
    outgoing raids are included. Sort remains `{ timestamp: 1 }`. The HTML
-   `RaidCells` only reads `sourcePhoto` / `sourceName` / `timestamp`, so the
-   extra outgoing rows render as empty cells in HTML; this is acceptable
-   because HTML is consumed only as a fallback and SPA is the new primary
-   surface. (If empty HTML rows are not acceptable, HTML emit must skip raid
-   docs whose `originVideoId !== videoId`.)
+   emit branch unconditionally **skips** raid docs whose
+   `originVideoId !== videoId` (HTML's existing `RaidCells` reads
+   `sourceName` which would be the _current_ channel for outgoing raids,
+   producing visibly wrong rows like "MyChannel and their viewers just
+   joined" referring to the channel itself). With this skip, HTML output
+   for incoming raids is byte-identical to the prior behavior; outgoing
+   raids appear only in JSONL.
 5. `for await` over the merged cursor (`multiCursorOrderedPeek`) for each row:
-   - HTML path unchanged: `renderChatRow(...)` → htmlWs.
+   - HTML path: for raid docs, skip if `originVideoId !== videoId`;
+     otherwise `renderChatRow(...)` → htmlWs (unchanged for the other 8
+     types).
    - JSONL path: drop documents whose collection name is not in §2.4's
      mapping table; for chats, dedupe by `id` (Set); for raid documents,
      dispatch to `raid` if `originVideoId === videoId`, else to
@@ -399,9 +436,10 @@ No new modules, no new template files, no new type files. Four files take
 small additive changes:
 
 - `src/models/Video.ts`
-  - Add `chatsArchiveVersion?: number` to the `Stats` sub-class (the existing
-    `hbStats` property type), with no `default` so undefined remains the
-    value for legacy documents.
+  - Add `chatsArchiveVersion?: number` to the `Stats` sub-class (lines
+    27–42; the existing `hbStats` property type). Place the new `@prop()`
+    after `totalGifts`, with no `default` so undefined remains the legacy
+    value for documents that have not been re-archived under this spec.
 - `src/components/chats-archive/archive-video.ts`
   - Cursor loop gains a JSONL-emit branch and aggregate counters.
   - Raid cursor query extended to `$or: [{ originVideoId }, { sourceVideoId }]`.
@@ -458,10 +496,15 @@ against a Mongo with real archive data and inspecting outputs:
    Confirm no `.html`, `.jsonl`, `.meta.json`, or `.tmp` siblings are left
    behind under `{channelId}/{date}_{videoId}.*` or `data/videos/{videoId}.*`,
    and `Video.hbStats.chatsArchiveVersion` is **not** bumped.
-10. After a normal `archiveVideo` run, `stat` the three artifacts; their
-    `mtime` ordering must satisfy `.html ≤ .jsonl ≤ .meta.json` (rename
-    order from §5.1 step 6). After the run, query the Video document and
-    confirm `hbStats.chatsArchiveVersion === 2`.
+10. After a normal `archiveVideo` run, `ls -la` the three artifact paths and
+    confirm: (a) all three final-name files exist
+    (`{channelId}/{date}_{videoId}.html`, `data/videos/{videoId}.jsonl`,
+    `data/videos/{videoId}.meta.json`); (b) no `.tmp` siblings remain;
+    (c) `meta.json` `mtime` is ≥ the other two (meta is written after
+    cursor exhaustion). HTML vs JSONL relative `mtime` ordering is not
+    guaranteed because the two streams are written concurrently during
+    the cursor loop. After the run, query the Video document and confirm
+    `hbStats.chatsArchiveVersion === 2`.
 11. Find a video that received a raid (`Raid.originVideoId === videoId`) and
     a video that sent a raid (`Raid.sourceVideoId === videoId`). Confirm the
     receiving video's JSONL contains a `raid` row with `sourceName` /
@@ -471,3 +514,13 @@ against a Mongo with real archive data and inspecting outputs:
 12. In `data/index.json`, confirm a freshly archived video has
     `archiveVersion: 2` while a legacy video (no re-archive since this
     spec) has `archiveVersion: 1`.
+13. Re-run `archiveVideo` on a video that already has
+    `hbStats.chatsArchiveVersion === 2`. Confirm the three artifacts are
+    re-produced (overwritten), `cmp` shows the `.jsonl` content matches
+    the prior run byte-for-byte (assuming no new chat data has arrived),
+    and the version field remains `2`. The re-run must not error.
+14. Manually leave a stray `data/videos/{videoId}.jsonl.tmp` from a
+    simulated prior failed run (e.g., `touch` the file). Re-run
+    `archiveVideo` for that video. Confirm the stray `.tmp` is unlinked
+    by step 1, the run completes normally, and only the three final-name
+    files remain.
