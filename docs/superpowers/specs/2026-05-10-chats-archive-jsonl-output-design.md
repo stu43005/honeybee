@@ -10,9 +10,12 @@ output is preserved unchanged for parallel operation.
 ## 1. Scope
 
 In addition to the existing HTML files, the manager service writes three new
-artifact types under `CHAT_ARCHIVE_DIR/data/`:
+artifact types under `CHAT_ARCHIVE_DIR/data/`. The `data/videos/` and
+`data/channels/` subtrees are flat (no channel/date prefix) so an SPA can
+look up by `videoId` or `channelId` alone, without needing the channel
+mapping the existing HTML paths embed:
 
-```
+```text
 {CHAT_ARCHIVE_DIR}/
 ├── {channelId}/{date}_{videoId}.html        ← existing (untouched)
 ├── {channelId}/index.html                   ← existing (untouched)
@@ -95,20 +98,24 @@ Polls and raids are not authored by a chat user; they have their own field set.
 | `choices`    | `Array<{ text: string, voteRatio?: number }>` |
 | `voteCount?` | `number`                                      |
 
-**`raid`** — emitted only when `doc.originVideoId === currentVideoId`
-(raid received by this video).
+**`raid`** — emitted when `doc.originVideoId === currentVideoId`
+(raid received by this video). The `Raid.id` field is `string | undefined` on
+the model, so `id` is optional here.
 
 | Field              | Type            |
 | ------------------ | --------------- |
-| `id`               | `string`        |
+| `id?`              | `string`        |
 | `timestamp`        | ISO 8601 string |
 | `sourceVideoId?`   | `string`        |
 | `sourceChannelId?` | `string`        |
 | `sourceName`       | `string`        |
 | `sourcePhoto?`     | `string`        |
 
-**`raidOutgoing`** — emitted only when `doc.sourceVideoId === currentVideoId`
-(raid sent from this video). Sourced from the same `Raid` model.
+**`raidOutgoing`** — emitted when `doc.sourceVideoId === currentVideoId`
+(raid sent from this video). Sourced from the same `Raid` model. This is a
+new feature relative to the existing HTML, which renders only incoming raids;
+to surface outgoing raids, the existing single-direction raid cursor must be
+extended (see §5.1 step 4 for the query change).
 
 | Field              | Type            |
 | ------------------ | --------------- |
@@ -119,17 +126,35 @@ Polls and raids are not authored by a chat user; they have their own field set.
 | `originName?`      | `string`        |
 | `originPhoto?`     | `string`        |
 
-A `Raid` document in which neither side matches `currentVideoId` is not
-expected (the cursor query is keyed by `originVideoId` / `sourceVideoId`
-matching `currentVideoId`); should one appear, drop it without emitting a row.
+If a `Raid` document matches both sides (would be unusual but theoretically
+possible), it is emitted as `raid` (incoming takes precedence). If a document
+matches neither side it is dropped (should not occur given the extended
+query).
 
-### 2.4 Row types not emitted
+### 2.4 Row types not emitted, and discriminator mapping
 
 The Mongo collections `BannerAction`, `ModeChange`, `Placeholder`,
 `BanAction`, `RemoveChatAction` have no rendering in the existing HTML
 (`ChatRow` dispatcher in `templates/VideoArchive.tsx` covers exactly the 9
-types above) and are not emitted in JSONL. Filtering happens in the cursor
-loop by checking the `type` discriminator returned by `multiCursorOrderedPeek`.
+types above) and are not emitted in JSONL.
+
+`multiCursorOrderedPeek` yields raw Mongo documents with no `type` field; the
+existing HTML dispatcher branches on `doc.collection.name`. The JSONL emit
+branch uses the same property and maps it to the output `type` string:
+
+| `doc.collection.name`     | JSONL `type`                                 |
+| ------------------------- | -------------------------------------------- |
+| `chats`                   | `chat`                                       |
+| `superchats`              | `superChat`                                  |
+| `superstickers`           | `superSticker`                               |
+| `memberships`             | `membership`                                 |
+| `membershipgifts`         | `membershipGift`                             |
+| `membershipgiftpurchases` | `membershipGiftPurchase`                     |
+| `milestones`              | `milestone`                                  |
+| `polls`                   | `poll`                                       |
+| `raids`                   | `raid` or `raidOutgoing` (per §2.3 dispatch) |
+
+Any other collection name is dropped without emitting a row.
 
 ## 3. `data/videos/{videoId}.meta.json` schema
 
@@ -182,6 +207,18 @@ Rules:
   (same as today).
 - `totalGiftAmount` is the sum of `amount` across `membershipGiftPurchase`
   rows.
+- `raidCount` increments once per emitted raid row (covering both `raid` and
+  `raidOutgoing`).
+- `chatCount` is deduplicated by `chat.id`. The cursor merges
+  `ownerChatCursor` and `moderatorChatCursor` and a chat that is both owner
+  and moderator would otherwise be counted (and emitted) twice. JSONL emit
+  keeps an in-memory `Set<string>` of seen `chat.id` values; on a duplicate,
+  skip emit and skip the counter increment. (The existing HTML inherits the
+  same potential duplication and is left as-is — the only change in behavior
+  is JSONL-side dedup; HTML row count is unaffected.)
+- `poll.timestamp` in JSONL is the value returned by `getTimestamp(pollDoc)`,
+  which falls through to `updatedAt` for Poll documents. Cursor sorting also
+  uses `updatedAt: 1`, so emit order matches the existing HTML.
 
 ## 4. `data/index.json` and `data/channels/{channelId}.json`
 
@@ -203,17 +240,22 @@ Shared shape used by both files:
   "scheduledStart?": "ISO 8601",
   "availableAt": "ISO 8601",
   "stats": {
-    "superChatTotalJpy?": 0,
-    "memberCount?": 0,
-    "giftCount?": 0,
+    "superChatTotalJpy": 0,
+    "memberCount": 0,
+    "giftCount": 0,
   },
 }
 ```
 
 `stats` is sourced from `Video.hbStats.{totalSuperChatAmountJpy,totalMembers,totalGifts}`
-but renamed so SPA consumers do not see internal naming. The three sub-fields
-remain optional because `Video.hbStats` is itself optional. `stats` is always
-present (possibly `{}`); SPA may default missing values to 0.
+but renamed so SPA consumers do not see internal naming. All three sub-fields
+are always present as `number`, defaulting to `0` when `Video.hbStats` (or
+the sub-field) is undefined — matching the existing HTML `VideoCard` which
+renders `?? 0` in all three positions. `stats` itself is always present.
+
+`VideoSummary.channel` is sourced from `await video.getChannel()` (the same
+call existing HTML pages use). `avatarUrl` is omitted from the `channel`
+object when undefined.
 
 ### 4.2 `data/index.json`
 
@@ -252,25 +294,43 @@ per-channel HTML iterates.
      step 5.
 3. Pre-aggregate currency totals via the existing Mongo `$group` (shared with
    HTML).
-4. `for await` over the merged cursor (`multiCursorOrderedPeek`) for each row:
+4. Extend the existing raid cursor query from `{ originVideoId: videoId }` to
+   `{ $or: [{ originVideoId: videoId }, { sourceVideoId: videoId }] }` so
+   outgoing raids are included. Sort remains `{ timestamp: 1 }`. The HTML
+   `RaidCells` only reads `sourcePhoto` / `sourceName` / `timestamp`, so the
+   extra outgoing rows render as empty cells in HTML; this is acceptable
+   because HTML is consumed only as a fallback and SPA is the new primary
+   surface. (If empty HTML rows are not acceptable, HTML emit must skip raid
+   docs whose `originVideoId !== videoId`.)
+5. `for await` over the merged cursor (`multiCursorOrderedPeek`) for each row:
    - HTML path unchanged: `renderChatRow(...)` → htmlWs.
-   - JSONL path: filter to the 9 emitted types; for `Raid` docs, dispatch to
-     either `raid` or `raidOutgoing` based on whether `sourceVideoId` or
-     `originVideoId` matches `currentVideoId`; build the output object
-     according to §2; `JSON.stringify(obj) + "\n"` → jsonlWs.
-   - Increment the matching counter in an in-memory `aggregates` object.
-   - `job?.touch()` keepalive uses the current condition (unchanged).
-5. After cursor exhaustion:
-   - Close htmlWs and jsonlWs.
-   - Write `data/videos/{videoId}.meta.json.tmp` (video + channel + aggregates
-     - reused currency totals).
-   - `fs.rename` each `.tmp` → final name. Renames are independent; if any
-     fails, the others succeed and the failed one stays as `.tmp` (next archive
-     run regenerates from scratch).
+   - JSONL path: drop documents whose collection name is not in §2.4's
+     mapping table; for chats, dedupe by `id` (Set); for raid documents,
+     dispatch to `raid` if `originVideoId === videoId`, else to
+     `raidOutgoing` if `sourceVideoId === videoId`; build the output object
+     per §2; `JSON.stringify(obj) + "\n"` → jsonlWs.
+   - Increment the matching aggregate counter (after dedupe for chat).
+   - `job?.touch()` keepalive uses the existing condition (unchanged).
+6. After cursor exhaustion:
+   - If `no === 0` (no rows emitted to HTML), unlink all three `.tmp` files
+     and return without producing any final artifact (mirrors the existing
+     HTML empty-archive behavior on line 207–210 of `archive-video.ts`).
+   - Otherwise: close `htmlWs` and `jsonlWs`; write
+     `data/videos/{videoId}.meta.json.tmp` (video + channel + aggregates +
+     reused currency totals).
+   - `fs.rename` each `.tmp` → final name **in this order**:
+     `.html` → `.jsonl` → `.meta.json` (meta last). SPA convention is to
+     fetch `meta.json` first; the ordering guarantees the corresponding
+     `.jsonl` is already in place at its final name when SPA observes
+     `meta.json`. Renames are independent; if a later rename fails, the
+     earlier ones still committed and the failed one stays as `.tmp` to be
+     regenerated on the next archive run.
 
-Each `.tmp` rename is atomic per-file. There is no cross-file atomicity
-guarantee, but a partially written `.tmp` is never visible under its final
-name, so the SPA never observes a half-written JSONL or stale meta.
+Each `.tmp` rename is atomic per-file. With the rename order above the only
+inconsistent state SPA can observe is "no `meta.json` yet but `.jsonl`
+already in place" (harmless: SPA fetches `meta.json` first and skips on 404)
+or "stale `meta.json` from a previous run still pointing at the previous
+`.jsonl`" (also harmless, both files are from the same prior run).
 
 ### 5.2 Per-channel (`genChannelIndexFile`)
 
@@ -279,7 +339,9 @@ Same loop iterates the channel's videos once and writes both:
 - `{channelId}/index.html.tmp` (existing).
 - `data/channels/{channelId}.json.tmp` (new).
 
-`fs.rename` each at the end.
+If the channel has no videos and the existing implementation skips the HTML
+write, mirror that: unlink both `.tmp` files and return. Otherwise rename
+`.html` first, then `.json`.
 
 ### 5.3 Top index (`genIndexFile`)
 
@@ -288,7 +350,8 @@ Same loop iterates live + past videos once and writes both:
 - `index.html.tmp` (existing).
 - `data/index.json.tmp` (new).
 
-`fs.rename` each at the end.
+Rename `.html` first, then `.json`. (No empty-list short-circuit: top index
+is always written, even if both `live` and `past` are empty.)
 
 ## 6. Code organization
 
@@ -307,9 +370,13 @@ files take small additive changes:
 
 Row-to-output transformation and summary-object construction live inline in
 these three files (~100 lines total). The shape is small enough that
-extracting a helper would be logic-free wrapping (forbidden by project
-"avoid logic-free abstractions" rule); inline keeps the data flow visible
-alongside the cursor and rename logic.
+extracting a helper would be logic-free wrapping; inline keeps the data
+flow visible alongside the cursor and rename logic.
+
+Implementation must contain no source-comment references back to this design
+document — no section markers, no `spec`/`plan` mentions, no `Task N`. The
+JSONL field manifest exists in this spec to bound the implementation; the
+resulting code should be self-explanatory from the field names alone.
 
 ## 7. Verification (manual)
 
