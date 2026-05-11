@@ -265,10 +265,18 @@ the error is logged and propagated. Disk has v2 artifacts but
 `.tmp` + rename) and re-attempts the bump. Both the disk write and the
 `updateOne` are idempotent.
 
-**Idempotency.** `archiveVideo` does not check `chatsArchiveVersion` before
-running — every invocation unconditionally re-produces all three artifacts
-and re-runs the `updateOne`. Re-`$set`ting `2` on an already-`2` document
-is a no-op. No short-circuit branch is added.
+**Idempotency.** `archiveVideo` does not check `chatsArchiveVersion` when
+deciding whether to run — every invocation unconditionally re-produces all
+three artifacts (overwriting via `.tmp` + rename). The version field has
+no influence on archive execution.
+
+The `updateOne` call, however, is skipped when the version is already at
+the target value or higher: after the three renames succeed, the in-memory
+`video.hbStats?.chatsArchiveVersion` (loaded at the start of the run) is
+compared to the constant `2`; if it is already `>= 2`, the `updateOne` is
+not issued. This avoids a redundant Mongo write on every re-archive. If
+the value is `undefined` / `< 2`, the `updateOne` runs as described
+above.
 
 **Mongoose `$set` on dotted paths — implementer must verify before coding.**
 The plan must include a research step that opens
@@ -412,10 +420,13 @@ per-channel HTML iterates.
      `meta.json`. Renames are independent; if a later rename fails, the
      earlier ones still committed and the failed one stays as `.tmp` to be
      regenerated on the next archive run.
-7. After all three renames succeed, bump the version (§3.1):
+7. After all three renames succeed, bump the version (§3.1) — but only
+   when needed. Skip the call when the in-memory
+   `video.hbStats?.chatsArchiveVersion >= 2` (already at or above the
+   target value, so the write would be a no-op). Otherwise issue
    `await VideoModel.updateOne({ id: videoId }, { $set: { "hbStats.chatsArchiveVersion": 2 } })`.
    This step runs only on the success path; if any rename in step 6 fails,
-   the version is not bumped.
+   the version is not bumped regardless of its current value.
 
 Each `.tmp` rename is atomic per-file. With the rename order above the only
 inconsistent state SPA can observe is "no `meta.json` yet but `.jsonl`
@@ -532,7 +543,11 @@ against a Mongo with real archive data and inspecting outputs:
     `hbStats.chatsArchiveVersion === 2`. Confirm the three artifacts are
     re-produced (overwritten), `cmp` shows the `.jsonl` content matches
     the prior run byte-for-byte (assuming no new chat data has arrived),
-    and the version field remains `2`. The re-run must not error.
+    and the version field remains `2`. The re-run must not error. Inspect
+    Mongo profiler / driver log to confirm **no** `updateOne` was issued
+    for the `videos` collection during this re-run (the skip in §5.1
+    step 7 must have engaged because the in-memory value was already
+    `>= 2`).
 14. Manually leave a stray `data/videos/{videoId}.jsonl.tmp` from a
     simulated prior failed run (e.g., `touch` the file). Re-run
     `archiveVideo` for that video. Confirm the stray `.tmp` is unlinked
