@@ -18,7 +18,7 @@
 - No `npm install` to "ensure" a version — verify presence in `node_modules` first.
 - Code comments must not reference this plan/spec (no `§`, `Task N`, "see plan", "依規格"). Commit-message bodies also forbidden from such references.
 
-**Pre-flight verified (not a task):** Mongoose `8.2.1` `Model.updateOne({ id }, { $set: { "hbStats.chatsArchiveVersion": 2 } })` on a document with undefined `hbStats` creates the parent sub-doc and sets the leaf (`setDottedPath()` walks the path; verified at `node_modules/mongoose/lib/helpers/path/setDottedPath.js:23-24`). Sibling defaults (`handled`, `errorCount`) are NOT populated on a non-upsert update (`setDefaultsOnInsert()` only runs on upserts). The existing codebase already uses dotted-path `$set` and `$inc` against `hbStats.*` in `src/models/Video.ts:497-498` (`Video.updateResult`) and `src/components/video-stats.ts` (`recalcVideoHbStats`, `incVideoHbStats`); Task 3's `updateOne` matches that convention.
+**Pre-flight verified (not a task):** Mongoose `8.2.1` `Model.updateOne({ id }, { $set: { "hbStats.chatsArchiveVersion": 2 } })` on a document with undefined `hbStats` creates the parent sub-doc and sets the leaf (`setDottedPath()` walks the path; verified at `node_modules/mongoose/lib/helpers/path/setDottedPath.js:23-24`). Sibling defaults (`handled`, `errorCount`) are NOT populated on a non-upsert update (`setDefaultsOnInsert()` only runs on upserts). The existing codebase already uses dotted-path `$set` and `$inc` against `hbStats.*` in `src/models/Video.ts:497-498` (`Video.updateResult`) and `src/components/video-stats.ts` (`recalcVideoHbStats`, `incVideoHbStats`); Task 4's `updateOne` matches that convention.
 
 ---
 
@@ -174,7 +174,121 @@ EOF
 
 ---
 
-## Task 3: All `archive-video.ts` changes — extend raid cursor, JSONL emit, meta.json, renames, version bump
+## Task 3: Update `RaidCells` in `templates/VideoArchive.tsx` to render outgoing raids
+
+**Why this task exists:** Task 4 extends the raid cursor with `$or` so outgoing raids reach the loop. The HTML emit branch needs a template that can render both directions; otherwise outgoing raids would either be skipped (incomplete archive) or rendered with `sourceName` referring to the current channel (self-referential nonsense).
+
+**Files:**
+
+- Modify: `src/components/chats-archive/templates/VideoArchive.tsx` (the `RaidCells` function around lines 379–400)
+- No tests (per user constraints).
+
+- [ ] **Step 1: Read the current `RaidCells` function**
+
+Read `src/components/chats-archive/templates/VideoArchive.tsx` with `offset: 379, limit: 25`.
+
+Expected: see the current `RaidCells` rendering `sourceName` / `sourcePhoto` unconditionally.
+
+- [ ] **Step 2: Replace `RaidCells` with the direction-aware version**
+
+Replace:
+
+```tsx
+function RaidCells({
+  doc,
+  video,
+}: {
+  doc: DocumentType<Raid>;
+  video: DocumentType<Video>;
+}) {
+  return (
+    <>
+      <td>
+        <FormattedTimestamp video={video} timestamp={getTimestamp(doc)} />
+      </td>
+      <td></td>
+      <td></td>
+      <td>
+        <AuthorPhoto src={doc.sourcePhoto} />
+      </td>
+      <td>{doc.sourceName ?? ""}</td>
+      <td>{doc.sourceName ?? ""} and their viewers just joined. Say hello!</td>
+    </>
+  );
+}
+```
+
+With:
+
+```tsx
+function RaidCells({
+  doc,
+  video,
+}: {
+  doc: DocumentType<Raid>;
+  video: DocumentType<Video>;
+}) {
+  const isOutgoing = doc.sourceVideoId === video.id;
+  const name = isOutgoing ? doc.originName : doc.sourceName;
+  const photo = isOutgoing ? doc.originPhoto : doc.sourcePhoto;
+  const message = isOutgoing
+    ? `Raided ${name ?? ""}. Have fun!`
+    : `${name ?? ""} and their viewers just joined. Say hello!`;
+  return (
+    <>
+      <td>
+        <FormattedTimestamp video={video} timestamp={getTimestamp(doc)} />
+      </td>
+      <td></td>
+      <td></td>
+      <td>
+        <AuthorPhoto src={photo} />
+      </td>
+      <td>{name ?? ""}</td>
+      <td>{message}</td>
+    </>
+  );
+}
+```
+
+Notes:
+
+- `isOutgoing` keys off `doc.sourceVideoId === video.id`. This is the same condition the JSONL emitter uses (in Task 4) to dispatch `raid` vs `raidOutgoing`.
+- A doc whose `sourceVideoId` matches the current video is outgoing; everything else (including the typical case `originVideoId === video.id`) renders as incoming. If neither field matches (should not occur given the extended cursor), the doc still renders as incoming with whatever `sourceName` it carries — this is defensive, not a real code path.
+- Incoming output is byte-identical to the previous version: same wording, same photo source, same name column.
+
+- [ ] **Step 3: Validate**
+
+Run in parallel:
+
+```bash
+npx tsc --noEmit
+npm run lint
+npm run format:check
+```
+
+Expected: all three exit 0. If `format:check` complains, run `npm run format` then re-run.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/components/chats-archive/templates/VideoArchive.tsx
+git commit -m "$(cat <<'EOF'
+feat(chats-archive): render outgoing raids in the HTML archive
+
+RaidCells now branches on doc.sourceVideoId === video.id. Outgoing
+raids render the destination channel (originName / originPhoto) with
+the message "Raided <originName>. Have fun!"; incoming raids preserve
+the existing wording and field references. Pairs with the next change
+which extends the raid cursor to fetch both directions.
+
+EOF
+)"
+```
+
+---
+
+## Task 4: All `archive-video.ts` changes — extend raid cursor, JSONL emit, meta.json, renames, version bump
 
 **Why this task is a single commit:** the changes touch one file in three logical sections (pre-loop setup, cursor body, post-loop tail). The ESLint config has `@typescript-eslint/no-unused-vars: "error"`, so any intermediate commit that introduces `jsonlWs` / `jsonlPath` / `metaPath` without their consumers would hard-fail lint and violate the "every commit must pass lint" constraint. Landing all three sections together keeps every commit green.
 
@@ -338,15 +452,8 @@ With:
     const collectionName = (doc as { collection: { name: string } }).collection
       .name;
 
-    // RaidCells reads sourceName which is the current channel for outgoing
-    // raids; skip them on the HTML side to avoid self-referential rows.
-    const isOutgoingRaid =
-      collectionName === "raids" &&
-      (doc as { originVideoId?: string }).originVideoId !== videoId;
-    if (!isOutgoingRaid) {
-      no++;
-      ws.write(await renderChatRow({ doc, no, video }));
-    }
+    no++;
+    ws.write(await renderChatRow({ doc, no, video }));
 
     // JSONL-side dedup only: owner + moderator chat cursors can return the
     // same document; HTML preserves the prior (possibly duplicated) behavior.
@@ -695,7 +802,7 @@ EOF
 
 ---
 
-## Task 4: Write `data/index.json` from `genIndexFile`
+## Task 5: Write `data/index.json` from `genIndexFile`
 
 **Files:**
 
@@ -820,7 +927,7 @@ EOF
 
 ---
 
-## Task 5: Write `data/channels/{channelId}.json` from `genChannelIndexFile`
+## Task 6: Write `data/channels/{channelId}.json` from `genChannelIndexFile`
 
 **Files:**
 
@@ -947,7 +1054,7 @@ EOF
 
 ---
 
-## Task 6: Final manual verification (USER ACTION)
+## Task 7: Final manual verification (USER ACTION)
 
 This task does not execute any code changes. It documents the manual verification steps the user runs locally to confirm the implementation works end-to-end. The Implementer subagent should NOT mark this complete — it remains pending until the user confirms.
 
