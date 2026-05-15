@@ -388,17 +388,22 @@ per-channel HTML iterates.
 4. Extend the existing raid cursor query from `{ originVideoId: videoId }` to
    `{ $or: [{ originVideoId: videoId }, { sourceVideoId: videoId }] }` so
    outgoing raids are included. Sort remains `{ timestamp: 1 }`. The HTML
-   emit branch unconditionally **skips** raid docs whose
-   `originVideoId !== videoId` (HTML's existing `RaidCells` reads
-   `sourceName` which would be the _current_ channel for outgoing raids,
-   producing visibly wrong rows like "MyChannel and their viewers just
-   joined" referring to the channel itself). With this skip, HTML output
-   for incoming raids is byte-identical to the prior behavior; outgoing
-   raids appear only in JSONL.
+   `RaidCells` template (in `templates/VideoArchive.tsx`) is updated to
+   render **both** directions: branch on
+   `doc.sourceVideoId === video.id` (outgoing) vs otherwise (incoming).
+   - Incoming preserves the existing wording / fields:
+     `<AuthorPhoto src={doc.sourcePhoto}>`, name column shows
+     `doc.sourceName`, message column shows
+     `"<sourceName> and their viewers just joined. Say hello!"`.
+   - Outgoing reads `doc.originPhoto` / `doc.originName` and renders
+     `"Raided <originName>. Have fun!"` as the message column.
+     With this template change, HTML continues to be a complete and
+     self-consistent archive — outgoing raids appear with the destination
+     channel's name, never the current channel's name.
 5. `for await` over the merged cursor (`multiCursorOrderedPeek`) for each row:
-   - HTML path: for raid docs, skip if `originVideoId !== videoId`;
-     otherwise `renderChatRow(...)` → htmlWs (unchanged for the other 8
-     types).
+   - HTML path: `renderChatRow(...)` → htmlWs unconditionally for all
+     emitted types, including both raid directions (the updated
+     `RaidCells` handles the direction internally).
    - JSONL path: drop documents whose collection name is not in §2.4's
      mapping table; for chats, dedupe by `id` (Set); for raid documents,
      dispatch to `raid` if `originVideoId === videoId`, else to
@@ -457,9 +462,15 @@ is always written, even if both `live` and `past` are empty.)
 
 ## 6. Code organization
 
-No new modules, no new template files, no new type files. Four files take
+No new modules, no new template files, no new type files. Five files take
 small additive changes:
 
+- `src/components/chats-archive/templates/VideoArchive.tsx`
+  - `RaidCells` is updated to branch on
+    `doc.sourceVideoId === video.id`: outgoing raids render
+    `originName` / `originPhoto` with the message
+    `"Raided <originName>. Have fun!"`; incoming preserves the existing
+    `sourceName` / `sourcePhoto` rendering.
 - `src/models/Video.ts`
   - Add `chatsArchiveVersion?: number` to the `Stats` sub-class (lines
     27–42; the existing `hbStats` property type). Place the new `@prop()`
