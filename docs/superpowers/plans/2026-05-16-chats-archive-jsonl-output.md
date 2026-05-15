@@ -18,110 +18,11 @@
 - No `npm install` to "ensure" a version — verify presence in `node_modules` first.
 - Code comments must not reference this plan/spec (no `§`, `Task N`, "see plan", "依規格"). Commit-message bodies also forbidden from such references.
 
----
-
-## Task 1: Verify mongoose dotted-path `$set` semantics
-
-**Why this task exists:** Task 4 calls `VideoModel.updateOne({ id }, { $set: { "hbStats.chatsArchiveVersion": 2 } })` on documents where `hbStats` may be `undefined`. Project rules (CLAUDE.md + chats-archive spec) require verifying mongoose behavior against `node_modules/mongoose` (version `~8.2.0`, resolved `8.2.1`) before coding. The implementer must NOT skip this.
-
-**Files:**
-
-- Read: `node_modules/mongoose/lib/model.js`
-- Read: `node_modules/mongoose/lib/helpers/update/castUpdate.js`
-- Create: `docs/superpowers/research/2026-05-16-mongoose-set-dotted-path.md` (research note, committed so the merged Task 4 subagent can read it).
-
-- [ ] **Step 1: Confirm mongoose version**
-
-Run: `grep '"version"' node_modules/mongoose/package.json`
-
-Expected output line: `"version": "8.2.1",`
-
-If the version is not `8.2.x`, STOP and ask the user — the plan was written against `8.2.1`.
-
-- [ ] **Step 2: Create research directory**
-
-Run: `mkdir -p docs/superpowers/research`
-
-- [ ] **Step 3: Dispatch a research subagent**
-
-Use the Agent tool with `subagent_type: general-purpose`, `model: haiku`, and this prompt:
-
-```text
-Read node_modules/mongoose source (version 8.2.1) and answer three
-questions about Model.updateOne({ id: "VID" }, { $set: { "hbStats.chatsArchiveVersion": 2 } }) on a
-document whose hbStats is undefined (the parent sub-doc does not exist):
-
-Q1. Does mongoose:
-  (a) successfully create the parent sub-document and set the leaf value,
-  (b) throw / reject because the parent path is missing, or
-  (c) silently no-op?
-
-Q2. Does this $set operation trigger schema default population for the
-sibling fields of hbStats that have `default: 0` in the Typegoose @prop
-definition (specifically `handled` and `errorCount`)? Yes or no.
-
-Q3. Any version-specific gotchas in mongoose 8.x for dotted-path $set on
-nested sub-documents (vs 7.x or 6.x)?
-
-Read lib/model.js (updateOne), lib/helpers/update/castUpdate.js, and any
-sub-doc cast helpers. Quote relevant code with file:line citations. Do
-not rely on docs alone — read the source.
-
-Save your report to docs/superpowers/research/2026-05-16-mongoose-set-dotted-path.md
-in this exact format (≤300 words):
-
-  # Mongoose $set dotted-path verification
-
-  - mongoose version: 8.2.1
-  - Q1 verdict: (a) | (b) | (c)
-  - Q2 verdict: yes | no
-  - Q3 verdict: [one-line summary, or "none"]
-
-  ## Citations
-  - file/path.js:LINE — "quoted code"
-  - file/path.js:LINE — "quoted code"
-
-  ## Notes
-  [≤150 words of relevant context]
-
-The explicit verdict tags (Q1, Q2, Q3) are mandatory — Task 4's
-implementer will grep for them.
-```
-
-- [ ] **Step 4: Decision gate**
-
-Read `docs/superpowers/research/2026-05-16-mongoose-set-dotted-path.md`.
-
-Proceed to Task 2 **only if both** of these hold:
-
-- Q1 verdict is `(a)` (parent sub-doc auto-created)
-- Q2 verdict is `no` (sibling defaults are NOT populated by the dotted `$set`)
-
-Otherwise STOP and update the spec section "Mongoose `$set` on dotted paths" with the workaround:
-
-- If Q1 is `(b)`/`(c)`: replace the bare `updateOne` with a load-mutate-save flow (`VideoModel.findOneAndUpdate({ id }, { $set: { "hbStats": { chatsArchiveVersion: 2 } } }, { new: true })`, or load with `findByVideoId`, set `video.hbStats ??= new Stats()`, set `chatsArchiveVersion`, then `save()`).
-- If Q2 is `yes` (siblings get defaulted): pick whichever flow keeps existing values intact (typically the load-mutate-save flow above).
-
-Either way, update Task 4 to match before continuing.
-
-- [ ] **Step 5: Commit research note**
-
-```bash
-git add docs/superpowers/research/2026-05-16-mongoose-set-dotted-path.md
-git commit -m "$(cat <<'EOF'
-docs(research): mongoose $set dotted-path behavior verification
-
-Verified mongoose 8.2.1 behavior for Model.updateOne with $set on a
-dotted path under an undefined parent sub-document. See the note for
-the verdict and source citations.
-
-EOF
-)"
-```
+**Pre-flight verified (not a task):** Mongoose `8.2.1` `Model.updateOne({ id }, { $set: { "hbStats.chatsArchiveVersion": 2 } })` on a document with undefined `hbStats` creates the parent sub-doc and sets the leaf (`setDottedPath()` walks the path; verified at `node_modules/mongoose/lib/helpers/path/setDottedPath.js:23-24`). Sibling defaults (`handled`, `errorCount`) are NOT populated on a non-upsert update (`setDefaultsOnInsert()` only runs on upserts). The existing codebase already uses dotted-path `$set` and `$inc` against `hbStats.*` in `src/models/Video.ts:497-498` (`Video.updateResult`) and `src/components/video-stats.ts` (`recalcVideoHbStats`, `incVideoHbStats`); Task 3's `updateOne` matches that convention.
 
 ---
 
-## Task 2: Add `chatsArchiveVersion` field to `Stats` sub-class
+## Task 1: Add `chatsArchiveVersion` field to `Stats` sub-class
 
 **Files:**
 
@@ -186,7 +87,7 @@ EOF
 
 ---
 
-## Task 3: Create shared `build-video-summary.ts` helper
+## Task 2: Create shared `build-video-summary.ts` helper
 
 **Why this task exists:** The `VideoSummary` shape is a spec-defined shared interface used by both `data/index.json` and `data/channels/{channelId}.json`. Duplicating its construction across two callsites would silently drift when the shape evolves; extracting once into a named module satisfies the project's "files that change together should live together" guideline. The helper holds real transformation logic (channel resolve, conditional fields, defaults), so this is not a logic-free abstraction.
 
@@ -201,12 +102,13 @@ Write `src/components/chats-archive/build-video-summary.ts` with:
 
 ```ts
 import type { DocumentType } from "@typegoose/typegoose";
+import ChannelModel from "../../models/Channel.js";
 import type { Video } from "../../models/Video.js";
 
 export async function buildVideoSummary(
   video: DocumentType<Video>
 ): Promise<Record<string, unknown>> {
-  const channel = await video.getChannel();
+  const channel = await ChannelModel.findByChannelId(video.channelId);
   const channelObj: Record<string, unknown> = channel
     ? { id: channel.id, name: channel.name }
     : { id: video.channelId, name: video.channelId };
@@ -236,8 +138,8 @@ export async function buildVideoSummary(
 
 Notes on this code:
 
-- `video.getChannel()` reuses the populated `channel` ref when available (no extra round trip on populated docs).
-- Channel fallback: when `getChannel()` returns null (channel deleted / not yet crawled), we surface `{ id: channelId, name: channelId }` so the SPA still gets a non-empty channel block. This is a defensive fallback; populated runs always have a real channel name.
+- `ChannelModel.findByChannelId(video.channelId)` is used directly (not `video.getChannel()`) because `getChannel()` calls `assert(channel, "Unable to get the channel.")` and throws when the channel row is missing. The SPA-facing JSON should degrade gracefully for newly-crawled videos whose channel row has not been populated yet, so we read the channel ourselves and fall through to the `{ id: channelId, name: channelId }` shape when not found.
+- This means an extra `findByChannelId` round trip per video summary (not reusing the loop's `populate("channel")`). Trade-off accepted: existing HTML loops only populate `channel` for `renderVideoCard`; the JSON summary needs a real null check, and a 1-query-per-video cost on the index pages (≤96 videos for live+past, ≤100 per channel) is bounded. If profiling shows this matters later, batch via `ChannelModel.find({ id: { $in: [...] } })` in a separate optimization PR.
 - Dates (`scheduledStart`, `availableAt`) are passed through as `Date` objects. `JSON.stringify` invokes `Date.prototype.toJSON` which produces ISO 8601 strings — no custom serializer.
 - `??` defaults for `archiveVersion` / `stats.*` match the existing HTML `VideoCard`'s `?? 0` semantics so SPA card output matches HTML card output byte-for-byte at the numeric level.
 
@@ -272,7 +174,7 @@ EOF
 
 ---
 
-## Task 4: All `archive-video.ts` changes — extend raid cursor, JSONL emit, meta.json, renames, version bump
+## Task 3: All `archive-video.ts` changes — extend raid cursor, JSONL emit, meta.json, renames, version bump
 
 **Why this task is a single commit:** the changes touch one file in three logical sections (pre-loop setup, cursor body, post-loop tail). The ESLint config has `@typescript-eslint/no-unused-vars: "error"`, so any intermediate commit that introduces `jsonlWs` / `jsonlPath` / `metaPath` without their consumers would hard-fail lint and violate the "every commit must pass lint" constraint. Landing all three sections together keeps every commit green.
 
@@ -281,19 +183,11 @@ EOF
 - Modify: `src/components/chats-archive/archive-video.ts`
 - No tests (per user constraints).
 
-- [ ] **Step 1: Pre-flight — read the research note**
-
-Read `docs/superpowers/research/2026-05-16-mongoose-set-dotted-path.md`.
-
-If `Q1 verdict: (a)` and `Q2 verdict: no`, proceed with the `updateOne` form in Step 6 below.
-
-If either differs, STOP and apply the spec workaround (see Task 1 Step 4 decision gate). Do not silently change `updateOne` semantics.
-
-- [ ] **Step 2: Read the current file**
+- [ ] **Step 1: Read the current file**
 
 Read `src/components/chats-archive/archive-video.ts` (full file, 213 lines).
 
-- [ ] **Step 3: Add the `ChannelModel` import**
+- [ ] **Step 2: Add the `ChannelModel` import**
 
 Find the import block at the top (lines 8–21). After the line `import ChatModel from "../../models/Chat.js";` (around line 10), insert:
 
@@ -309,7 +203,7 @@ Also add the stream-finished helper. After the existing `import fsp from "node:f
 import { finished } from "node:stream/promises";
 ```
 
-- [ ] **Step 4: Extend the raid cursor query**
+- [ ] **Step 3: Extend the raid cursor query**
 
 Replace:
 
@@ -331,7 +225,7 @@ const raidCursor = RaidModel.find({
   .cursor();
 ```
 
-- [ ] **Step 5: Replace the pre-loop setup block**
+- [ ] **Step 4: Replace the pre-loop setup block**
 
 Find lines 121–125 (the `outputFilePath` / `mkdir` / `createWriteStream` block) and the surrounding shell-render call. Replace:
 
@@ -378,7 +272,7 @@ const jsonlWs = fs.createWriteStream(`${jsonlPath}.tmp`, {
 });
 ```
 
-- [ ] **Step 6: Replace the cursor loop**
+- [ ] **Step 5: Replace the cursor loop**
 
 Find the loop starting `let no = 0;` (around line 187) through the `ws.end(tail);` (line 205) and the empty-archive / rename block (lines 207–212). Replace the entire block:
 
@@ -444,13 +338,6 @@ With:
     const collectionName = (doc as { collection: { name: string } }).collection
       .name;
 
-    // Owner + moderator cursors can return the same chat document; dedup by id.
-    if (collectionName === "chats") {
-      const chatId = (doc as { id: string }).id;
-      if (seenChatIds.has(chatId)) continue;
-      seenChatIds.add(chatId);
-    }
-
     // RaidCells reads sourceName which is the current channel for outgoing
     // raids; skip them on the HTML side to avoid self-referential rows.
     const isOutgoingRaid =
@@ -461,10 +348,24 @@ With:
       ws.write(await renderChatRow({ doc, no, video }));
     }
 
-    const row = buildJsonlRow(doc, collectionName, videoId);
-    if (row) {
-      jsonlWs.write(JSON.stringify(row) + "\n");
-      bumpAggregate(aggregates, row.type, doc);
+    // JSONL-side dedup only: owner + moderator chat cursors can return the
+    // same document; HTML preserves the prior (possibly duplicated) behavior.
+    let isDuplicateChat = false;
+    if (collectionName === "chats") {
+      const chatId = (doc as { id: string }).id;
+      if (seenChatIds.has(chatId)) {
+        isDuplicateChat = true;
+      } else {
+        seenChatIds.add(chatId);
+      }
+    }
+
+    if (!isDuplicateChat) {
+      const row = buildJsonlRow(doc, collectionName, videoId);
+      if (row) {
+        jsonlWs.write(JSON.stringify(row) + "\n");
+        bumpAggregate(aggregates, row.type, doc);
+      }
     }
 
     await job?.touch();
@@ -541,7 +442,7 @@ With:
 }
 ```
 
-- [ ] **Step 7: Append helper functions at the bottom of the file**
+- [ ] **Step 6: Append helper functions at the bottom of the file**
 
 After the closing `}` of `archiveVideo` (now the last function in the file), append:
 
@@ -746,7 +647,7 @@ Notes on serialization:
 - `optional(key, value)` strips both `undefined` and `null` — Typegoose returns `undefined` for missing optionals, but lean/projected docs can surface `null`; either way the key is omitted.
 - The first key of every row object is `type`. V8 preserves property insertion order in `JSON.stringify`, so SPA can parse `type` from the leading bytes.
 
-- [ ] **Step 8: Validate**
+- [ ] **Step 7: Validate**
 
 Run in parallel:
 
@@ -758,7 +659,7 @@ npm run format:check
 
 Expected: all three exit 0. If `format:check` complains, run `npm run format` then re-run.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add src/components/chats-archive/archive-video.ts
@@ -794,7 +695,7 @@ EOF
 
 ---
 
-## Task 5: Write `data/index.json` from `genIndexFile`
+## Task 4: Write `data/index.json` from `genIndexFile`
 
 **Files:**
 
@@ -919,7 +820,7 @@ EOF
 
 ---
 
-## Task 6: Write `data/channels/{channelId}.json` from `genChannelIndexFile`
+## Task 5: Write `data/channels/{channelId}.json` from `genChannelIndexFile`
 
 **Files:**
 
@@ -1046,7 +947,7 @@ EOF
 
 ---
 
-## Task 7: Final manual verification (USER ACTION)
+## Task 6: Final manual verification (USER ACTION)
 
 This task does not execute any code changes. It documents the manual verification steps the user runs locally to confirm the implementation works end-to-end. The Implementer subagent should NOT mark this complete — it remains pending until the user confirms.
 
