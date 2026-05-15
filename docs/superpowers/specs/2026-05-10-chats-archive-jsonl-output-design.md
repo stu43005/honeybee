@@ -218,13 +218,10 @@ Rules:
   final JSON).
 - `raidCount` increments once per emitted raid row (covering both `raid` and
   `raidOutgoing`).
-- `chatCount` is deduplicated by `chat.id`. The cursor merges
-  `ownerChatCursor` and `moderatorChatCursor` and a chat that is both owner
-  and moderator would otherwise be counted (and emitted) twice. JSONL emit
-  keeps an in-memory `Set<string>` of seen `chat.id` values; on a duplicate,
-  skip emit and skip the counter increment. (The existing HTML inherits the
-  same potential duplication and is left as-is — the only change in behavior
-  is JSONL-side dedup; HTML row count is unaffected.)
+- `chatCount` increments once per emitted `chat` row. The `ownerChatCursor`
+  and `moderatorChatCursor` cannot return the same document because
+  `isOwner` and `isModerator` are mutually exclusive in the masterchat
+  data model (a channel owner is never also marked as a moderator).
 - `poll.timestamp` in JSONL is the value returned by `getTimestamp(pollDoc)`,
   which falls through to `updatedAt` for Poll documents. Cursor sorting also
   uses `updatedAt: 1`, so emit order matches the existing HTML.
@@ -405,11 +402,11 @@ per-channel HTML iterates.
      emitted types, including both raid directions (the updated
      `RaidCells` handles the direction internally).
    - JSONL path: drop documents whose collection name is not in §2.4's
-     mapping table; for chats, dedupe by `id` (Set); for raid documents,
-     dispatch to `raid` if `originVideoId === videoId`, else to
-     `raidOutgoing` if `sourceVideoId === videoId`; build the output object
-     per §2; `JSON.stringify(obj) + "\n"` → jsonlWs.
-   - Increment the matching aggregate counter (after dedupe for chat).
+     mapping table; for raid documents, dispatch to `raid` if
+     `originVideoId === videoId`, else to `raidOutgoing` if
+     `sourceVideoId === videoId`; build the output object per §2;
+     `JSON.stringify(obj) + "\n"` → jsonlWs.
+   - Increment the matching aggregate counter.
    - `job?.touch()` keepalive uses the existing condition (unchanged).
 6. After cursor exhaustion:
    - If `no === 0` (no rows emitted to HTML), unlink all three `.tmp` files
@@ -523,34 +520,29 @@ against a Mongo with real archive data and inspecting outputs:
    per-channel HTML page; for each entry, `stats.superChatTotalJpy` /
    `memberCount` / `giftCount` match the SC / Members / Gifts numbers in the
    corresponding HTML card footer.
-8. Find a video where a chat author has both `isOwner: true` and
-   `isModerator: true` (insert a test row if none exists). Confirm the
-   produced JSONL contains exactly one row for that `chat.id`, and
-   `meta.json` `aggregates.chatCount` equals the unique-`id` count (no double
-   counting from the merged owner/moderator cursors).
-9. Run `archiveVideo` against a video whose cursors all return zero rows.
+8. Run `archiveVideo` against a video whose cursors all return zero rows.
    Confirm no `.html`, `.jsonl`, `.meta.json`, or `.tmp` siblings are left
    behind under `{channelId}/{date}_{videoId}.*` or `data/videos/{videoId}.*`,
    and `Video.hbStats.chatsArchiveVersion` is **not** bumped.
-10. After a normal `archiveVideo` run, `ls -la` the three artifact paths and
-    confirm: (a) all three final-name files exist
-    (`{channelId}/{date}_{videoId}.html`, `data/videos/{videoId}.jsonl`,
-    `data/videos/{videoId}.meta.json`); (b) no `.tmp` siblings remain;
-    (c) `meta.json` `mtime` is ≥ the other two (meta is written after
-    cursor exhaustion). HTML vs JSONL relative `mtime` ordering is not
-    guaranteed because the two streams are written concurrently during
-    the cursor loop. After the run, query the Video document and confirm
-    `hbStats.chatsArchiveVersion === 2`.
-11. Find a video that received a raid (`Raid.originVideoId === videoId`) and
+9. After a normal `archiveVideo` run, `ls -la` the three artifact paths and
+   confirm: (a) all three final-name files exist
+   (`{channelId}/{date}_{videoId}.html`, `data/videos/{videoId}.jsonl`,
+   `data/videos/{videoId}.meta.json`); (b) no `.tmp` siblings remain;
+   (c) `meta.json` `mtime` is ≥ the other two (meta is written after
+   cursor exhaustion). HTML vs JSONL relative `mtime` ordering is not
+   guaranteed because the two streams are written concurrently during
+   the cursor loop. After the run, query the Video document and confirm
+   `hbStats.chatsArchiveVersion === 2`.
+10. Find a video that received a raid (`Raid.originVideoId === videoId`) and
     a video that sent a raid (`Raid.sourceVideoId === videoId`). Confirm the
     receiving video's JSONL contains a `raid` row with `sourceName` /
     `sourcePhoto` populated; the sending video's JSONL contains a
     `raidOutgoing` row with `originVideoId` / `originName` / `originPhoto`
     populated. `meta.json` `aggregates.raidCount` covers both row types.
-12. In `data/index.json`, confirm a freshly archived video has
+11. In `data/index.json`, confirm a freshly archived video has
     `archiveVersion: 2` while a legacy video (no re-archive since this
     spec) has `archiveVersion: 1`.
-13. Re-run `archiveVideo` on a video that already has
+12. Re-run `archiveVideo` on a video that already has
     `hbStats.chatsArchiveVersion === 2`. Confirm the three artifacts are
     re-produced (overwritten), `cmp` shows the `.jsonl` content matches
     the prior run byte-for-byte (assuming no new chat data has arrived),
@@ -559,7 +551,7 @@ against a Mongo with real archive data and inspecting outputs:
     for the `videos` collection during this re-run (the skip in §5.1
     step 7 must have engaged because the in-memory value was already
     `>= 2`).
-14. Manually leave a stray `data/videos/{videoId}.jsonl.tmp` from a
+13. Manually leave a stray `data/videos/{videoId}.jsonl.tmp` from a
     simulated prior failed run (e.g., `touch` the file). Re-run
     `archiveVideo` for that video. Confirm the stray `.tmp` is unlinked
     by step 1, the run completes normally, and only the three final-name
