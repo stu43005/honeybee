@@ -423,7 +423,6 @@ With:
 
 ```ts
   let no = 0;
-  const seenChatIds = new Set<string>();
   const aggregates = {
     chatCount: 0,
     superChatCount: 0,
@@ -455,24 +454,10 @@ With:
     no++;
     ws.write(await renderChatRow({ doc, no, video }));
 
-    // JSONL-side dedup only: owner + moderator chat cursors can return the
-    // same document; HTML preserves the prior (possibly duplicated) behavior.
-    let isDuplicateChat = false;
-    if (collectionName === "chats") {
-      const chatId = (doc as { id: string }).id;
-      if (seenChatIds.has(chatId)) {
-        isDuplicateChat = true;
-      } else {
-        seenChatIds.add(chatId);
-      }
-    }
-
-    if (!isDuplicateChat) {
-      const row = buildJsonlRow(doc, collectionName, videoId);
-      if (row) {
-        jsonlWs.write(JSON.stringify(row) + "\n");
-        bumpAggregate(aggregates, row.type, doc);
-      }
+    const row = buildJsonlRow(doc, collectionName, videoId);
+    if (row) {
+      jsonlWs.write(JSON.stringify(row) + "\n");
+      bumpAggregate(aggregates, row.type, doc);
     }
 
     await job?.touch();
@@ -780,10 +765,8 @@ Per-video archive run now writes three artifacts atomically:
 
 Behavior changes inside archiveVideo:
 - Raid cursor query extends to $or [originVideoId, sourceVideoId] so
-  outgoing raids reach the JSONL emitter. RaidCells (HTML) still skips
-  outgoing raids to avoid self-referential rows.
-- Owner+moderator chat cursors are deduplicated by chat.id on the JSONL
-  side; HTML keeps existing potential double-emit unchanged.
+  outgoing raids reach the loop. HTML renders both directions via the
+  updated RaidCells template; JSONL splits into raid / raidOutgoing.
 - Aggregates (chatCount, superChatCount, ..., totalGiftAmount, raidCount)
   are computed in the cursor loop and embedded in meta.json alongside
   the precomputed currencyTable / jpyTotal.
@@ -1141,25 +1124,14 @@ jq -c 'select(.type == "raid" or .type == "raidOutgoing")' /tmp/chats-archive-ne
 
 If output exists, inspect at least one of each type: `raid` rows have `sourceName` plus optional `sourcePhoto / sourceVideoId / sourceChannelId`; `raidOutgoing` rows have `originVideoId` plus optional `originName / originPhoto / originChannelId`.
 
-- [ ] **Step 9: Verify chat dedup**
-
-If you can find a chat author in the data with both `isOwner: true` and `isModerator: true`:
-
-```bash
-jq -r 'select(.type == "chat" and .isOwner and .isModerator) | .id' /tmp/chats-archive-new/data/videos/${VID}.jsonl | sort -u | wc -l
-jq -r 'select(.type == "chat" and .isOwner and .isModerator) | .id' /tmp/chats-archive-new/data/videos/${VID}.jsonl | wc -l
-```
-
-Expected: both numbers equal (no duplicate `id`s).
-
-- [ ] **Step 10: Verify empty-archive cleanup**
+- [ ] **Step 9: Verify empty-archive cleanup**
 
 Pick a video with zero matching chat in Mongo, then invoke `archiveVideo(videoId)` directly (e.g. via a one-off dev-runner script). Confirm:
 
 - No `.html`, `.jsonl`, `.meta.json`, or `.tmp` files exist for that video under `{channelId}/` or `data/videos/`.
 - `Video.hbStats.chatsArchiveVersion` for it remains undefined (or its prior value).
 
-- [ ] **Step 11: Verify rename order and version bump**
+- [ ] **Step 10: Verify rename order and version bump**
 
 After a normal `archiveVideo` run for a freshly archived video:
 
@@ -1178,7 +1150,7 @@ db.videos.findOne({ id: "<videoId>" }, { "hbStats.chatsArchiveVersion": 1 });
 
 Expected: `chatsArchiveVersion: 2`.
 
-- [ ] **Step 12: Verify `index.json` and channel JSON contents**
+- [ ] **Step 11: Verify `index.json` and channel JSON contents**
 
 ```bash
 jq '.live | length, .past | length' /tmp/chats-archive-new/data/index.json
@@ -1193,7 +1165,7 @@ Expected:
 - A freshly archived video shows `archiveVersion: 2`; a legacy video (not re-archived under this change) shows `archiveVersion: 1`.
 - `stats.superChatTotalJpy / memberCount / giftCount` match the "SC / Members / Gifts" numbers in that video's HTML card footer on the channel page.
 
-- [ ] **Step 13: Verify idempotency (re-run on a v2 video)**
+- [ ] **Step 12: Verify idempotency (re-run on a v2 video)**
 
 ```bash
 cp /tmp/chats-archive-new/data/videos/${VID}.jsonl /tmp/${VID}.jsonl.before
@@ -1231,7 +1203,7 @@ db.system.profile
 
 Expected: no `updateOne` against the `videos` collection setting `hbStats.chatsArchiveVersion` for any video that was already at v2 before the re-run.
 
-- [ ] **Step 14: Verify stray `.tmp` cleanup**
+- [ ] **Step 13: Verify stray `.tmp` cleanup**
 
 ```bash
 touch /tmp/chats-archive-new/data/videos/<videoId>.jsonl.tmp
@@ -1242,6 +1214,6 @@ Re-run `archiveVideo` for that videoId. Confirm:
 - The stray `.tmp` is gone after the run.
 - Only the three final-name files remain for that video.
 
-- [ ] **Step 15: Report**
+- [ ] **Step 14: Report**
 
-Once steps 1–14 pass, report success to the user. Any regression: capture the failing step output, report it, and STOP — do NOT mark the plan complete.
+Once steps 1–13 pass, report success to the user. Any regression: capture the failing step output, report it, and STOP — do NOT mark the plan complete.
