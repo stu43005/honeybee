@@ -4,11 +4,11 @@
 
 **Goal:** Add machine-readable JSONL + JSON outputs (`data/videos/{videoId}.{jsonl,meta.json}`, `data/index.json`, `data/channels/{channelId}.json`) to the manager's `chats-archive` component, alongside the existing HTML. A future SPA frontend (separate project, out of scope) will consume these artifacts.
 
-**Architecture:** Additive-only changes to three control-layer files plus one Typegoose model field. Each `archiveVideo` run writes HTML + JSONL concurrently from the same merged cursor, then writes `meta.json`, then bumps `Video.hbStats.chatsArchiveVersion` to `2` (conditional skip when already `>= 2`). `genIndexFile` and `genChannelIndexFile` each gain one extra `JSON.stringify` write inside their existing video loops.
+**Architecture:** Additive-only changes to three control-layer files plus one Typegoose model field plus one new shared helper file. Each `archiveVideo` run writes HTML + JSONL concurrently from the same merged cursor, then writes `meta.json`, then bumps `Video.hbStats.chatsArchiveVersion` to `2` (conditional skip when already `>= 2`). `genIndexFile` and `genChannelIndexFile` each gain one extra `JSON.stringify` write inside their existing video loops, sharing a `buildVideoSummary` helper.
 
-**Tech Stack:** TypeScript (NodeNext ESM), Typegoose 12 / mongoose 8.2.1, node `fs/promises` (`fs.rm`, `fs.rename`), existing `multiCursorOrderedPeek` helper. No new runtime dependencies.
+**Tech Stack:** TypeScript (NodeNext ESM), Typegoose 12 / mongoose 8.2.1, node `fs/promises` (`fs.rm`, `fs.rename`), `stream/promises` (`finished`), existing `multiCursorOrderedPeek` helper. No new runtime dependencies.
 
-**Reference:** [docs/superpowers/specs/2026-05-10-chats-archive-jsonl-output-design.md](../specs/2026-05-10-chats-archive-jsonl-output-design.md)
+**Reference spec:** [docs/superpowers/specs/2026-05-10-chats-archive-jsonl-output-design.md](../specs/2026-05-10-chats-archive-jsonl-output-design.md)
 
 **User-imposed constraints:**
 
@@ -16,67 +16,108 @@
 - Every code change must pass `npm run build`, `npm run lint`, `npm run format:check` before commit.
 - No `git add -A` / `git add .` — stage by exact path.
 - No `npm install` to "ensure" a version — verify presence in `node_modules` first.
-- Code comments must not contain `§`, `spec`, `plan`, `Task N` or similar references back to this plan/spec.
+- Code comments must not reference this plan/spec (no `§`, `Task N`, "see plan", "依規格"). Commit-message bodies also forbidden from such references.
 
 ---
 
-## Pre-flight: Research mongoose `$set` dotted-path behavior
+## Task 1: Verify mongoose dotted-path `$set` semantics
 
-### Task 1: Verify mongoose dotted-path `$set` semantics
-
-**Why this task exists:** The spec calls `VideoModel.updateOne({ id }, { $set: { "hbStats.chatsArchiveVersion": 2 } })` on documents where `hbStats` may be `undefined`. The CLAUDE.md global rule and the `chats-archive` spec both require verifying mongoose behavior against `node_modules/mongoose` (version pinned to `~8.2.0`, resolved to `8.2.1`) before coding. The implementer must NOT skip this step.
+**Why this task exists:** Task 4 calls `VideoModel.updateOne({ id }, { $set: { "hbStats.chatsArchiveVersion": 2 } })` on documents where `hbStats` may be `undefined`. Project rules (CLAUDE.md + chats-archive spec) require verifying mongoose behavior against `node_modules/mongoose` (version `~8.2.0`, resolved `8.2.1`) before coding. The implementer must NOT skip this.
 
 **Files:**
 
-- Read: `node_modules/mongoose/lib/model.js` (search for `updateOne` / `castUpdate`)
+- Read: `node_modules/mongoose/lib/model.js`
 - Read: `node_modules/mongoose/lib/helpers/update/castUpdate.js`
-- No files modified in this task — produces a written research note that informs Task 5.
+- Create: `docs/superpowers/research/2026-05-16-mongoose-set-dotted-path.md` (research note, committed so the merged Task 4 subagent can read it).
 
 - [ ] **Step 1: Confirm mongoose version**
 
-Run: `grep '"version"' node_modules/mongoose/package.json | head -1`
+Run: `grep '"version"' node_modules/mongoose/package.json`
 
-Expected output: `"version": "8.2.1",`
+Expected output line: `"version": "8.2.1",`
 
-If the version is not 8.2.x, STOP and ask the user — the plan was written against 8.2.1 and behavior may differ.
+If the version is not `8.2.x`, STOP and ask the user — the plan was written against `8.2.1`.
 
-- [ ] **Step 2: Dispatch a research subagent**
+- [ ] **Step 2: Create research directory**
+
+Run: `mkdir -p docs/superpowers/research`
+
+- [ ] **Step 3: Dispatch a research subagent**
 
 Use the Agent tool with `subagent_type: general-purpose`, `model: haiku`, and this prompt:
 
+```text
+Read node_modules/mongoose source (version 8.2.1) and answer three
+questions about Model.updateOne({ id: "VID" }, { $set: { "hbStats.chatsArchiveVersion": 2 } }) on a
+document whose hbStats is undefined (the parent sub-doc does not exist):
+
+Q1. Does mongoose:
+  (a) successfully create the parent sub-document and set the leaf value,
+  (b) throw / reject because the parent path is missing, or
+  (c) silently no-op?
+
+Q2. Does this $set operation trigger schema default population for the
+sibling fields of hbStats that have `default: 0` in the Typegoose @prop
+definition (specifically `handled` and `errorCount`)? Yes or no.
+
+Q3. Any version-specific gotchas in mongoose 8.x for dotted-path $set on
+nested sub-documents (vs 7.x or 6.x)?
+
+Read lib/model.js (updateOne), lib/helpers/update/castUpdate.js, and any
+sub-doc cast helpers. Quote relevant code with file:line citations. Do
+not rely on docs alone — read the source.
+
+Save your report to docs/superpowers/research/2026-05-16-mongoose-set-dotted-path.md
+in this exact format (≤300 words):
+
+  # Mongoose $set dotted-path verification
+
+  - mongoose version: 8.2.1
+  - Q1 verdict: (a) | (b) | (c)
+  - Q2 verdict: yes | no
+  - Q3 verdict: [one-line summary, or "none"]
+
+  ## Citations
+  - file/path.js:LINE — "quoted code"
+  - file/path.js:LINE — "quoted code"
+
+  ## Notes
+  [≤150 words of relevant context]
+
+The explicit verdict tags (Q1, Q2, Q3) are mandatory — Task 4's
+implementer will grep for them.
 ```
-Read node_modules/mongoose source (version 8.2.1) and answer:
 
-1. When calling Model.updateOne({ id: "VID" }, { $set: { "hbStats.chatsArchiveVersion": 2 } }) on a document whose `hbStats` is undefined (the parent sub-doc does not exist), does mongoose:
-   (a) successfully create the parent sub-document and set the leaf value, OR
-   (b) throw / reject because the parent path is missing, OR
-   (c) silently no-op?
+- [ ] **Step 4: Decision gate**
 
-2. Does this $set operation trigger schema default population for the sibling fields of `hbStats` that have `default: 0` in the Typegoose @prop definition (e.g. `handled`, `errorCount`)? Or does it only write the explicitly-set leaf?
+Read `docs/superpowers/research/2026-05-16-mongoose-set-dotted-path.md`.
 
-3. Are there any version-specific gotchas in mongoose 8.x for dotted-path $set on nested sub-documents (vs 7.x or 6.x)?
+Proceed to Task 2 **only if both** of these hold:
 
-Look at lib/model.js (updateOne), lib/helpers/update/castUpdate.js, and any sub-doc cast helpers. Quote the relevant code (file:line). Do not rely on docs alone — read the source.
+- Q1 verdict is `(a)` (parent sub-doc auto-created)
+- Q2 verdict is `no` (sibling defaults are NOT populated by the dotted `$set`)
 
-Return a ≤300-word report: behavior, citation, gotchas.
-```
+Otherwise STOP and update the spec section "Mongoose `$set` on dotted paths" with the workaround:
 
-Save the subagent's report verbatim to a temporary file at the root of the repo, e.g. `/tmp/mongoose-set-research.md`, so Task 5 can reference it.
+- If Q1 is `(b)`/`(c)`: replace the bare `updateOne` with a load-mutate-save flow (`VideoModel.findOneAndUpdate({ id }, { $set: { "hbStats": { chatsArchiveVersion: 2 } } }, { new: true })`, or load with `findByVideoId`, set `video.hbStats ??= new Stats()`, set `chatsArchiveVersion`, then `save()`).
+- If Q2 is `yes` (siblings get defaulted): pick whichever flow keeps existing values intact (typically the load-mutate-save flow above).
 
-- [ ] **Step 3: Decision gate**
+Either way, update Task 4 to match before continuing.
 
-If the subagent confirms behavior (a) — `$set` on dotted path with undefined parent creates the parent and writes the leaf, no unwanted default population — proceed to Task 2.
-
-If behavior is (b) or (c), STOP and update the spec §3.1 "Mongoose `$set` on dotted paths" section to describe the workaround (e.g. `findOneAndUpdate` with `upsert: false` plus a fallback `save()`, or a two-step `$setOnInsert` + `$set`), then return here.
-
-- [ ] **Step 4: Commit research artifact**
+- [ ] **Step 5: Commit research note**
 
 ```bash
-# Only if the report is small (<5 KB) AND the user wants it in repo history;
-# otherwise leave at /tmp/. Default: do NOT commit the research file.
-```
+git add docs/superpowers/research/2026-05-16-mongoose-set-dotted-path.md
+git commit -m "$(cat <<'EOF'
+docs(research): mongoose $set dotted-path behavior verification
 
-No commit by default. Move to Task 2.
+Verified mongoose 8.2.1 behavior for Model.updateOne with $set on a
+dotted path under an undefined parent sub-document. See the note for
+the verdict and source citations.
+
+EOF
+)"
+```
 
 ---
 
@@ -84,20 +125,18 @@ No commit by default. Move to Task 2.
 
 **Files:**
 
-- Modify: `src/models/Video.ts` (lines 27–42, the `Stats` class)
+- Modify: `src/models/Video.ts` (the `Stats` class around lines 27–42)
 - No tests (per user constraints).
 
 - [ ] **Step 1: Read the current `Stats` class**
 
-Run: Read `src/models/Video.ts` with `offset: 25, limit: 22`.
+Read `src/models/Video.ts` with `offset: 25, limit: 22`.
 
-Expected: see the existing `Stats` class with `@prop` for `handled`, `errorCount`, `totalSuperChatAmountJpy`, `totalMembers`, `totalGifts`.
+Expected: see `Stats` class containing `@prop` for `handled`, `errorCount`, `totalSuperChatAmountJpy`, `totalMembers`, `totalGifts`.
 
 - [ ] **Step 2: Add the new property**
 
-Edit `src/models/Video.ts`:
-
-Replace:
+Edit `src/models/Video.ts`. Replace:
 
 ```ts
   @prop()
@@ -116,7 +155,7 @@ With:
 }
 ```
 
-(No `default` — undefined remains the legacy value for documents not yet re-archived under this change.)
+(No `default` — undefined remains the legacy value for documents not yet re-archived.)
 
 - [ ] **Step 3: Validate**
 
@@ -128,7 +167,7 @@ npm run lint
 npm run format:check
 ```
 
-Expected: all three exit 0. If `format:check` complains, run `npm run format` and re-run `format:check`.
+Expected: all three exit 0. If `format:check` complains, run `npm run format` then re-run `format:check`.
 
 - [ ] **Step 4: Commit**
 
@@ -147,18 +186,130 @@ EOF
 
 ---
 
-## Task 3: Extend raid cursor and add stale `.tmp` cleanup
+## Task 3: Create shared `build-video-summary.ts` helper
+
+**Why this task exists:** The `VideoSummary` shape is a spec-defined shared interface used by both `data/index.json` and `data/channels/{channelId}.json`. Duplicating its construction across two callsites would silently drift when the shape evolves; extracting once into a named module satisfies the project's "files that change together should live together" guideline. The helper holds real transformation logic (channel resolve, conditional fields, defaults), so this is not a logic-free abstraction.
 
 **Files:**
 
-- Modify: `src/components/chats-archive/archive-video.ts` (raid cursor at line 182–185; add cleanup at the top of `archiveVideo`)
+- Create: `src/components/chats-archive/build-video-summary.ts`
 - No tests (per user constraints).
 
-- [ ] **Step 1: Read current `archive-video.ts`**
+- [ ] **Step 1: Create the file**
 
-Read the full file (213 lines, single read OK).
+Write `src/components/chats-archive/build-video-summary.ts` with:
 
-- [ ] **Step 2: Extend the raid cursor query**
+```ts
+import type { DocumentType } from "@typegoose/typegoose";
+import type { Video } from "../../models/Video.js";
+
+export async function buildVideoSummary(
+  video: DocumentType<Video>
+): Promise<Record<string, unknown>> {
+  const channel = await video.getChannel();
+  const channelObj: Record<string, unknown> = channel
+    ? { id: channel.id, name: channel.name }
+    : { id: video.channelId, name: video.channelId };
+  if (channel?.avatarUrl !== undefined && channel?.avatarUrl !== null) {
+    channelObj.avatarUrl = channel.avatarUrl;
+  }
+  const summary: Record<string, unknown> = {
+    id: video.id,
+    title: video.title,
+    channelId: video.channelId,
+    channel: channelObj,
+    status: video.status,
+  };
+  if (video.scheduledStart !== undefined && video.scheduledStart !== null) {
+    summary.scheduledStart = video.scheduledStart;
+  }
+  summary.availableAt = video.availableAt;
+  summary.archiveVersion = video.hbStats?.chatsArchiveVersion ?? 1;
+  summary.stats = {
+    superChatTotalJpy: video.hbStats?.totalSuperChatAmountJpy ?? 0,
+    memberCount: video.hbStats?.totalMembers ?? 0,
+    giftCount: video.hbStats?.totalGifts ?? 0,
+  };
+  return summary;
+}
+```
+
+Notes on this code:
+
+- `video.getChannel()` reuses the populated `channel` ref when available (no extra round trip on populated docs).
+- Channel fallback: when `getChannel()` returns null (channel deleted / not yet crawled), we surface `{ id: channelId, name: channelId }` so the SPA still gets a non-empty channel block. This is a defensive fallback; populated runs always have a real channel name.
+- Dates (`scheduledStart`, `availableAt`) are passed through as `Date` objects. `JSON.stringify` invokes `Date.prototype.toJSON` which produces ISO 8601 strings — no custom serializer.
+- `??` defaults for `archiveVersion` / `stats.*` match the existing HTML `VideoCard`'s `?? 0` semantics so SPA card output matches HTML card output byte-for-byte at the numeric level.
+
+- [ ] **Step 2: Validate**
+
+Run in parallel:
+
+```bash
+npx tsc --noEmit
+npm run lint
+npm run format:check
+```
+
+Expected: all three exit 0. The file is referenced only by Tasks 5/6 — TypeScript may warn about an unused export but it is a module export, not a local, so `no-unused-vars` does not apply.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add src/components/chats-archive/build-video-summary.ts
+git commit -m "$(cat <<'EOF'
+feat(chats-archive): add shared buildVideoSummary helper
+
+Single source of truth for the SPA-facing VideoSummary shape consumed
+by data/index.json and data/channels/{channelId}.json. Centralizes
+channel resolution, optional-field stripping, archiveVersion default
+(1 when hbStats.chatsArchiveVersion is undefined), and stats defaults
+(0 for missing SC/member/gift totals).
+
+EOF
+)"
+```
+
+---
+
+## Task 4: All `archive-video.ts` changes — extend raid cursor, JSONL emit, meta.json, renames, version bump
+
+**Why this task is a single commit:** the changes touch one file in three logical sections (pre-loop setup, cursor body, post-loop tail). The ESLint config has `@typescript-eslint/no-unused-vars: "error"`, so any intermediate commit that introduces `jsonlWs` / `jsonlPath` / `metaPath` without their consumers would hard-fail lint and violate the "every commit must pass lint" constraint. Landing all three sections together keeps every commit green.
+
+**Files:**
+
+- Modify: `src/components/chats-archive/archive-video.ts`
+- No tests (per user constraints).
+
+- [ ] **Step 1: Pre-flight — read the research note**
+
+Read `docs/superpowers/research/2026-05-16-mongoose-set-dotted-path.md`.
+
+If `Q1 verdict: (a)` and `Q2 verdict: no`, proceed with the `updateOne` form in Step 6 below.
+
+If either differs, STOP and apply the spec workaround (see Task 1 Step 4 decision gate). Do not silently change `updateOne` semantics.
+
+- [ ] **Step 2: Read the current file**
+
+Read `src/components/chats-archive/archive-video.ts` (full file, 213 lines).
+
+- [ ] **Step 3: Add the `ChannelModel` import**
+
+Find the import block at the top (lines 8–21). After the line `import ChatModel from "../../models/Chat.js";` (around line 10), insert:
+
+```ts
+import ChannelModel from "../../models/Channel.js";
+```
+
+If `ChannelModel` is already imported, skip this step.
+
+Also add the stream-finished helper. After the existing `import fsp from "node:fs/promises";` line, insert:
+
+```ts
+import { finished } from "node:stream/promises";
+```
+
+- [ ] **Step 4: Extend the raid cursor query**
 
 Replace:
 
@@ -180,9 +331,9 @@ const raidCursor = RaidModel.find({
   .cursor();
 ```
 
-- [ ] **Step 3: Add stale `.tmp` cleanup near the top of `archiveVideo`**
+- [ ] **Step 5: Replace the pre-loop setup block**
 
-Locate the block after `getOutputFilePath(video)` and `mkdir`, before the `createWriteStream` call (around lines 121–125):
+Find lines 121–125 (the `outputFilePath` / `mkdir` / `createWriteStream` block) and the surrounding shell-render call. Replace:
 
 ```ts
 const outputFilePath = getOutputFilePath(video);
@@ -192,22 +343,24 @@ const ws = fs.createWriteStream(`${outputFilePath}.tmp`, {
 });
 ```
 
-Replace with:
+With:
 
 ```ts
 const outputFilePath = getOutputFilePath(video);
+assert(CHAT_ARCHIVE_DIR, "CHAT_ARCHIVE_DIR is not defined.");
 const jsonlPath = path.join(
-  CHAT_ARCHIVE_DIR!,
+  CHAT_ARCHIVE_DIR,
   "data",
   "videos",
   `${videoId}.jsonl`
 );
 const metaPath = path.join(
-  CHAT_ARCHIVE_DIR!,
+  CHAT_ARCHIVE_DIR,
   "data",
   "videos",
   `${videoId}.meta.json`
 );
+
 await fsp.mkdir(path.dirname(outputFilePath), { recursive: true });
 await fsp.mkdir(path.dirname(jsonlPath), { recursive: true });
 
@@ -225,137 +378,172 @@ const jsonlWs = fs.createWriteStream(`${jsonlPath}.tmp`, {
 });
 ```
 
-The `!` after `CHAT_ARCHIVE_DIR` is safe because the `assert(CHAT_ARCHIVE_DIR, ...)` at the top of `getOutputFilePath` runs before this code; if the constant were null we would have already thrown. (If TypeScript complains about the non-null assertion under strict mode, add an explicit assert just before the `path.join` calls.)
+- [ ] **Step 6: Replace the cursor loop**
 
-- [ ] **Step 4: Validate**
-
-Run in parallel:
-
-```bash
-npx tsc --noEmit
-npm run lint
-npm run format:check
-```
-
-Expected: all three exit 0. Note: the build will still compile because the next tasks add the consumers of `jsonlWs` / `jsonlPath` / `metaPath`; if any of those names triggers an unused-variable lint error, the lint will be re-checked at the end of Task 5 after they are consumed. For now expect `lint` to pass (unused locals are typically warn, not error) — if it errors, mark this task's `lint` step deferred until Task 5 lands.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/components/chats-archive/archive-video.ts
-git commit -m "$(cat <<'EOF'
-feat(chats-archive): extend raid cursor and add tmp cleanup
-
-Raid cursor now matches both originVideoId (incoming) and sourceVideoId
-(outgoing) via $or. Outgoing raids will be consumed only by the JSONL
-emitter to appear as raidOutgoing rows; HTML emission of outgoing raids
-will be skipped in the next task to avoid self-referential rows.
-
-Also unlink any leftover .tmp siblings before opening write streams so
-a prior partially-failed run cannot leak state.
-
-EOF
-)"
-```
-
----
-
-## Task 4: Cursor-loop body — HTML outgoing-raid skip, JSONL emit, chat dedup, raid dispatch, aggregates
-
-**Files:**
-
-- Modify: `src/components/chats-archive/archive-video.ts` (cursor `for await` loop near lines 187–203)
-- No tests (per user constraints).
-
-- [ ] **Step 1: Add aggregate counters and dedup set before the `for await`**
-
-Locate the `let no = 0;` line (around line 187). Replace:
+Find the loop starting `let no = 0;` (around line 187) through the `ws.end(tail);` (line 205) and the empty-archive / rename block (lines 207–212). Replace the entire block:
 
 ```ts
-let no = 0;
-for await (const doc of multiCursorOrderedPeek<ChatRowDoc>(
-  ownerChatCursor,
-  moderatorChatCursor,
-  superChatCursor,
-  superStickerCursor,
-  membershipCursor,
-  membershipGiftCursor,
-  membershipGiftPurchaseCursor,
-  milestoneCursor,
-  pollCursor,
-  raidCursor
-)) {
-  no++;
-  ws.write(await renderChatRow({ doc, no, video }));
-  await job?.touch();
+  let no = 0;
+  for await (const doc of multiCursorOrderedPeek<ChatRowDoc>(
+    ownerChatCursor,
+    moderatorChatCursor,
+    superChatCursor,
+    superStickerCursor,
+    membershipCursor,
+    membershipGiftCursor,
+    membershipGiftPurchaseCursor,
+    milestoneCursor,
+    pollCursor,
+    raidCursor
+  )) {
+    no++;
+    ws.write(await renderChatRow({ doc, no, video }));
+    await job?.touch();
+  }
+
+  ws.end(tail);
+
+  if (no === 0) {
+    await fsp.unlink(`${outputFilePath}.tmp`);
+    return;
+  }
+  await fsp.rename(`${outputFilePath}.tmp`, outputFilePath);
 }
 ```
 
 With:
 
 ```ts
-let no = 0;
-const seenChatIds = new Set<string>();
-const aggregates = {
-  chatCount: 0,
-  superChatCount: 0,
-  superStickerCount: 0,
-  membershipCount: 0,
-  giftCount: 0,
-  giftPurchaseCount: 0,
-  totalGiftAmount: 0,
-  milestoneCount: 0,
-  pollCount: 0,
-  raidCount: 0,
-};
+  let no = 0;
+  const seenChatIds = new Set<string>();
+  const aggregates = {
+    chatCount: 0,
+    superChatCount: 0,
+    superStickerCount: 0,
+    membershipCount: 0,
+    giftCount: 0,
+    giftPurchaseCount: 0,
+    totalGiftAmount: 0,
+    milestoneCount: 0,
+    pollCount: 0,
+    raidCount: 0,
+  };
 
-for await (const doc of multiCursorOrderedPeek<ChatRowDoc>(
-  ownerChatCursor,
-  moderatorChatCursor,
-  superChatCursor,
-  superStickerCursor,
-  membershipCursor,
-  membershipGiftCursor,
-  membershipGiftPurchaseCursor,
-  milestoneCursor,
-  pollCursor,
-  raidCursor
-)) {
-  const collectionName = (doc as { collection: { name: string } }).collection
-    .name;
+  for await (const doc of multiCursorOrderedPeek<ChatRowDoc>(
+    ownerChatCursor,
+    moderatorChatCursor,
+    superChatCursor,
+    superStickerCursor,
+    membershipCursor,
+    membershipGiftCursor,
+    membershipGiftPurchaseCursor,
+    milestoneCursor,
+    pollCursor,
+    raidCursor
+  )) {
+    const collectionName = (doc as { collection: { name: string } }).collection
+      .name;
 
-  // Chat dedup: owner + moderator cursors can return the same document.
-  if (collectionName === "chats") {
-    const chatId = (doc as { id: string }).id;
-    if (seenChatIds.has(chatId)) continue;
-    seenChatIds.add(chatId);
+    // Owner + moderator cursors can return the same chat document; dedup by id.
+    if (collectionName === "chats") {
+      const chatId = (doc as { id: string }).id;
+      if (seenChatIds.has(chatId)) continue;
+      seenChatIds.add(chatId);
+    }
+
+    // RaidCells reads sourceName which is the current channel for outgoing
+    // raids; skip them on the HTML side to avoid self-referential rows.
+    const isOutgoingRaid =
+      collectionName === "raids" &&
+      (doc as { originVideoId?: string }).originVideoId !== videoId;
+    if (!isOutgoingRaid) {
+      no++;
+      ws.write(await renderChatRow({ doc, no, video }));
+    }
+
+    const row = buildJsonlRow(doc, collectionName, videoId);
+    if (row) {
+      jsonlWs.write(JSON.stringify(row) + "\n");
+      bumpAggregate(aggregates, row.type, doc);
+    }
+
+    await job?.touch();
   }
 
-  // HTML side: skip outgoing raids (originVideoId !== videoId) so the
-  // existing RaidCells does not produce self-referential rows.
-  const isOutgoingRaid =
-    collectionName === "raids" &&
-    (doc as { originVideoId?: string }).originVideoId !== videoId;
-  if (!isOutgoingRaid) {
-    no++;
-    ws.write(await renderChatRow({ doc, no, video }));
+  ws.end(tail);
+  jsonlWs.end();
+  await Promise.all([finished(ws), finished(jsonlWs)]);
+
+  if (no === 0) {
+    await Promise.all([
+      fsp.rm(`${outputFilePath}.tmp`, { force: true }),
+      fsp.rm(`${jsonlPath}.tmp`, { force: true }),
+    ]);
+    return;
   }
 
-  // JSONL side: emit the row in the schema documented at the top of
-  // this file (see top-of-file JSDoc — to be added in Task 5).
-  const row = buildJsonlRow(doc, collectionName, videoId);
-  if (row) {
-    jsonlWs.write(JSON.stringify(row) + "\n");
-    bumpAggregate(aggregates, row.type, doc);
+  const channel = await ChannelModel.findByChannelId(video.channelId);
+  const channelOut: Record<string, unknown> = channel
+    ? { id: channel.id, name: channel.name }
+    : { id: video.channelId, name: video.channelId };
+  if (
+    channel?.avatarUrl !== undefined &&
+    channel?.avatarUrl !== null
+  ) {
+    channelOut.avatarUrl = channel.avatarUrl;
   }
 
-  await job?.touch();
+  const videoOut: Record<string, unknown> = {
+    id: video.id,
+    title: video.title,
+    channelId: video.channelId,
+    status: video.status,
+    duration: video.duration,
+    availableAt: video.availableAt,
+  };
+  if (video.description !== undefined && video.description !== null) {
+    videoOut.description = video.description;
+  }
+  for (const key of [
+    "scheduledStart",
+    "actualStart",
+    "actualEnd",
+    "publishedAt",
+  ] as const) {
+    const val = (video as Record<string, unknown>)[key];
+    if (val !== undefined && val !== null) videoOut[key] = val;
+  }
+
+  const meta = {
+    video: videoOut,
+    channel: channelOut,
+    aggregates: {
+      ...aggregates,
+      currencyTable: currencies,
+      jpyTotal: jpySum,
+    },
+  };
+
+  await fsp.writeFile(`${metaPath}.tmp`, JSON.stringify(meta) + "\n", "utf-8");
+
+  // Rename in three steps so SPA, which fetches meta.json first, never sees
+  // meta.json without its sibling .jsonl in place at the final name.
+  await fsp.rename(`${outputFilePath}.tmp`, outputFilePath);
+  await fsp.rename(`${jsonlPath}.tmp`, jsonlPath);
+  await fsp.rename(`${metaPath}.tmp`, metaPath);
+
+  if ((video.hbStats?.chatsArchiveVersion ?? 0) < 2) {
+    await VideoModel.updateOne(
+      { id: videoId },
+      { $set: { "hbStats.chatsArchiveVersion": 2 } }
+    );
+  }
 }
 ```
 
-- [ ] **Step 2: Add the two private helper functions and per-type row builders**
+- [ ] **Step 7: Append helper functions at the bottom of the file**
 
-Append the following functions at the bottom of `src/components/chats-archive/archive-video.ts` (after the closing `}` of `archiveVideo`):
+After the closing `}` of `archiveVideo` (now the last function in the file), append:
 
 ```ts
 type JsonlRow = { type: string; [key: string]: unknown };
@@ -428,13 +616,8 @@ function buildJsonlRow(
       const row: JsonlRow = {
         type: "poll",
         id: d.id as string,
-        timestamp: (d.updatedAt as Date).toISOString(),
-        ...optional(
-          "createdAt",
-          d.createdAt instanceof Date
-            ? (d.createdAt as Date).toISOString()
-            : undefined
-        ),
+        timestamp: d.updatedAt as Date,
+        ...optional("createdAt", d.createdAt),
         ...optional("question", d.question),
         choices: d.choices.map((c) => ({
           text: c.text,
@@ -452,7 +635,7 @@ function buildJsonlRow(
         return {
           type: "raid",
           ...optional("id", d.id),
-          timestamp: (d.timestamp as Date).toISOString(),
+          timestamp: d.timestamp as Date,
           ...optional("sourceVideoId", d.sourceVideoId),
           ...optional("sourceChannelId", d.sourceChannelId),
           sourceName: d.sourceName,
@@ -463,7 +646,7 @@ function buildJsonlRow(
         return {
           type: "raidOutgoing",
           ...optional("id", d.id),
-          timestamp: (d.timestamp as Date).toISOString(),
+          timestamp: d.timestamp as Date,
           originVideoId: d.originVideoId,
           ...optional("originChannelId", d.originChannelId),
           ...optional("originName", d.originName),
@@ -485,7 +668,7 @@ function makeAuthorRow(
   return {
     type,
     id: d.id as string,
-    timestamp: (d.timestamp as Date).toISOString(),
+    timestamp: d.timestamp as Date,
     ...optional("authorName", d.authorName),
     ...optional("authorPhoto", d.authorPhoto),
     authorChannelId: d.authorChannelId,
@@ -502,7 +685,9 @@ function optional<K extends string>(
   key: K,
   value: unknown
 ): Partial<Record<K, unknown>> {
-  return value === undefined ? {} : ({ [key]: value } as Record<K, unknown>);
+  return value === undefined || value === null
+    ? {}
+    : ({ [key]: value } as Record<K, unknown>);
 }
 
 function bumpAggregate(
@@ -555,7 +740,13 @@ function bumpAggregate(
 }
 ```
 
-- [ ] **Step 3: Validate**
+Notes on serialization:
+
+- All `Date` fields (per-row `timestamp`, poll `createdAt`, `meta.json` `video.*` dates) are emitted as raw `Date` objects. `JSON.stringify` invokes `Date.prototype.toJSON` which returns the same ISO 8601 string as `Date.prototype.toISOString()` would. No custom serializer is used.
+- `optional(key, value)` strips both `undefined` and `null` — Typegoose returns `undefined` for missing optionals, but lean/projected docs can surface `null`; either way the key is omitted.
+- The first key of every row object is `type`. V8 preserves property insertion order in `JSON.stringify`, so SPA can parse `type` from the leading bytes.
+
+- [ ] **Step 8: Validate**
 
 Run in parallel:
 
@@ -565,22 +756,37 @@ npm run lint
 npm run format:check
 ```
 
-Expected: all three exit 0. If lint complains about `optional` returning a wide type, the cast inside is intentional (we're constructing a record dynamically). Adjust the helper signature only if the linter actively errors.
+Expected: all three exit 0. If `format:check` complains, run `npm run format` then re-run.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add src/components/chats-archive/archive-video.ts
 git commit -m "$(cat <<'EOF'
-feat(chats-archive): emit JSONL rows alongside HTML
+feat(chats-archive): emit JSONL, meta.json, and bump archive version
 
-For each row in the merged cursor:
-- Dedup chats by id (owner+moderator cursors can overlap)
-- Skip HTML emission for outgoing raids (originVideoId !== videoId)
-- Emit one JSONL line in the documented per-type shape
-- Dispatch raid docs to either `raid` or `raidOutgoing` based on which
-  side of the raid matches the current video
-- Maintain an in-memory aggregates object for meta.json
+Per-video archive run now writes three artifacts atomically:
+- {channelId}/{date}_{videoId}.html (existing behavior preserved)
+- data/videos/{videoId}.jsonl (one chat row per line)
+- data/videos/{videoId}.meta.json (video + channel + aggregates)
+
+Behavior changes inside archiveVideo:
+- Raid cursor query extends to $or [originVideoId, sourceVideoId] so
+  outgoing raids reach the JSONL emitter. RaidCells (HTML) still skips
+  outgoing raids to avoid self-referential rows.
+- Owner+moderator chat cursors are deduplicated by chat.id on the JSONL
+  side; HTML keeps existing potential double-emit unchanged.
+- Aggregates (chatCount, superChatCount, ..., totalGiftAmount, raidCount)
+  are computed in the cursor loop and embedded in meta.json alongside
+  the precomputed currencyTable / jpyTotal.
+- Stale .tmp siblings from prior failed runs are removed before opening
+  write streams.
+- Three renames happen in order: .html, then .jsonl, then .meta.json
+  (SPA fetches meta.json first; the order guarantees .jsonl is at its
+  final name when meta.json appears).
+- After all renames succeed, Video.hbStats.chatsArchiveVersion is set
+  to 2 via Model.updateOne. The write is skipped when the in-memory
+  loaded value is already >= 2 to avoid redundant Mongo round trips.
 
 EOF
 )"
@@ -588,119 +794,98 @@ EOF
 
 ---
 
-## Task 5: Write `meta.json`, reorder renames, empty-archive parity, version bump
+## Task 5: Write `data/index.json` from `genIndexFile`
 
 **Files:**
 
-- Modify: `src/components/chats-archive/archive-video.ts` (the tail of `archiveVideo` from `ws.end(tail);` onward — currently lines 205–212)
-- Modify: `src/components/chats-archive/archive-video.ts` (imports — add ChannelModel if not already imported)
+- Modify: `src/components/chats-archive/gen-index-file.ts`
 - No tests (per user constraints).
 
-- [ ] **Step 1: Confirm Channel import**
+- [ ] **Step 1: Read the current file**
 
-Run: `grep -n 'ChannelModel\|from "../../models/Channel' src/components/chats-archive/archive-video.ts`
+Read `src/components/chats-archive/gen-index-file.ts` (full file, 102 lines).
 
-If `ChannelModel` is not imported, you'll add the import in Step 3. If it is imported, skip the import addition.
+- [ ] **Step 2: Add the import**
 
-- [ ] **Step 2: Read the current tail block**
+After the existing `import { renderVideoCard } from "./templates/VideoCard.js";` line, insert:
 
-Read `src/components/chats-archive/archive-video.ts` with `offset: 200, limit: 13`.
+```ts
+import { buildVideoSummary } from "./build-video-summary.js";
+```
 
-Expected current content:
+- [ ] **Step 3: Initialize summary arrays alongside `channelIds`**
+
+Replace:
+
+```ts
+const channelIds = new Set<string>();
+```
+
+With:
+
+```ts
+const channelIds = new Set<string>();
+const liveSummaries: Array<Record<string, unknown>> = [];
+const pastSummaries: Array<Record<string, unknown>> = [];
+```
+
+- [ ] **Step 4: Collect summaries inside both `for await` loops**
+
+In the **first** loop (live videos), the body currently ends with:
+
+```ts
+ws.write(
+  await renderVideoCard({
+    video,
+    channel: await video.getChannel(),
+    basePath: "",
+    hbStats: video.hbStats,
+  })
+);
+if (isDirect) await archiveVideo(video.id);
+```
+
+Insert a new line **immediately after** `ws.write(...)` (still inside the loop body, before the `if (isDirect) ...`):
+
+```ts
+liveSummaries.push(await buildVideoSummary(video));
+```
+
+In the **second** loop (past / recently-ended videos), the body ends with the analogous block. Insert in the same position:
+
+```ts
+pastSummaries.push(await buildVideoSummary(video));
+```
+
+- [ ] **Step 5: Write `data/index.json` after the loops, before the per-channel iteration**
+
+Replace:
+
+```ts
+  ws.end(tail);
+  await fsp.rename(`${outputFilePath}.tmp`, outputFilePath);
+
+  for (const channelId of channelIds) {
+```
+
+With:
 
 ```ts
   ws.end(tail);
 
-  if (no === 0) {
-    await fsp.unlink(`${outputFilePath}.tmp`);
-    return;
-  }
-  await fsp.rename(`${outputFilePath}.tmp`, outputFilePath);
-}
-```
-
-- [ ] **Step 3: Add Channel import (only if missing per Step 1)**
-
-If `ChannelModel` is not yet imported, insert near the other model imports:
-
-```ts
-import ChannelModel from "../../models/Channel.js";
-```
-
-(Place it alphabetically — between `ChatModel` and `MembershipModel`.)
-
-- [ ] **Step 4: Replace the tail block**
-
-Replace the block in Step 2 with:
-
-```ts
-  ws.end(tail);
-  jsonlWs.end();
-
-  if (no === 0) {
-    await Promise.all([
-      fsp.rm(`${outputFilePath}.tmp`, { force: true }),
-      fsp.rm(`${jsonlPath}.tmp`, { force: true }),
-    ]);
-    return;
-  }
-
-  const channel = await ChannelModel.findByChannelId(video.channelId);
-  const meta = {
-    video: stripUndefined({
-      id: video.id,
-      title: video.title,
-      channelId: video.channelId,
-      description: video.description,
-      status: video.status,
-      duration: video.duration,
-      availableAt: video.availableAt.toISOString(),
-      scheduledStart: video.scheduledStart?.toISOString(),
-      actualStart: video.actualStart?.toISOString(),
-      actualEnd: video.actualEnd?.toISOString(),
-      publishedAt: video.publishedAt?.toISOString(),
-    }),
-    channel: channel
-      ? stripUndefined({
-          id: channel.id,
-          name: channel.name,
-          avatarUrl: channel.avatarUrl,
-        })
-      : { id: video.channelId, name: video.channelId },
-    aggregates: {
-      ...aggregates,
-      currencyTable: currencies,
-      jpyTotal: jpySum,
-    },
-  };
-
-  await fsp.writeFile(`${metaPath}.tmp`, JSON.stringify(meta) + "\n", "utf-8");
+  const dataIndexPath = path.join(CHAT_ARCHIVE_DIR, "data", "index.json");
+  await fsp.mkdir(path.dirname(dataIndexPath), { recursive: true });
+  await fsp.rm(`${dataIndexPath}.tmp`, { force: true });
+  await fsp.writeFile(
+    `${dataIndexPath}.tmp`,
+    JSON.stringify({ live: liveSummaries, past: pastSummaries }) + "\n",
+    "utf-8"
+  );
 
   await fsp.rename(`${outputFilePath}.tmp`, outputFilePath);
-  await fsp.rename(`${jsonlPath}.tmp`, jsonlPath);
-  await fsp.rename(`${metaPath}.tmp`, metaPath);
+  await fsp.rename(`${dataIndexPath}.tmp`, dataIndexPath);
 
-  if ((video.hbStats?.chatsArchiveVersion ?? 0) < 2) {
-    await VideoModel.updateOne(
-      { id: videoId },
-      { $set: { "hbStats.chatsArchiveVersion": 2 } }
-    );
-  }
-}
-```
-
-- [ ] **Step 5: Add the `stripUndefined` helper**
-
-Append at the very bottom of the file (after the helpers added in Task 4):
-
-```ts
-function stripUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
-  const out: Partial<T> = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (v !== undefined) out[k as keyof T] = v as T[keyof T];
-  }
-  return out;
-}
+  for (const channelId of channelIds) {
 ```
 
 - [ ] **Step 6: Validate**
@@ -718,150 +903,15 @@ Expected: all three exit 0.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/components/chats-archive/archive-video.ts
-git commit -m "$(cat <<'EOF'
-feat(chats-archive): write meta.json and bump archive version
-
-After the cursor loop:
-- Close jsonlWs
-- On empty archive (no === 0): unlink both .tmp files, no meta written
-- Otherwise: build meta.json (video + channel + aggregates + currency
-  table) and write it to .tmp
-- Rename .html → .jsonl → .meta.json in that order so SPA can fetch
-  meta.json first and trust the corresponding .jsonl is already at its
-  final name
-- Bump Video.hbStats.chatsArchiveVersion to 2 if the in-memory value
-  is < 2; skip the Mongo write when already at or above 2
-
-EOF
-)"
-```
-
----
-
-## Task 6: Write `data/index.json` from `genIndexFile`
-
-**Files:**
-
-- Modify: `src/components/chats-archive/gen-index-file.ts`
-- No tests (per user constraints).
-
-- [ ] **Step 1: Read the current file**
-
-Read all 102 lines.
-
-- [ ] **Step 2: Collect video summaries while iterating**
-
-Find the line `const channelIds = new Set<string>();` (line 28). Replace with:
-
-```ts
-const channelIds = new Set<string>();
-const liveSummaries: Array<Record<string, unknown>> = [];
-const pastSummaries: Array<Record<string, unknown>> = [];
-```
-
-In the first `for await` block (live videos), find the `ws.write(...)` call. Immediately after that `ws.write` (still inside the `for` body, before the `if (isDirect) await archiveVideo(...)`), insert:
-
-```ts
-liveSummaries.push(await buildVideoSummary(video));
-```
-
-In the second `for await` block (past videos), do the same — insert after `ws.write(...)` and before the `archiveVideo` call:
-
-```ts
-pastSummaries.push(await buildVideoSummary(video));
-```
-
-- [ ] **Step 3: Write `data/index.json` after both loops, before the channel loop**
-
-Find the line `ws.end(tail);` followed by the rename. Replace:
-
-```ts
-ws.end(tail);
-await fsp.rename(`${outputFilePath}.tmp`, outputFilePath);
-```
-
-With:
-
-```ts
-ws.end(tail);
-
-const dataIndexPath = path.join(CHAT_ARCHIVE_DIR, "data", "index.json");
-await fsp.mkdir(path.dirname(dataIndexPath), { recursive: true });
-await fsp.rm(`${dataIndexPath}.tmp`, { force: true });
-await fsp.writeFile(
-  `${dataIndexPath}.tmp`,
-  JSON.stringify({ live: liveSummaries, past: pastSummaries }) + "\n",
-  "utf-8"
-);
-
-await fsp.rename(`${outputFilePath}.tmp`, outputFilePath);
-await fsp.rename(`${dataIndexPath}.tmp`, dataIndexPath);
-```
-
-- [ ] **Step 4: Add `buildVideoSummary` helper at the bottom of the file**
-
-Append after the closing `}` of `genIndexFile`:
-
-```ts
-async function buildVideoSummary(
-  video: Awaited<ReturnType<typeof VideoModel.findByVideoId>>
-): Promise<Record<string, unknown>> {
-  if (!video) return {};
-  const channel = await video.getChannel();
-  const summary: Record<string, unknown> = {
-    id: video.id,
-    title: video.title,
-    channelId: video.channelId,
-    channel: channel
-      ? {
-          id: channel.id,
-          name: channel.name,
-          ...(channel.avatarUrl !== undefined
-            ? { avatarUrl: channel.avatarUrl }
-            : {}),
-        }
-      : { id: video.channelId, name: video.channelId },
-    status: video.status,
-    ...(video.scheduledStart !== undefined
-      ? { scheduledStart: video.scheduledStart.toISOString() }
-      : {}),
-    availableAt: video.availableAt.toISOString(),
-    archiveVersion: video.hbStats?.chatsArchiveVersion ?? 1,
-    stats: {
-      superChatTotalJpy: video.hbStats?.totalSuperChatAmountJpy ?? 0,
-      memberCount: video.hbStats?.totalMembers ?? 0,
-      giftCount: video.hbStats?.totalGifts ?? 0,
-    },
-  };
-  return summary;
-}
-```
-
-- [ ] **Step 5: Validate**
-
-Run in parallel:
-
-```bash
-npx tsc --noEmit
-npm run lint
-npm run format:check
-```
-
-Expected: all three exit 0.
-
-- [ ] **Step 6: Commit**
-
-```bash
 git add src/components/chats-archive/gen-index-file.ts
 git commit -m "$(cat <<'EOF'
 feat(chats-archive): write data/index.json alongside index.html
 
-Same loop now collects a per-video summary while emitting HTML cards;
-after the loops finish, writes data/index.json with { live, past }
-arrays of VideoSummary. Summary includes archiveVersion (sourced from
-Video.hbStats.chatsArchiveVersion, defaulting to 1) so the SPA can
-branch between legacy HTML and new JSON artifacts.
+Same loops over live + past videos now collect VideoSummary entries
+via buildVideoSummary; after the HTML index closes, writes
+data/index.json with { live, past } arrays. Both file renames run in
+order .html then .json so the legacy HTML artifact stays the primary
+fallback if the JSON write fails.
 
 EOF
 )"
@@ -869,7 +919,7 @@ EOF
 
 ---
 
-## Task 7: Write `data/channels/{channelId}.json` from `genChannelIndexFile`
+## Task 6: Write `data/channels/{channelId}.json` from `genChannelIndexFile`
 
 **Files:**
 
@@ -878,24 +928,42 @@ EOF
 
 - [ ] **Step 1: Read the current file**
 
-Read all 65 lines.
+Read `src/components/chats-archive/gen-channel-index-file.ts` (full file, 65 lines).
 
-- [ ] **Step 2: Add summary collection and JSON write**
+- [ ] **Step 2: Add the import**
 
-Find the line `let count = 0;` (line 31). Replace with:
+After the existing `import { renderVideoCard } from "./templates/VideoCard.js";` line, insert:
+
+```ts
+import { buildVideoSummary } from "./build-video-summary.js";
+```
+
+- [ ] **Step 3: Initialize `summaries` alongside `count`**
+
+Replace:
+
+```ts
+let count = 0;
+```
+
+With:
 
 ```ts
 let count = 0;
 const summaries: Array<Record<string, unknown>> = [];
 ```
 
-Inside the `for await` block, immediately after the `ws.write(...)` call and before the `if (isDirect) await archiveVideo(...)`, insert:
+- [ ] **Step 4: Collect summaries inside the `for await` loop**
+
+Inside the loop body, immediately after `ws.write(await renderVideoCard({...}))` and before `if (isDirect) await archiveVideo(video.id)`, insert:
 
 ```ts
 summaries.push(await buildVideoSummary(video));
 ```
 
-Replace the tail block:
+- [ ] **Step 5: Replace the tail block**
+
+Replace:
 
 ```ts
   ws.end(tail);
@@ -929,20 +997,17 @@ With:
     return;
   }
 
-  const channelJson = {
-    channel: {
-      id: channel.id,
-      name: channel.name,
-      ...(channel.avatarUrl !== undefined
-        ? { avatarUrl: channel.avatarUrl }
-        : {}),
-    },
-    videos: summaries,
+  const channelOut: Record<string, unknown> = {
+    id: channel.id,
+    name: channel.name,
   };
+  if (channel.avatarUrl !== undefined && channel.avatarUrl !== null) {
+    channelOut.avatarUrl = channel.avatarUrl;
+  }
   await fsp.rm(`${dataChannelPath}.tmp`, { force: true });
   await fsp.writeFile(
     `${dataChannelPath}.tmp`,
-    JSON.stringify(channelJson) + "\n",
+    JSON.stringify({ channel: channelOut, videos: summaries }) + "\n",
     "utf-8"
   );
 
@@ -951,46 +1016,7 @@ With:
 }
 ```
 
-- [ ] **Step 3: Add a private copy of `buildVideoSummary`**
-
-Append the same `buildVideoSummary` helper used in Task 6, at the bottom of `gen-channel-index-file.ts`. We deliberately duplicate the ~25-line function rather than extract a shared module: extracting would create a one-call-site logic-free wrapper (the helper is just a record builder and per the project's "avoid logic-free abstractions" rule, inline duplication is preferred at this size).
-
-```ts
-async function buildVideoSummary(
-  video: Awaited<ReturnType<typeof VideoModel.findByVideoId>>
-): Promise<Record<string, unknown>> {
-  if (!video) return {};
-  const channel = await video.getChannel();
-  const summary: Record<string, unknown> = {
-    id: video.id,
-    title: video.title,
-    channelId: video.channelId,
-    channel: channel
-      ? {
-          id: channel.id,
-          name: channel.name,
-          ...(channel.avatarUrl !== undefined
-            ? { avatarUrl: channel.avatarUrl }
-            : {}),
-        }
-      : { id: video.channelId, name: video.channelId },
-    status: video.status,
-    ...(video.scheduledStart !== undefined
-      ? { scheduledStart: video.scheduledStart.toISOString() }
-      : {}),
-    availableAt: video.availableAt.toISOString(),
-    archiveVersion: video.hbStats?.chatsArchiveVersion ?? 1,
-    stats: {
-      superChatTotalJpy: video.hbStats?.totalSuperChatAmountJpy ?? 0,
-      memberCount: video.hbStats?.totalMembers ?? 0,
-      giftCount: video.hbStats?.totalGifts ?? 0,
-    },
-  };
-  return summary;
-}
-```
-
-- [ ] **Step 4: Validate**
+- [ ] **Step 6: Validate**
 
 Run in parallel:
 
@@ -1002,16 +1028,17 @@ npm run format:check
 
 Expected: all three exit 0.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src/components/chats-archive/gen-channel-index-file.ts
 git commit -m "$(cat <<'EOF'
 feat(chats-archive): write data/channels/{channelId}.json
 
-Per-channel JSON output mirrors per-channel HTML — same video loop now
-collects summaries and writes a JSON object with channel info and the
-videos[] list. Empty-channel branch unlinks both .tmp files.
+Per-channel JSON output mirrors the per-channel HTML — the existing
+video loop now also collects VideoSummary entries. After both writes
+complete, the .html is renamed first and the .json second. The
+empty-channel branch unlinks both .tmp files.
 
 EOF
 )"
@@ -1019,7 +1046,7 @@ EOF
 
 ---
 
-## Task 8: Final manual verification (USER ACTION)
+## Task 7: Final manual verification (USER ACTION)
 
 This task does not execute any code changes. It documents the manual verification steps the user runs locally to confirm the implementation works end-to-end. The Implementer subagent should NOT mark this complete — it remains pending until the user confirms.
 
@@ -1040,7 +1067,7 @@ CHAT_ARCHIVE_DIR=/tmp/chats-archive-new node --env-file=.env dist/components/cha
 
 Expected: dev runner walks live + past videos, produces three artifact families.
 
-- [ ] **Step 3: Verify file presence and structure**
+- [ ] **Step 3: Verify file presence**
 
 ```bash
 ls -la /tmp/chats-archive-new/
@@ -1049,7 +1076,7 @@ ls -la /tmp/chats-archive-new/data/videos/ | head
 ls -la /tmp/chats-archive-new/data/channels/ | head
 ```
 
-Expected: `index.html`, `index.json` (under `data/`), per-channel HTML in `{channelId}/index.html`, per-channel JSON in `data/channels/{channelId}.json`, per-video HTML in `{channelId}/{date}_{videoId}.html`, per-video JSONL + meta in `data/videos/{videoId}.{jsonl,meta.json}`.
+Expected: `index.html`, `index.json` under `data/`, per-channel HTML in `{channelId}/index.html`, per-channel JSON in `data/channels/{channelId}.json`, per-video HTML in `{channelId}/{date}_{videoId}.html`, per-video JSONL + meta in `data/videos/{videoId}.{jsonl,meta.json}`.
 
 - [ ] **Step 4: Verify JSONL row count vs meta aggregates**
 
@@ -1064,15 +1091,15 @@ jq '.aggregates | .chatCount + .superChatCount + .superStickerCount + .membershi
 
 Expected: both numbers equal.
 
-- [ ] **Step 5: Verify no `hb*` / `isReplay` / `originVideoId` / `originChannelId` leak**
+- [ ] **Step 5: Verify no internal field leaks**
 
 ```bash
-grep -E '"(hbStats|hbStatus|isReplay|originVideoId|originChannelId)"' /tmp/chats-archive-new/data/videos/${VID}.jsonl | head
+grep -E '"(hbStats|hbStatus|hbStart|hbEnd|hbCleanedAt|hbErrorCode|hbReplica|hbRecordReplay|hbIgnore|isReplay|originVideoId|originChannelId)"' /tmp/chats-archive-new/data/videos/${VID}.jsonl | head
 ```
 
-Expected: zero hits.
+Expected: zero hits (note: `originVideoId` is allowed inside `raidOutgoing` rows; if the grep returns lines, confirm they all come from `raidOutgoing` and refer to the destination video, not the current video).
 
-- [ ] **Step 6: Verify first key is `type`**
+- [ ] **Step 6: Verify first key is `type` and per-type field set**
 
 ```bash
 head -5 /tmp/chats-archive-new/data/videos/${VID}.jsonl | jq -r 'keys[0]'
@@ -1080,17 +1107,35 @@ head -5 /tmp/chats-archive-new/data/videos/${VID}.jsonl | jq -r 'keys[0]'
 
 Expected: five `type` lines.
 
-- [ ] **Step 7: Verify raid + raidOutgoing dispatch**
+Spot-check field sets:
+
+```bash
+jq -c 'select(.type == "chat") | keys' /tmp/chats-archive-new/data/videos/${VID}.jsonl | sort -u | head -3
+jq -c 'select(.type == "superChat") | keys' /tmp/chats-archive-new/data/videos/${VID}.jsonl | sort -u | head -3
+jq -c 'select(.type == "membership") | keys' /tmp/chats-archive-new/data/videos/${VID}.jsonl | sort -u | head -3
+```
+
+Expected: each row-type's key set matches the spec's per-type field list — no missing required field, no extra fields beyond what the spec lists.
+
+- [ ] **Step 7: Verify currency table and jpy total**
+
+```bash
+jq '.aggregates.currencyTable, .aggregates.jpyTotal' /tmp/chats-archive-new/data/videos/${VID}.meta.json
+```
+
+Expected: open the corresponding `{channelId}/{date}_{videoId}.html` in a browser, find the currency table at the top, and confirm: each `currency / amount / jpyAmount` row matches a row in the JSON `currencyTable`; `jpyTotal` matches the HTML's "sum (JPY)" total cell.
+
+- [ ] **Step 8: Verify raid + raidOutgoing dispatch**
 
 ```bash
 jq -c 'select(.type == "raid" or .type == "raidOutgoing")' /tmp/chats-archive-new/data/videos/${VID}.jsonl
 ```
 
-If output exists, inspect at least one of each type and confirm: `raid` has `sourceName` + `sourcePhoto`; `raidOutgoing` has `originVideoId` + `originName` + `originPhoto`.
+If output exists, inspect at least one of each type: `raid` rows have `sourceName` plus optional `sourcePhoto / sourceVideoId / sourceChannelId`; `raidOutgoing` rows have `originVideoId` plus optional `originName / originPhoto / originChannelId`.
 
-- [ ] **Step 8: Verify chat dedup (owner+moderator overlap)**
+- [ ] **Step 9: Verify chat dedup**
 
-If you can find a chat author in the Mongo data with both `isOwner: true` and `isModerator: true`:
+If you can find a chat author in the data with both `isOwner: true` and `isModerator: true`:
 
 ```bash
 jq -r 'select(.type == "chat" and .isOwner and .isModerator) | .id' /tmp/chats-archive-new/data/videos/${VID}.jsonl | sort -u | wc -l
@@ -1099,16 +1144,19 @@ jq -r 'select(.type == "chat" and .isOwner and .isModerator) | .id' /tmp/chats-a
 
 Expected: both numbers equal (no duplicate `id`s).
 
-- [ ] **Step 9: Verify empty-archive cleanup**
+- [ ] **Step 10: Verify empty-archive cleanup**
 
-Pick a video that has zero chat data in Mongo and run `archiveVideo` directly. Confirm no `.html`, `.jsonl`, `.meta.json`, or `.tmp` files appear for that video, and `Video.hbStats.chatsArchiveVersion` for it is NOT set to 2.
+Pick a video with zero matching chat in Mongo, then invoke `archiveVideo(videoId)` directly (e.g. via a one-off dev-runner script). Confirm:
 
-- [ ] **Step 10: Verify rename order and version bump**
+- No `.html`, `.jsonl`, `.meta.json`, or `.tmp` files exist for that video under `{channelId}/` or `data/videos/`.
+- `Video.hbStats.chatsArchiveVersion` for it remains undefined (or its prior value).
 
-After a normal `archiveVideo` run for a fresh video:
+- [ ] **Step 11: Verify rename order and version bump**
+
+After a normal `archiveVideo` run for a freshly archived video:
 
 ```bash
-ls -la /tmp/chats-archive-new/<channelId>/<date>_<videoId>.html /tmp/chats-archive-new/data/videos/${VID}.jsonl /tmp/chats-archive-new/data/videos/${VID}.meta.json
+ls -la /tmp/chats-archive-new/<channelId>/<date>_${VID}.html /tmp/chats-archive-new/data/videos/${VID}.jsonl /tmp/chats-archive-new/data/videos/${VID}.meta.json
 stat -f '%m %N' /tmp/chats-archive-new/data/videos/${VID}.meta.json /tmp/chats-archive-new/data/videos/${VID}.jsonl
 ```
 
@@ -1122,44 +1170,70 @@ db.videos.findOne({ id: "<videoId>" }, { "hbStats.chatsArchiveVersion": 1 });
 
 Expected: `chatsArchiveVersion: 2`.
 
-- [ ] **Step 11: Verify `index.json` and channel JSON**
+- [ ] **Step 12: Verify `index.json` and channel JSON contents**
 
 ```bash
 jq '.live | length, .past | length' /tmp/chats-archive-new/data/index.json
 jq '.live[0]' /tmp/chats-archive-new/data/index.json
 jq '.channel, (.videos | length)' /tmp/chats-archive-new/data/channels/<channelId>.json
+jq '.videos[0] | {id, archiveVersion, stats}' /tmp/chats-archive-new/data/channels/<channelId>.json
 ```
 
-Expected: counts match the HTML index page; `archiveVersion` is `2` for freshly archived videos, `1` for legacy.
+Expected:
 
-- [ ] **Step 12: Verify idempotency — re-run on v2 video**
+- `live` + `past` lengths match the live + past sections of `index.html`.
+- A freshly archived video shows `archiveVersion: 2`; a legacy video (not re-archived under this change) shows `archiveVersion: 1`.
+- `stats.superChatTotalJpy / memberCount / giftCount` match the "SC / Members / Gifts" numbers in that video's HTML card footer on the channel page.
 
-Re-run the dev runner. Enable Mongo profiler before the run:
+- [ ] **Step 13: Verify idempotency (re-run on a v2 video)**
+
+```bash
+cp /tmp/chats-archive-new/data/videos/${VID}.jsonl /tmp/${VID}.jsonl.before
+cp /tmp/chats-archive-new/data/videos/${VID}.meta.json /tmp/${VID}.meta.json.before
+```
+
+In `mongosh` start the profiler:
 
 ```js
 db.setProfilingLevel(2);
 ```
 
-After the second run completes:
+Re-run the dev runner. After completion:
+
+```bash
+cmp /tmp/${VID}.jsonl.before /tmp/chats-archive-new/data/videos/${VID}.jsonl
+cmp /tmp/${VID}.meta.json.before /tmp/chats-archive-new/data/videos/${VID}.meta.json
+```
+
+Expected: both `cmp` calls exit 0 (no output) — content is byte-identical when no new chat has arrived.
+
+In `mongosh`:
 
 ```js
 db.system.profile
-  .find({ ns: "<dbname>.videos", op: "update" })
+  .find({
+    ns: "<dbname>.videos",
+    op: "update",
+    "command.u.$set": { $exists: true },
+  })
   .sort({ ts: -1 })
   .limit(5)
   .pretty();
 ```
 
-Expected: no `updateOne` against `videos` collection setting `hbStats.chatsArchiveVersion` for videos already at v2.
+Expected: no `updateOne` against the `videos` collection setting `hbStats.chatsArchiveVersion` for any video that was already at v2 before the re-run.
 
-- [ ] **Step 13: Verify stray `.tmp` cleanup**
+- [ ] **Step 14: Verify stray `.tmp` cleanup**
 
 ```bash
 touch /tmp/chats-archive-new/data/videos/<videoId>.jsonl.tmp
 ```
 
-Re-run `archiveVideo` for that videoId. After the run, confirm the stray `.tmp` is gone and only the three final-name files remain.
+Re-run `archiveVideo` for that videoId. Confirm:
 
-- [ ] **Step 14: Report to user**
+- The stray `.tmp` is gone after the run.
+- Only the three final-name files remain for that video.
 
-Once steps 1–13 pass, report success. Any regression: file an issue with the specific failing step output and STOP — do NOT mark the plan complete.
+- [ ] **Step 15: Report**
+
+Once steps 1–14 pass, report success to the user. Any regression: capture the failing step output, report it, and STOP — do NOT mark the plan complete.
