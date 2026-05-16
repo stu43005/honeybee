@@ -39,6 +39,9 @@ export class Stats {
 
   @prop()
   totalGifts?: number;
+
+  @prop()
+  chatsArchiveVersion?: number;
 }
 
 export const LiveStatus = Object.freeze([
