@@ -361,7 +361,33 @@ import SuperStickerModel, {
 
 `ChannelModel` is NOT imported here — channel resolution moves into `buildVideoSummary`, which the post-loop tail calls directly.
 
-- [ ] **Step 3: Extend the raid cursor query**
+- [ ] **Step 3: Update the `archiveVideo` signature to an options bag**
+
+Replace the existing export:
+
+```ts
+export async function archiveVideo(videoId: string, job?: Job): Promise<void> {
+```
+
+With:
+
+```ts
+export async function archiveVideo(
+  videoId: string,
+  { job, isDirect = false }: { job?: Job; isDirect?: boolean } = {}
+): Promise<void> {
+```
+
+`isDirect` propagates from the two index generators (`genIndexFile`,
+`genChannelIndexFile`) when the function is invoked from the dev runner
+against a production Mongo; the cursor-tail `updateOne` (added in Step 6)
+gates on `!isDirect` so a dev run cannot bump the persistent
+`hbStats.chatsArchiveVersion`. The default `{ }` keeps the existing
+production callers' ergonomics close to the old shape — only the agenda
+shim in `src/components/chats-archive.ts` (which passes `job`) needs a
+parallel update; see Step 9.
+
+- [ ] **Step 4: Extend the raid cursor query**
 
 Replace:
 
@@ -383,7 +409,7 @@ const raidCursor = RaidModel.find({
   .cursor();
 ```
 
-- [ ] **Step 4: Expand `getOutputFilePath` to return all three paths**
+- [ ] **Step 5: Expand `getOutputFilePath` to return all three paths**
 
 Replace the existing helper (around lines 29–32):
 
@@ -418,7 +444,7 @@ function getOutputFilePaths(video: DocumentType<Video>): {
 
 This consolidates path construction in one place: the `CHAT_ARCHIVE_DIR` assert runs once and all three output paths share the same root resolution. The function name pluralizes to signal the change of return shape.
 
-- [ ] **Step 5: Replace the pre-loop setup block**
+- [ ] **Step 6: Replace the pre-loop setup block**
 
 Find lines 121–125 (the `outputFilePath` / `mkdir` / `createWriteStream` block). Replace:
 
@@ -456,7 +482,7 @@ const jsonlWs = fs.createWriteStream(`${jsonlPath}.tmp`, {
 });
 ```
 
-- [ ] **Step 6: Replace the cursor loop**
+- [ ] **Step 7: Replace the cursor loop**
 
 Find the loop starting `let no = 0;` (around line 187) through the `ws.end(tail);` (line 205) and the empty-archive / rename block (lines 207–212). Replace the entire block:
 
@@ -559,7 +585,7 @@ With:
   await fsp.rename(`${jsonlPath}.tmp`, jsonlPath);
   await fsp.rename(`${metaPath}.tmp`, metaPath);
 
-  if ((video.hbStats?.chatsArchiveVersion ?? 0) < 2) {
+  if (!isDirect && (video.hbStats?.chatsArchiveVersion ?? 0) < 2) {
     await VideoModel.updateOne(
       { id: videoId },
       { $set: { "hbStats.chatsArchiveVersion": 2 } }
@@ -568,7 +594,13 @@ With:
 }
 ```
 
-- [ ] **Step 7: Append helper functions at the bottom of the file**
+The `!isDirect` guard suppresses the Mongo write when the dev runner is
+exercising `archiveVideo` against a production database (`isDirect=true`).
+Local artifacts on disk are still produced; only the persistent
+`chatsArchiveVersion` bump is skipped so a dev run cannot mutate the
+deployed `Video` document's flag.
+
+- [ ] **Step 8: Append helper functions at the bottom of the file**
 
 After the closing `}` of `archiveVideo` (now the last function in the file), append:
 
@@ -760,7 +792,25 @@ Notes on serialization:
 - `makeAuthorRow` accepts `d: unknown` and casts to `Record<string, unknown>` once internally so the seven author-bearing call sites pass the typed `d` directly with no boundary cast. The shared field names (`id`, `timestamp`, `authorName`, ...) make a typed parameter overconstrained for marginal gain.
 - The first key of every row object is `type`. V8 preserves property insertion order in `JSON.stringify`, so SPA can parse `type` from the leading bytes.
 
-- [ ] **Step 8: Validate**
+- [ ] **Step 9: Update the agenda-shim call site**
+
+`src/components/chats-archive.ts` invokes `archiveVideo` in the
+production agenda path with positional `(videoId, job)` args. Adjust it
+to the new options-bag shape.
+
+Replace:
+
+```ts
+await archiveVideo(videoId, job);
+```
+
+With:
+
+```ts
+await archiveVideo(videoId, { job });
+```
+
+- [ ] **Step 10: Validate**
 
 Run in parallel:
 
@@ -772,7 +822,7 @@ npm run format:check
 
 Expected: all three exit 0. If `format:check` complains, run `npm run format` then re-run.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
 git add src/components/chats-archive/archive-video.ts
@@ -798,7 +848,12 @@ Behavior changes inside archiveVideo:
   final name when meta.json appears).
 - After all renames succeed, Video.hbStats.chatsArchiveVersion is set
   to 2 via Model.updateOne. The write is skipped when the in-memory
-  loaded value is already >= 2 to avoid redundant Mongo round trips.
+  loaded value is already >= 2 (no redundant Mongo round trips) or
+  when archiveVideo was invoked with isDirect=true (dev-runner mode
+  must not mutate production Video flags).
+- archiveVideo signature shifts to an options bag
+  (videoId, { job, isDirect }). The agenda shim in chats-archive.ts
+  updates its single call site to the new shape.
 
 EOF
 )"
@@ -867,6 +922,21 @@ In the **second** loop (past / recently-ended videos), the body ends with the an
 
 ```ts
 pastSummaries.push(await buildVideoSummary(video));
+```
+
+Both `if (isDirect) await archiveVideo(video.id);` lines (one per loop)
+must also be updated to pass the options-bag form so the dev runner's
+`isDirect` flag propagates into `archiveVideo`. Replace each occurrence
+of:
+
+```ts
+if (isDirect) await archiveVideo(video.id);
+```
+
+With:
+
+```ts
+if (isDirect) await archiveVideo(video.id, { isDirect: true });
 ```
 
 - [ ] **Step 5: Write `data/index.json` after the loops, before the per-channel iteration**
@@ -971,6 +1041,19 @@ Inside the loop body, immediately after `ws.write(await renderVideoCard({...}))`
 
 ```ts
 summaries.push(await buildVideoSummary(video));
+```
+
+Also update the `archiveVideo` call so the dev runner's `isDirect` flag
+propagates into the inner archive run. Replace:
+
+```ts
+if (isDirect) await archiveVideo(video.id);
+```
+
+With:
+
+```ts
+if (isDirect) await archiveVideo(video.id, { isDirect: true });
 ```
 
 - [ ] **Step 5: Replace the tail block**
@@ -1169,7 +1252,20 @@ In `mongosh`:
 db.videos.findOne({ id: "<videoId>" }, { "hbStats.chatsArchiveVersion": 1 });
 ```
 
-Expected: `chatsArchiveVersion: 2`.
+Expected: `chatsArchiveVersion` is **unchanged** (likely `undefined` or
+the prior value) — the dev runner invokes `archiveVideo` with
+`isDirect=true`, which intentionally suppresses the `updateOne` so a
+local test cannot mutate the deployed Video flag.
+
+To validate the bump path itself, run a one-off Node invocation that
+calls `archiveVideo` without `isDirect`:
+
+```bash
+CHAT_ARCHIVE_DIR=/tmp/chats-archive-new node --env-file=.env -e "import('./dist/components/chats-archive/archive-video.js').then(m => m.archiveVideo('<videoId>'))"
+```
+
+After that command completes, re-query Mongo and confirm
+`chatsArchiveVersion: 2`.
 
 - [ ] **Step 11: Verify `index.json` and channel JSON contents**
 
@@ -1199,7 +1295,15 @@ In `mongosh` start the profiler:
 db.setProfilingLevel(2);
 ```
 
-Re-run the dev runner. After completion:
+Re-run `archiveVideo` for that video **without** `isDirect` (the dev
+runner's `isDirect=true` always skips the `updateOne`, so it cannot
+validate the skip-if-v2 path):
+
+```bash
+CHAT_ARCHIVE_DIR=/tmp/chats-archive-new node --env-file=.env -e "import('./dist/components/chats-archive/archive-video.js').then(m => m.archiveVideo('${VID}'))"
+```
+
+After completion:
 
 ```bash
 cmp /tmp/${VID}.jsonl.before /tmp/chats-archive-new/data/videos/${VID}.jsonl

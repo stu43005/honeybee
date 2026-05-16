@@ -257,13 +257,22 @@ deciding whether to run — every invocation unconditionally re-produces all
 three artifacts (overwriting via `.tmp` + rename). The version field has
 no influence on archive execution.
 
-The `updateOne` call, however, is skipped when the version is already at
-the target value or higher: after the three renames succeed, the in-memory
-`video.hbStats?.chatsArchiveVersion` (loaded at the start of the run) is
-compared to the constant `2`; if it is already `>= 2`, the `updateOne` is
-not issued. This avoids a redundant Mongo write on every re-archive. If
-the value is `undefined` / `< 2`, the `updateOne` runs as described
-above.
+The `updateOne` call, however, is skipped in two situations:
+
+1. The version is already at the target value or higher: after the three
+   renames succeed, the in-memory `video.hbStats?.chatsArchiveVersion`
+   (loaded at the start of the run) is compared to the constant `2`; if
+   it is already `>= 2`, the `updateOne` is not issued. This avoids a
+   redundant Mongo write on every re-archive.
+2. `archiveVideo` is invoked with `isDirect=true`, which is the flag the
+   two index generators set when the dev runner exercises them against a
+   production Mongo (`node --env-file=.env dist/components/chats-archive.js`).
+   Disk artifacts are still written, but the persistent
+   `chatsArchiveVersion` bump is suppressed so a local test cannot mutate
+   the deployed `Video` document's flag.
+
+If neither condition applies (production agenda run, in-memory value
+`< 2`), the `updateOne` runs as described above.
 
 **Mongoose `$set` on dotted paths — verified.** Mongoose `8.2.1`
 (`node_modules/mongoose/lib/helpers/path/setDottedPath.js:23-24` and
