@@ -232,7 +232,7 @@ function RaidCells({
   const name = isOutgoing ? doc.originName : doc.sourceName;
   const photo = isOutgoing ? doc.originPhoto : doc.sourcePhoto;
   const message = isOutgoing
-    ? `Raided ${name ?? ""}. Have fun!`
+    ? `Sending you to ${name ?? ""}`
     : `${name ?? ""} and their viewers just joined. Say hello!`;
   return (
     <>
@@ -278,7 +278,7 @@ feat(chats-archive): render outgoing raids in the HTML archive
 
 RaidCells now branches on doc.sourceVideoId === video.id. Outgoing
 raids render the destination channel (originName / originPhoto) with
-the message "Raided <originName>. Have fun!"; incoming raids preserve
+the message "Sending you to <originName>"; incoming raids preserve
 the existing wording and field references. Pairs with the next change
 which extends the raid cursor to fetch both directions.
 

@@ -393,7 +393,7 @@ per-channel HTML iterates.
      `doc.sourceName`, message column shows
      `"<sourceName> and their viewers just joined. Say hello!"`.
    - Outgoing reads `doc.originPhoto` / `doc.originName` and renders
-     `"Raided <originName>. Have fun!"` as the message column.
+     `"Sending you to <originName>"` as the message column.
      With this template change, HTML continues to be a complete and
      self-consistent archive — outgoing raids appear with the destination
      channel's name, never the current channel's name.
@@ -466,7 +466,7 @@ small additive changes:
   - `RaidCells` is updated to branch on
     `doc.sourceVideoId === video.id`: outgoing raids render
     `originName` / `originPhoto` with the message
-    `"Raided <originName>. Have fun!"`; incoming preserves the existing
+    `"Sending you to <originName>"`; incoming preserves the existing
     `sourceName` / `sourcePhoto` rendering.
 - `src/models/Video.ts`
   - Add `chatsArchiveVersion?: number` to the `Stats` sub-class (lines
