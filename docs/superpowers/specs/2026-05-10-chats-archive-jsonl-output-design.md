@@ -167,7 +167,7 @@ and no redundant top-level `channelId` (read `channel.id` instead).
 {
   // ...all VideoSummary fields per §4.1 (id, title, channel, status,
   // duration, availableAt, archiveVersion, stats, plus optional
-  // description / scheduledStart / actualStart / actualEnd / publishedAt
+  // scheduledStart / actualStart / actualEnd / publishedAt
   // when present on the Video document)
   "aggregates": {
     "chatCount": 0,
@@ -308,7 +308,6 @@ Shared shape used by both files:
     "memberCount": 0,
     "giftCount": 0,
   },
-  "description?": "...",
   "scheduledStart?": "ISO 8601",
   "actualStart?": "ISO 8601",
   "actualEnd?": "ISO 8601",
@@ -330,10 +329,10 @@ are always present as `number`, defaulting to `0` when `Video.hbStats` (or
 the sub-field) is undefined — matching the existing HTML `VideoCard` which
 renders `?? 0` in all three positions. `stats` itself is always present.
 
-`description` and the four `Date` optionals (`scheduledStart`,
-`actualStart`, `actualEnd`, `publishedAt`) are emitted only when defined
-on the source `Video` document; undefined values are stripped before
-`JSON.stringify` so they do not appear as `null`.
+The four `Date` optionals (`scheduledStart`, `actualStart`, `actualEnd`,
+`publishedAt`) are emitted only when defined on the source `Video`
+document; undefined values are stripped before `JSON.stringify` so they
+do not appear as `null`.
 
 `VideoSummary.channel` is sourced from
 `await ChannelModel.findByChannelId(video.channelId)` (a direct read rather

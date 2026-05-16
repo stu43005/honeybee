@@ -130,7 +130,6 @@ export async function buildVideoSummary(
     },
   };
   for (const key of [
-    "description",
     "scheduledStart",
     "actualStart",
     "actualEnd",
@@ -148,7 +147,7 @@ Notes on this code:
 - `ChannelModel.findByChannelId(video.channelId)` is used directly (not `video.getChannel()`) because `getChannel()` calls `assert(channel, "Unable to get the channel.")` and throws when the channel row is missing. The SPA-facing JSON should degrade gracefully for newly-crawled videos whose channel row has not been populated yet, so we read the channel ourselves and fall through to the `{ id: channelId, name: channelId }` shape when not found.
 - This means an extra `findByChannelId` round trip per video summary (not reusing the loop's `populate("channel")`). Trade-off accepted: existing HTML loops only populate `channel` for `renderVideoCard`; the JSON summary needs a real null check, and a 1-query-per-video cost on the index pages (≤96 videos for live+past, ≤100 per channel) is bounded. If profiling shows this matters later, batch via `ChannelModel.find({ id: { $in: [...] } })` in a separate optimization PR.
 - Dates are passed through as `Date` objects. `JSON.stringify` invokes `Date.prototype.toJSON` which produces ISO 8601 strings — no custom serializer.
-- The optional-fields loop covers `description` and the four optional `Date` fields; `keyof Video` keeps the tuple type-checked, so a key typo fails `tsc` instead of being silently swallowed.
+- The optional-fields loop covers the four optional `Date` fields (`scheduledStart`, `actualStart`, `actualEnd`, `publishedAt`); `keyof Video` keeps the tuple type-checked, so a key typo fails `tsc` instead of being silently swallowed.
 - The top-level `channelId` field is intentionally omitted; consumers read `channel.id` (same value, no redundancy).
 - `??` defaults for `archiveVersion` / `stats.*` match the existing HTML `VideoCard`'s `?? 0` semantics so SPA card output matches HTML card output byte-for-byte at the numeric level.
 
