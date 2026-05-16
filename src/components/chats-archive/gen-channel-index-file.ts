@@ -9,6 +9,7 @@ import { archiveVideo } from "./archive-video.js";
 import { recalcVideoHbStats } from "../video-stats.js";
 import { renderChannelIndexShell } from "./templates/ChannelIndexPage.js";
 import { renderVideoCard } from "./templates/VideoCard.js";
+import { buildVideoSummary } from "./build-video-summary.js";
 
 export async function genChannelIndexFile(
   channelId: string,
@@ -29,6 +30,7 @@ export async function genChannelIndexFile(
   ws.write(head);
 
   let count = 0;
+  const summaries: Array<Record<string, unknown>> = [];
   for await (let video of VideoModel.find({
     channelId,
     uploadedVideo: { $ne: true },
@@ -50,15 +52,44 @@ export async function genChannelIndexFile(
         hbStats: video.hbStats,
       })
     );
-    if (isDirect) await archiveVideo(video.id);
+    summaries.push(await buildVideoSummary(video));
+    if (isDirect) await archiveVideo(video.id, { isDirect: true });
     count++;
   }
 
   ws.end(tail);
 
+  const dataChannelPath = path.join(
+    CHAT_ARCHIVE_DIR,
+    "data",
+    "channels",
+    `${channelId}.json`
+  );
+  await fsp.mkdir(path.dirname(dataChannelPath), { recursive: true });
+
   if (count === 0) {
-    await fsp.unlink(`${outputFilePath}.tmp`);
+    await Promise.all([
+      fsp.rm(`${outputFilePath}.tmp`, { force: true }),
+      fsp.rm(`${dataChannelPath}.tmp`, { force: true }),
+    ]);
     return;
   }
+
+  const channelJson: Record<string, unknown> = {
+    id: channel.id,
+    name: channel.name,
+  };
+  if (channel.avatarUrl !== undefined && channel.avatarUrl !== null) {
+    channelJson.avatarUrl = channel.avatarUrl;
+  }
+  channelJson.videos = summaries;
+  await fsp.rm(`${dataChannelPath}.tmp`, { force: true });
+  await fsp.writeFile(
+    `${dataChannelPath}.tmp`,
+    JSON.stringify(channelJson) + "\n",
+    "utf-8"
+  );
+
   await fsp.rename(`${outputFilePath}.tmp`, outputFilePath);
+  await fsp.rename(`${dataChannelPath}.tmp`, dataChannelPath);
 }
