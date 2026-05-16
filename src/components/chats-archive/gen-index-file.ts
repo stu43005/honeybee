@@ -11,6 +11,7 @@ import { genChannelIndexFile } from "./gen-channel-index-file.js";
 import { recalcVideoHbStats } from "../video-stats.js";
 import { renderIndexShell } from "./templates/IndexPage.js";
 import { renderVideoCard } from "./templates/VideoCard.js";
+import { buildVideoSummary } from "./build-video-summary.js";
 
 export async function genIndexFile({
   isDirect = false,
@@ -26,6 +27,8 @@ export async function genIndexFile({
   ws.write(head);
 
   const channelIds = new Set<string>();
+  const liveSummaries: Array<Record<string, unknown>> = [];
+  const pastSummaries: Array<Record<string, unknown>> = [];
 
   for await (let video of VideoModel.findLiveVideos(48)
     .sort({ availableAt: 1 })
@@ -53,7 +56,8 @@ export async function genIndexFile({
         hbStats: video.hbStats,
       })
     );
-    if (isDirect) await archiveVideo(video.id);
+    liveSummaries.push(await buildVideoSummary(video));
+    if (isDirect) await archiveVideo(video.id, { isDirect: true });
   }
 
   ws.write(between);
@@ -82,11 +86,23 @@ export async function genIndexFile({
         hbStats: video.hbStats,
       })
     );
-    if (isDirect) await archiveVideo(video.id);
+    pastSummaries.push(await buildVideoSummary(video));
+    if (isDirect) await archiveVideo(video.id, { isDirect: true });
   }
 
   ws.end(tail);
+
+  const dataIndexPath = path.join(CHAT_ARCHIVE_DIR, "data", "index.json");
+  await fsp.mkdir(path.dirname(dataIndexPath), { recursive: true });
+  await fsp.rm(`${dataIndexPath}.tmp`, { force: true });
+  await fsp.writeFile(
+    `${dataIndexPath}.tmp`,
+    JSON.stringify({ live: liveSummaries, past: pastSummaries }) + "\n",
+    "utf-8"
+  );
+
   await fsp.rename(`${outputFilePath}.tmp`, outputFilePath);
+  await fsp.rename(`${dataIndexPath}.tmp`, dataIndexPath);
 
   for (const channelId of channelIds) {
     try {
