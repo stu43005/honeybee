@@ -579,84 +579,60 @@ function buildJsonlRow(doc: ChatRowDoc, videoId: string): JsonlRow | null {
   switch (doc.collection.name) {
     case "chats": {
       const d = doc as DocumentType<Chat>;
-      return makeAuthorRow("chat", d as unknown as Record<string, unknown>, {
+      return makeAuthorRow("chat", d, {
         message: d.message,
       });
     }
     case "superchats": {
       const d = doc as DocumentType<SuperChat>;
-      return makeAuthorRow(
-        "superChat",
-        d as unknown as Record<string, unknown>,
-        {
-          message: d.message,
-          amount: d.amount,
-          currency: d.currency,
-          jpyAmount: d.jpyAmount,
-          ...setIfDefine("significance", d.significance),
-          ...setIfDefine("color", d.color),
-        }
-      );
+      return makeAuthorRow("superChat", d, {
+        message: d.message,
+        amount: d.amount,
+        currency: d.currency,
+        jpyAmount: d.jpyAmount,
+        ...setIfDefine("significance", d.significance),
+        ...setIfDefine("color", d.color),
+      });
     }
     case "superstickers": {
       const d = doc as DocumentType<SuperSticker>;
-      return makeAuthorRow(
-        "superSticker",
-        d as unknown as Record<string, unknown>,
-        {
-          ...setIfDefine("text", d.text),
-          image: d.image,
-          amount: d.amount,
-          currency: d.currency,
-          jpyAmount: d.jpyAmount,
-          ...setIfDefine("significance", d.significance),
-          ...setIfDefine("color", d.color),
-        }
-      );
+      return makeAuthorRow("superSticker", d, {
+        ...setIfDefine("text", d.text),
+        image: d.image,
+        amount: d.amount,
+        currency: d.currency,
+        jpyAmount: d.jpyAmount,
+        ...setIfDefine("significance", d.significance),
+        ...setIfDefine("color", d.color),
+      });
     }
     case "memberships": {
       const d = doc as DocumentType<Membership>;
-      return makeAuthorRow(
-        "membership",
-        d as unknown as Record<string, unknown>,
-        {
-          ...setIfDefine("level", d.level),
-          ...setIfDefine("since", d.since),
-        }
-      );
+      return makeAuthorRow("membership", d, {
+        ...setIfDefine("level", d.level),
+        ...setIfDefine("since", d.since),
+      });
     }
     case "membershipgifts": {
       const d = doc as DocumentType<MembershipGift>;
-      return makeAuthorRow(
-        "membershipGift",
-        d as unknown as Record<string, unknown>,
-        {
-          ...setIfDefine("senderName", d.senderName),
-        }
-      );
+      return makeAuthorRow("membershipGift", d, {
+        ...setIfDefine("senderName", d.senderName),
+      });
     }
     case "membershipgiftpurchases": {
       const d = doc as DocumentType<MembershipGiftPurchase>;
-      return makeAuthorRow(
-        "membershipGiftPurchase",
-        d as unknown as Record<string, unknown>,
-        {
-          amount: d.amount,
-        }
-      );
+      return makeAuthorRow("membershipGiftPurchase", d, {
+        amount: d.amount,
+      });
     }
     case "milestones": {
       const d = doc as DocumentType<Milestone>;
-      return makeAuthorRow(
-        "milestone",
-        d as unknown as Record<string, unknown>,
-        {
-          message: d.message,
-          ...setIfDefine("level", d.level),
-          ...setIfDefine("duration", d.duration),
-          ...setIfDefine("since", d.since),
-        }
-      );
+      return makeAuthorRow("milestone", d, {
+        message: d.message,
+        ...setIfDefine("level", d.level),
+        ...setIfDefine("duration", d.duration),
+        ...setIfDefine("since", d.since),
+      });
     }
     case "polls": {
       const d = doc as DocumentType<Poll>;
@@ -706,21 +682,22 @@ function buildJsonlRow(doc: ChatRowDoc, videoId: string): JsonlRow | null {
 
 function makeAuthorRow(
   type: string,
-  d: Record<string, unknown>,
+  d: unknown,
   extra: Record<string, unknown>
 ): JsonlRow {
+  const r = d as Record<string, unknown>;
   return {
     type,
-    id: d.id as string,
-    timestamp: d.timestamp as Date,
-    ...setIfDefine("authorName", d.authorName),
-    ...setIfDefine("authorPhoto", d.authorPhoto),
-    authorChannelId: d.authorChannelId,
-    authorType: d.authorType,
-    ...setIfDefine("membership", d.membership),
-    isVerified: d.isVerified,
-    isOwner: d.isOwner,
-    isModerator: d.isModerator,
+    id: r.id as string,
+    timestamp: r.timestamp as Date,
+    ...setIfDefine("authorName", r.authorName),
+    ...setIfDefine("authorPhoto", r.authorPhoto),
+    authorChannelId: r.authorChannelId,
+    authorType: r.authorType,
+    ...setIfDefine("membership", r.membership),
+    isVerified: r.isVerified,
+    isOwner: r.isOwner,
+    isModerator: r.isModerator,
     ...extra,
   };
 }
@@ -780,7 +757,7 @@ Notes on serialization:
 - All `Date` fields (per-row `timestamp`, poll `createdAt`, `meta.json` top-level date fields like `availableAt` / `scheduledStart`) are emitted as raw `Date` objects. `JSON.stringify` invokes `Date.prototype.toJSON` which returns the same ISO 8601 string as `Date.prototype.toISOString()` would. No custom serializer is used.
 - `setIfDefine(key, value)` (imported from `../../util.js`) strips both `undefined` and `null` — Typegoose returns `undefined` for missing optionals, but lean/projected docs can surface `null`; either way the key is omitted.
 - `buildJsonlRow` and `bumpAggregate` both switch on `doc.collection.name` so the discriminator logic stays in lock-step. Each case casts the input to its `DocumentType<Model>` so the extra-field construction and aggregate increment access typed fields (e.g. `d.amount: number`) without ad-hoc cast.
-- `makeAuthorRow` keeps a `Record<string, unknown>` signature because the seven author-bearing variants share the same field names; passing the doc through as `unknown as Record<string, unknown>` is more convenient than enumerating the seven model classes.
+- `makeAuthorRow` accepts `d: unknown` and casts to `Record<string, unknown>` once internally so the seven author-bearing call sites pass the typed `d` directly with no boundary cast. The shared field names (`id`, `timestamp`, `authorName`, ...) make a typed parameter overconstrained for marginal gain.
 - The first key of every row object is `type`. V8 preserves property insertion order in `JSON.stringify`, so SPA can parse `type` from the leading bytes.
 
 - [ ] **Step 8: Validate**
