@@ -228,7 +228,7 @@ export async function archiveVideo(
     .cursor();
 
   let no = 0;
-  const aggregates = {
+  const aggregates: VideoAggregates = {
     chatCount: 0,
     superChatCount: 0,
     superStickerCount: 0,
@@ -301,6 +301,19 @@ export async function archiveVideo(
     );
   }
 }
+
+type VideoAggregates = {
+  chatCount: number;
+  superChatCount: number;
+  superStickerCount: number;
+  membershipCount: number;
+  giftCount: number;
+  giftPurchaseCount: number;
+  totalGiftAmount: number;
+  milestoneCount: number;
+  pollCount: number;
+  raidCount: number;
+};
 
 type JsonlRow = { type: string; [key: string]: unknown };
 
@@ -431,21 +444,7 @@ function makeAuthorRow(
   };
 }
 
-function bumpAggregate(
-  agg: {
-    chatCount: number;
-    superChatCount: number;
-    superStickerCount: number;
-    membershipCount: number;
-    giftCount: number;
-    giftPurchaseCount: number;
-    totalGiftAmount: number;
-    milestoneCount: number;
-    pollCount: number;
-    raidCount: number;
-  },
-  doc: ChatRowDoc
-): void {
+function bumpAggregate(agg: VideoAggregates, doc: ChatRowDoc): void {
   switch (doc.collection.name) {
     case "chats":
       agg.chatCount++;
