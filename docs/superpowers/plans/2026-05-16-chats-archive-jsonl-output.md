@@ -474,8 +474,7 @@ With:
     pollCursor,
     raidCursor
   )) {
-    const collectionName = (doc as { collection: { name: string } }).collection
-      .name;
+    const collectionName = doc.collection.name;
 
     no++;
     ws.write(await renderChatRow({ doc, no, video }));
