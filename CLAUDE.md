@@ -240,3 +240,38 @@ module?" detectors only return the truthful answer in the actual entry file.
 Read them once at the entry, then pass the value down as an explicit parameter
 (`isDirect`, `fromCli`, etc.). Sub-files importing these helpers and calling
 them locally is a bug — they always see `false`.
+
+### Type casts belong inside helpers, not at callsites
+
+When a helper needs a loosely-typed view of its input (`unknown`,
+`Record<string, unknown>`, or a per-variant downcast), do the cast once inside
+the helper. Either accept the typed-union as the parameter and `switch` /
+downcast per variant internally, or accept `unknown` and cast at the function
+boundary. Never push `as unknown as Record<string, unknown>` (or an analogous
+boundary cast) onto every callsite — callsites should pass the already-typed
+value and read clean. If you find yourself writing the same cast at three or
+more callsites, the helper signature is wrong; fix the helper instead of
+repeating the cast.
+
+### Field iteration over typed documents must be type-driven
+
+When copying or iterating fields of a typed document (Mongoose / Typegoose
+model, discriminated union, any object with a known shape):
+
+- Do not cast to `Record<string, unknown>` just to enable bracket access. The
+  cast disables tsc's typo detection — a wrong field name becomes a silent
+  runtime no-op instead of a compile error.
+- Drive the loop with an `as const` tuple of `keyof T` literals, e.g.
+  `(["actualStart", "actualEnd", "duration"] as const).forEach(k => ...)`.
+  Field names are then checked against the type at build time, and the same
+  tuple can be shared between multiple emit / projection paths so the field
+  set stays in sync.
+
+### Reuse existing util helpers; do not re-invent
+
+Before introducing a new local helper for any "common" operation, grep
+`src/util.ts` and `src/utils/` for an existing equivalent. Match on behavior,
+not on name — a helper with a different name but the same semantics still
+counts as a duplicate. The spec/plan review subagent must reject any new local
+helper whose behavior is already covered by an export from these files; fix
+the call site to use the existing helper instead.
