@@ -366,18 +366,23 @@ upcoming/live status, `past` = archived). Order matches the HTML.
 
 `channels/{channelId}.json` is shaped as a single channel object — the
 channel's own fields at the top level (no `channel:` wrapper) plus a
-`videos` array of `VideoSummary` entries.
+`videos` array. Every entry in `videos` belongs to this channel, so the
+per-entry `channel` field is omitted to avoid duplicating the top-level
+channel info on every row. Consumers reading a video from `videos[]`
+should fall back to the file's top-level `id` / `name` / `avatarUrl`
+for the channel attribution.
 
 ```jsonc
 {
   "id": "...",
   "name": "...",
   "avatarUrl?": "...",
-  "videos": [VideoSummary, ...]
+  "videos": [VideoSummary_without_channel, ...]
 }
 ```
 
-`videos` is the same list the existing per-channel HTML iterates.
+`videos` is the same list the existing per-channel HTML iterates. Each
+entry contains all `VideoSummary` fields (§4.1) **except `channel`**.
 
 ## 5. Write flow
 

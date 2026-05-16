@@ -106,19 +106,23 @@ import ChannelModel from "../../models/Channel.js";
 import type { Video } from "../../models/Video.js";
 
 export async function buildVideoSummary(
-  video: DocumentType<Video>
+  video: DocumentType<Video>,
+  { includeChannel = true }: { includeChannel?: boolean } = {}
 ): Promise<Record<string, unknown>> {
-  const channel = await ChannelModel.findByChannelId(video.channelId);
-  const channelObj: Record<string, unknown> = channel
-    ? { id: channel.id, name: channel.name }
-    : { id: video.channelId, name: video.channelId };
-  if (channel?.avatarUrl !== undefined && channel?.avatarUrl !== null) {
-    channelObj.avatarUrl = channel.avatarUrl;
+  let channelObj: Record<string, unknown> | undefined;
+  if (includeChannel) {
+    const channel = await ChannelModel.findByChannelId(video.channelId);
+    channelObj = channel
+      ? { id: channel.id, name: channel.name }
+      : { id: video.channelId, name: video.channelId };
+    if (channel?.avatarUrl !== undefined && channel?.avatarUrl !== null) {
+      channelObj.avatarUrl = channel.avatarUrl;
+    }
   }
   const summary: Record<string, unknown> = {
     id: video.id,
     title: video.title,
-    channel: channelObj,
+    ...(channelObj ? { channel: channelObj } : {}),
     status: video.status,
     duration: video.duration,
     availableAt: video.availableAt,
@@ -149,6 +153,7 @@ Notes on this code:
 - Dates are passed through as `Date` objects. `JSON.stringify` invokes `Date.prototype.toJSON` which produces ISO 8601 strings — no custom serializer.
 - The optional-fields loop covers the four optional `Date` fields (`scheduledStart`, `actualStart`, `actualEnd`, `publishedAt`); `keyof Video` keeps the tuple type-checked, so a key typo fails `tsc` instead of being silently swallowed.
 - The top-level `channelId` field is intentionally omitted; consumers read `channel.id` (same value, no redundancy).
+- `includeChannel` defaults to `true` for meta.json (single video, needs full channel context) and data/index.json (videos across many channels, each needs its own channel attribution). Callers writing `data/channels/{channelId}.json` pass `{ includeChannel: false }` because every video in that file already belongs to the channel described at the JSON's top level — duplicating channel info per row would be wasteful.
 - `??` defaults for `archiveVersion` / `stats.*` match the existing HTML `VideoCard`'s `?? 0` semantics so SPA card output matches HTML card output byte-for-byte at the numeric level.
 
 - [ ] **Step 2: Validate**
@@ -1039,7 +1044,7 @@ const summaries: Array<Record<string, unknown>> = [];
 Inside the loop body, immediately after `ws.write(await renderVideoCard({...}))` and before `if (isDirect) await archiveVideo(video.id)`, insert:
 
 ```ts
-summaries.push(await buildVideoSummary(video));
+summaries.push(await buildVideoSummary(video, { includeChannel: false }));
 ```
 
 Also update the `archiveVideo` call so the dev runner's `isDirect` flag
