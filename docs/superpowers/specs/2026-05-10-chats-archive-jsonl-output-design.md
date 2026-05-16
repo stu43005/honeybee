@@ -265,18 +265,15 @@ not issued. This avoids a redundant Mongo write on every re-archive. If
 the value is `undefined` / `< 2`, the `updateOne` runs as described
 above.
 
-**Mongoose `$set` on dotted paths — implementer must verify before coding.**
-The plan must include a research step that opens
-`node_modules/mongoose` (version pinned by `package.json`) and confirms
-that `Model.updateOne({ id: videoId }, { $set: { "hbStats.chatsArchiveVersion": 2 } })`
-on a document where `hbStats === undefined` creates the parent sub-doc and
-sets the leaf, **without** triggering schema-default population for the
-sibling `Stats` fields (`handled`, `errorCount`). The CLAUDE.md global
-rule explicitly lists mongoose under "must read source, not just docs"
-for this kind of update behavior. If verification reveals different
-semantics (e.g. `$set` rejects unless parent exists), the implementer
-must use a two-step `$setOnInsert` + `$set` upsert or a `find` →
-`save` flow and update this spec section before implementing.
+**Mongoose `$set` on dotted paths — verified.** Mongoose `8.2.1`
+(`node_modules/mongoose/lib/helpers/path/setDottedPath.js:23-24` and
+`lib/query.js`) creates the parent sub-document when missing and writes
+the leaf via dotted-path `$set`; sibling `Stats` defaults are not
+populated on a non-upsert update (`setDefaultsOnInsert()` only runs on
+upserts). The `updateOne` call as written is therefore safe — no
+`$setOnInsert` workaround or load-mutate-save flow is required. The
+existing codebase already uses the same dotted-path pattern at
+`src/models/Video.ts:497-498` and in `src/components/video-stats.ts`.
 
 ## 4. `data/index.json` and `data/channels/{channelId}.json`
 
