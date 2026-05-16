@@ -158,26 +158,17 @@ Any other collection name is dropped without emitting a row.
 
 ## 3. `data/videos/{videoId}.meta.json` schema
 
+`meta.json` is shaped as a single video object — the same `VideoSummary`
+shape used by `data/index.json` and `data/channels/{channelId}.json` (see
+§4.1) — plus an additional `aggregates` field. No outer `video:` wrapper
+and no redundant top-level `channelId` (read `channel.id` instead).
+
 ```jsonc
 {
-  "video": {
-    "id": "...",
-    "title": "...",
-    "channelId": "...",
-    "description?": "...",
-    "status": "...",
-    "duration": 0,
-    "availableAt": "ISO 8601",
-    "scheduledStart?": "ISO 8601",
-    "actualStart?": "ISO 8601",
-    "actualEnd?": "ISO 8601",
-    "publishedAt?": "ISO 8601",
-  },
-  "channel": {
-    "id": "...",
-    "name": "...",
-    "avatarUrl?": "...",
-  },
+  // ...all VideoSummary fields per §4.1 (id, title, channel, status,
+  // duration, availableAt, archiveVersion, stats, plus optional
+  // description / scheduledStart / actualStart / actualEnd / publishedAt
+  // when present on the Video document)
   "aggregates": {
     "chatCount": 0,
     "superChatCount": 0,
@@ -210,12 +201,11 @@ Rules:
   (same as today).
 - `totalGiftAmount` is the sum of `amount` across `membershipGiftPurchase`
   rows.
-- All `Date`-typed fields in `meta.json` (under `video.*`) and per-row
-  `timestamp` values are serialized via `JSON.stringify`'s default `Date`
-  handling, which produces ISO 8601 strings. No custom serializer is
-  introduced. Undefined optional date fields are omitted from the output
-  object before `JSON.stringify` (so they do not appear as `null` in the
-  final JSON).
+- All `Date`-typed fields in `meta.json` and per-row `timestamp` values are
+  serialized via `JSON.stringify`'s default `Date` handling, which produces
+  ISO 8601 strings. No custom serializer is introduced. Undefined optional
+  date fields are omitted from the output object before `JSON.stringify`
+  (so they do not appear as `null` in the final JSON).
 - `raidCount` increments once per emitted raid row (covering both `raid` and
   `raidOutgoing`).
 - `chatCount` increments once per emitted `chat` row. The `ownerChatCursor`
@@ -298,14 +288,13 @@ Shared shape used by both files:
 {
   "id": "...",
   "title": "...",
-  "channelId": "...",
   "channel": {
     "id": "...",
     "name": "...",
     "avatarUrl?": "...",
   },
   "status": "...",
-  "scheduledStart?": "ISO 8601",
+  "duration": 0,
   "availableAt": "ISO 8601",
   "archiveVersion": 1,
   "stats": {
@@ -313,8 +302,16 @@ Shared shape used by both files:
     "memberCount": 0,
     "giftCount": 0,
   },
+  "description?": "...",
+  "scheduledStart?": "ISO 8601",
+  "actualStart?": "ISO 8601",
+  "actualEnd?": "ISO 8601",
+  "publishedAt?": "ISO 8601",
 }
 ```
+
+There is no top-level `channelId`; consumers read `channel.id` (same value,
+no redundancy).
 
 `archiveVersion` is sourced from `Video.hbStats.chatsArchiveVersion` (see
 §3.1). Defaults to `1` when undefined. SPA branches on this value to decide
@@ -327,17 +324,26 @@ are always present as `number`, defaulting to `0` when `Video.hbStats` (or
 the sub-field) is undefined — matching the existing HTML `VideoCard` which
 renders `?? 0` in all three positions. `stats` itself is always present.
 
-`VideoSummary.channel` is sourced from `await video.getChannel()` (the same
-call existing HTML pages use). `avatarUrl` is omitted from the `channel`
-object when undefined.
+`description` and the four `Date` optionals (`scheduledStart`,
+`actualStart`, `actualEnd`, `publishedAt`) are emitted only when defined
+on the source `Video` document; undefined values are stripped before
+`JSON.stringify` so they do not appear as `null`.
 
-For `data/index.json` and `data/channels/{channelId}.json`, channel lookups
-follow the existing HTML implementation's pattern — do not introduce new
-batching or caching as part of this spec. The JSON output is produced in
-the same loop the HTML output uses, sharing whatever per-video channel
-resolution that loop already performs. If a future PR optimizes the HTML
-loop to batch-resolve channels, the JSON path inherits the optimization
-automatically.
+`VideoSummary.channel` is sourced from
+`await ChannelModel.findByChannelId(video.channelId)` (a direct read rather
+than `video.getChannel()`, which assert-throws on a missing channel). When
+the channel row is not found, `VideoSummary.channel` falls back to
+`{ id: video.channelId, name: video.channelId }` so the SPA always sees a
+non-empty channel block. `avatarUrl` is omitted when undefined.
+
+For `data/index.json` and `data/channels/{channelId}.json`, the JSON output
+is produced in the same loop the HTML output uses. Channel lookups for
+JSON summaries go through the shared `buildVideoSummary` helper (which
+calls `ChannelModel.findByChannelId` once per video). This adds one query
+per summary; on bounded lists (≤96 live+past, ≤100 per channel) the cost
+is acceptable. A future PR can batch via `ChannelModel.find({ id: { $in:
+[...] } })` if profiling shows it matters; this spec does not optimize
+ahead of need.
 
 ### 4.2 `data/index.json`
 

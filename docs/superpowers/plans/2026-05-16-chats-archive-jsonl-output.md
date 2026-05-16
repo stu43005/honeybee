@@ -118,20 +118,27 @@ export async function buildVideoSummary(
   const summary: Record<string, unknown> = {
     id: video.id,
     title: video.title,
-    channelId: video.channelId,
     channel: channelObj,
     status: video.status,
+    duration: video.duration,
+    availableAt: video.availableAt,
+    archiveVersion: video.hbStats?.chatsArchiveVersion ?? 1,
+    stats: {
+      superChatTotalJpy: video.hbStats?.totalSuperChatAmountJpy ?? 0,
+      memberCount: video.hbStats?.totalMembers ?? 0,
+      giftCount: video.hbStats?.totalGifts ?? 0,
+    },
   };
-  if (video.scheduledStart !== undefined && video.scheduledStart !== null) {
-    summary.scheduledStart = video.scheduledStart;
+  for (const key of [
+    "description",
+    "scheduledStart",
+    "actualStart",
+    "actualEnd",
+    "publishedAt",
+  ] as const) {
+    const val = video[key];
+    if (val !== undefined && val !== null) summary[key] = val;
   }
-  summary.availableAt = video.availableAt;
-  summary.archiveVersion = video.hbStats?.chatsArchiveVersion ?? 1;
-  summary.stats = {
-    superChatTotalJpy: video.hbStats?.totalSuperChatAmountJpy ?? 0,
-    memberCount: video.hbStats?.totalMembers ?? 0,
-    giftCount: video.hbStats?.totalGifts ?? 0,
-  };
   return summary;
 }
 ```
@@ -140,7 +147,9 @@ Notes on this code:
 
 - `ChannelModel.findByChannelId(video.channelId)` is used directly (not `video.getChannel()`) because `getChannel()` calls `assert(channel, "Unable to get the channel.")` and throws when the channel row is missing. The SPA-facing JSON should degrade gracefully for newly-crawled videos whose channel row has not been populated yet, so we read the channel ourselves and fall through to the `{ id: channelId, name: channelId }` shape when not found.
 - This means an extra `findByChannelId` round trip per video summary (not reusing the loop's `populate("channel")`). Trade-off accepted: existing HTML loops only populate `channel` for `renderVideoCard`; the JSON summary needs a real null check, and a 1-query-per-video cost on the index pages (≤96 videos for live+past, ≤100 per channel) is bounded. If profiling shows this matters later, batch via `ChannelModel.find({ id: { $in: [...] } })` in a separate optimization PR.
-- Dates (`scheduledStart`, `availableAt`) are passed through as `Date` objects. `JSON.stringify` invokes `Date.prototype.toJSON` which produces ISO 8601 strings — no custom serializer.
+- Dates are passed through as `Date` objects. `JSON.stringify` invokes `Date.prototype.toJSON` which produces ISO 8601 strings — no custom serializer.
+- The optional-fields loop covers `description` and the four optional `Date` fields; `keyof Video` keeps the tuple type-checked, so a key typo fails `tsc` instead of being silently swallowed.
+- The top-level `channelId` field is intentionally omitted; consumers read `channel.id` (same value, no redundancy).
 - `??` defaults for `archiveVersion` / `stats.*` match the existing HTML `VideoCard`'s `?? 0` semantics so SPA card output matches HTML card output byte-for-byte at the numeric level.
 
 - [ ] **Step 2: Validate**
@@ -301,21 +310,21 @@ EOF
 
 Read `src/components/chats-archive/archive-video.ts` (full file, 213 lines).
 
-- [ ] **Step 2: Add the `ChannelModel` import**
+- [ ] **Step 2: Add the new imports**
 
-Find the import block at the top (lines 8–21). After the line `import ChatModel from "../../models/Chat.js";` (around line 10), insert:
-
-```ts
-import ChannelModel from "../../models/Channel.js";
-```
-
-If `ChannelModel` is already imported, skip this step.
-
-Also add the stream-finished helper. After the existing `import fsp from "node:fs/promises";` line, insert:
+Add the stream-finished helper and the shared summary builder. After the existing `import fsp from "node:fs/promises";` line, insert:
 
 ```ts
 import { finished } from "node:stream/promises";
 ```
+
+After the existing `./templates/format.js` import, insert:
+
+```ts
+import { buildVideoSummary } from "./build-video-summary.js";
+```
+
+`ChannelModel` does NOT need to be imported here — channel resolution moves into `buildVideoSummary`, which the post-loop tail now calls directly.
 
 - [ ] **Step 3: Extend the raid cursor query**
 
@@ -500,39 +509,8 @@ With:
     return;
   }
 
-  const channel = await ChannelModel.findByChannelId(video.channelId);
-  const channelOut: Record<string, unknown> = channel
-    ? { id: channel.id, name: channel.name }
-    : { id: video.channelId, name: video.channelId };
-  if (
-    channel?.avatarUrl !== undefined &&
-    channel?.avatarUrl !== null
-  ) {
-    channelOut.avatarUrl = channel.avatarUrl;
-  }
-
-  const videoOut: Record<string, unknown> = {
-    id: video.id,
-    title: video.title,
-    channelId: video.channelId,
-    status: video.status,
-    duration: video.duration,
-    availableAt: video.availableAt,
-  };
-  for (const key of [
-    "description",
-    "scheduledStart",
-    "actualStart",
-    "actualEnd",
-    "publishedAt",
-  ] as const) {
-    const val = video[key];
-    if (val !== undefined && val !== null) videoOut[key] = val;
-  }
-
   const meta = {
-    video: videoOut,
-    channel: channelOut,
+    ...(await buildVideoSummary(video)),
     aggregates: {
       ...aggregates,
       currencyTable: currencies,
@@ -758,7 +736,7 @@ function bumpAggregate(
 
 Notes on serialization:
 
-- All `Date` fields (per-row `timestamp`, poll `createdAt`, `meta.json` `video.*` dates) are emitted as raw `Date` objects. `JSON.stringify` invokes `Date.prototype.toJSON` which returns the same ISO 8601 string as `Date.prototype.toISOString()` would. No custom serializer is used.
+- All `Date` fields (per-row `timestamp`, poll `createdAt`, `meta.json` top-level date fields like `availableAt` / `scheduledStart`) are emitted as raw `Date` objects. `JSON.stringify` invokes `Date.prototype.toJSON` which returns the same ISO 8601 string as `Date.prototype.toISOString()` would. No custom serializer is used.
 - `optional(key, value)` strips both `undefined` and `null` — Typegoose returns `undefined` for missing optionals, but lean/projected docs can surface `null`; either way the key is omitted.
 - The first key of every row object is `type`. V8 preserves property insertion order in `JSON.stringify`, so SPA can parse `type` from the leading bytes.
 
@@ -784,7 +762,7 @@ feat(chats-archive): emit JSONL, meta.json, and bump archive version
 Per-video archive run now writes three artifacts atomically:
 - {channelId}/{date}_{videoId}.html (existing behavior preserved)
 - data/videos/{videoId}.jsonl (one chat row per line)
-- data/videos/{videoId}.meta.json (video + channel + aggregates)
+- data/videos/{videoId}.meta.json (VideoSummary shape + aggregates)
 
 Behavior changes inside archiveVideo:
 - Raid cursor query extends to $or [originVideoId, sourceVideoId] so
