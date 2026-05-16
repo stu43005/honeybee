@@ -383,6 +383,12 @@ function RaidCells({
   doc: DocumentType<Raid>;
   video: DocumentType<Video>;
 }) {
+  const isOutgoing = doc.sourceVideoId === video.id;
+  const name = isOutgoing ? doc.originName : doc.sourceName;
+  const photo = isOutgoing ? doc.originPhoto : doc.sourcePhoto;
+  const message = isOutgoing
+    ? `Sending you to ${name ?? ""}`
+    : `${name ?? ""} and their viewers just joined. Say hello!`;
   return (
     <>
       <td>
@@ -391,10 +397,10 @@ function RaidCells({
       <td></td>
       <td></td>
       <td>
-        <AuthorPhoto src={doc.sourcePhoto} />
+        <AuthorPhoto src={photo} />
       </td>
-      <td>{doc.sourceName ?? ""}</td>
-      <td>{doc.sourceName ?? ""} and their viewers just joined. Say hello!</td>
+      <td>{name ?? ""}</td>
+      <td>{message}</td>
     </>
   );
 }
