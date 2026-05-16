@@ -519,16 +519,14 @@ With:
     duration: video.duration,
     availableAt: video.availableAt,
   };
-  if (video.description !== undefined && video.description !== null) {
-    videoOut.description = video.description;
-  }
   for (const key of [
+    "description",
     "scheduledStart",
     "actualStart",
     "actualEnd",
     "publishedAt",
   ] as const) {
-    const val = (video as Record<string, unknown>)[key];
+    const val = video[key];
     if (val !== undefined && val !== null) videoOut[key] = val;
   }
 
