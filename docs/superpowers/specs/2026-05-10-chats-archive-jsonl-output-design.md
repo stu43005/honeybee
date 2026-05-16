@@ -365,15 +365,20 @@ upcoming/live status, `past` = archived). Order matches the HTML.
 
 ### 4.3 `data/channels/{channelId}.json`
 
+`channels/{channelId}.json` is shaped as a single channel object — the
+channel's own fields at the top level (no `channel:` wrapper) plus a
+`videos` array of `VideoSummary` entries.
+
 ```jsonc
 {
-  "channel": { "id": "...", "name": "...", "avatarUrl?": "..." },
+  "id": "...",
+  "name": "...",
+  "avatarUrl?": "...",
   "videos": [VideoSummary, ...]
 }
 ```
 
-Channel is the single channel; `videos` is the same list the existing
-per-channel HTML iterates.
+`videos` is the same list the existing per-channel HTML iterates.
 
 ## 5. Write flow
 

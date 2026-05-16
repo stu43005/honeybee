@@ -1092,17 +1092,18 @@ With:
     return;
   }
 
-  const channelOut: Record<string, unknown> = {
+  const channelJson: Record<string, unknown> = {
     id: channel.id,
     name: channel.name,
   };
   if (channel.avatarUrl !== undefined && channel.avatarUrl !== null) {
-    channelOut.avatarUrl = channel.avatarUrl;
+    channelJson.avatarUrl = channel.avatarUrl;
   }
+  channelJson.videos = summaries;
   await fsp.rm(`${dataChannelPath}.tmp`, { force: true });
   await fsp.writeFile(
     `${dataChannelPath}.tmp`,
-    JSON.stringify({ channel: channelOut, videos: summaries }) + "\n",
+    JSON.stringify(channelJson) + "\n",
     "utf-8"
   );
 
@@ -1272,7 +1273,7 @@ After that command completes, re-query Mongo and confirm
 ```bash
 jq '.live | length, .past | length' /tmp/chats-archive-new/data/index.json
 jq '.live[0]' /tmp/chats-archive-new/data/index.json
-jq '.channel, (.videos | length)' /tmp/chats-archive-new/data/channels/<channelId>.json
+jq '{id, name, avatarUrl, videoCount: (.videos | length)}' /tmp/chats-archive-new/data/channels/<channelId>.json
 jq '.videos[0] | {id, archiveVersion, stats}' /tmp/chats-archive-new/data/channels/<channelId>.json
 ```
 
