@@ -339,9 +339,44 @@ const raidCursor = RaidModel.find({
   .cursor();
 ```
 
-- [ ] **Step 4: Replace the pre-loop setup block**
+- [ ] **Step 4: Expand `getOutputFilePath` to return all three paths**
 
-Find lines 121–125 (the `outputFilePath` / `mkdir` / `createWriteStream` block) and the surrounding shell-render call. Replace:
+Replace the existing helper (around lines 29–32):
+
+```ts
+function getOutputFilePath(video: DocumentType<Video>): string {
+  assert(CHAT_ARCHIVE_DIR, "CHAT_ARCHIVE_DIR is not defined.");
+  return path.join(CHAT_ARCHIVE_DIR, getVideoPath(video));
+}
+```
+
+With:
+
+```ts
+function getOutputFilePaths(video: DocumentType<Video>): {
+  html: string;
+  jsonl: string;
+  meta: string;
+} {
+  assert(CHAT_ARCHIVE_DIR, "CHAT_ARCHIVE_DIR is not defined.");
+  return {
+    html: path.join(CHAT_ARCHIVE_DIR, getVideoPath(video)),
+    jsonl: path.join(CHAT_ARCHIVE_DIR, "data", "videos", `${video.id}.jsonl`),
+    meta: path.join(
+      CHAT_ARCHIVE_DIR,
+      "data",
+      "videos",
+      `${video.id}.meta.json`
+    ),
+  };
+}
+```
+
+This consolidates path construction in one place: the `CHAT_ARCHIVE_DIR` assert runs once and all three output paths share the same root resolution. The function name pluralizes to signal the change of return shape.
+
+- [ ] **Step 5: Replace the pre-loop setup block**
+
+Find lines 121–125 (the `outputFilePath` / `mkdir` / `createWriteStream` block). Replace:
 
 ```ts
 const outputFilePath = getOutputFilePath(video);
@@ -354,20 +389,11 @@ const ws = fs.createWriteStream(`${outputFilePath}.tmp`, {
 With:
 
 ```ts
-const outputFilePath = getOutputFilePath(video);
-assert(CHAT_ARCHIVE_DIR, "CHAT_ARCHIVE_DIR is not defined.");
-const jsonlPath = path.join(
-  CHAT_ARCHIVE_DIR,
-  "data",
-  "videos",
-  `${videoId}.jsonl`
-);
-const metaPath = path.join(
-  CHAT_ARCHIVE_DIR,
-  "data",
-  "videos",
-  `${videoId}.meta.json`
-);
+const {
+  html: outputFilePath,
+  jsonl: jsonlPath,
+  meta: metaPath,
+} = getOutputFilePaths(video);
 
 await fsp.mkdir(path.dirname(outputFilePath), { recursive: true });
 await fsp.mkdir(path.dirname(jsonlPath), { recursive: true });
@@ -386,7 +412,7 @@ const jsonlWs = fs.createWriteStream(`${jsonlPath}.tmp`, {
 });
 ```
 
-- [ ] **Step 5: Replace the cursor loop**
+- [ ] **Step 6: Replace the cursor loop**
 
 Find the loop starting `let no = 0;` (around line 187) through the `ws.end(tail);` (line 205) and the empty-archive / rename block (lines 207–212). Replace the entire block:
 
@@ -534,7 +560,7 @@ With:
 }
 ```
 
-- [ ] **Step 6: Append helper functions at the bottom of the file**
+- [ ] **Step 7: Append helper functions at the bottom of the file**
 
 After the closing `}` of `archiveVideo` (now the last function in the file), append:
 
@@ -739,7 +765,7 @@ Notes on serialization:
 - `optional(key, value)` strips both `undefined` and `null` — Typegoose returns `undefined` for missing optionals, but lean/projected docs can surface `null`; either way the key is omitted.
 - The first key of every row object is `type`. V8 preserves property insertion order in `JSON.stringify`, so SPA can parse `type` from the leading bytes.
 
-- [ ] **Step 7: Validate**
+- [ ] **Step 8: Validate**
 
 Run in parallel:
 
@@ -751,7 +777,7 @@ npm run format:check
 
 Expected: all three exit 0. If `format:check` complains, run `npm run format` then re-run.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add src/components/chats-archive/archive-video.ts
