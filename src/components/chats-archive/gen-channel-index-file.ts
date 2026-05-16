@@ -52,7 +52,7 @@ export async function genChannelIndexFile(
         hbStats: video.hbStats,
       })
     );
-    summaries.push(await buildVideoSummary(video));
+    summaries.push(await buildVideoSummary(video, { includeChannel: false }));
     if (isDirect) await archiveVideo(video.id, { isDirect: true });
     count++;
   }

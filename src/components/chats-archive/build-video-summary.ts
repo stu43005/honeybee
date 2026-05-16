@@ -3,19 +3,23 @@ import ChannelModel from "../../models/Channel.js";
 import type { Video } from "../../models/Video.js";
 
 export async function buildVideoSummary(
-  video: DocumentType<Video>
+  video: DocumentType<Video>,
+  { includeChannel = true }: { includeChannel?: boolean } = {}
 ): Promise<Record<string, unknown>> {
-  const channel = await ChannelModel.findByChannelId(video.channelId);
-  const channelObj: Record<string, unknown> = channel
-    ? { id: channel.id, name: channel.name }
-    : { id: video.channelId, name: video.channelId };
-  if (channel?.avatarUrl !== undefined && channel?.avatarUrl !== null) {
-    channelObj.avatarUrl = channel.avatarUrl;
+  let channelObj: Record<string, unknown> | undefined;
+  if (includeChannel) {
+    const channel = await ChannelModel.findByChannelId(video.channelId);
+    channelObj = channel
+      ? { id: channel.id, name: channel.name }
+      : { id: video.channelId, name: video.channelId };
+    if (channel?.avatarUrl !== undefined && channel?.avatarUrl !== null) {
+      channelObj.avatarUrl = channel.avatarUrl;
+    }
   }
   const summary: Record<string, unknown> = {
     id: video.id,
     title: video.title,
-    channel: channelObj,
+    ...(channelObj ? { channel: channelObj } : {}),
     status: video.status,
     duration: video.duration,
     availableAt: video.availableAt,
