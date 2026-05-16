@@ -312,19 +312,54 @@ Read `src/components/chats-archive/archive-video.ts` (full file, 213 lines).
 
 - [ ] **Step 2: Add the new imports**
 
-Add the stream-finished helper and the shared summary builder. After the existing `import fsp from "node:fs/promises";` line, insert:
+Add the stream-finished helper after the existing `import fsp from "node:fs/promises";` line:
 
 ```ts
 import { finished } from "node:stream/promises";
 ```
 
-After the existing `./templates/format.js` import, insert:
+Add the shared summary builder + the `setIfDefine` utility after the existing `./templates/format.js` import:
 
 ```ts
+import { setIfDefine } from "../../util.js";
 import { buildVideoSummary } from "./build-video-summary.js";
 ```
 
-`ChannelModel` does NOT need to be imported here — channel resolution moves into `buildVideoSummary`, which the post-loop tail now calls directly.
+Add `type` re-exports to each existing model import so the per-case casts in Step 7 can name the class. Change the existing default-only imports:
+
+```ts
+import ChatModel from "../../models/Chat.js";
+import MembershipModel from "../../models/Membership.js";
+import MembershipGiftModel from "../../models/MembershipGift.js";
+import MembershipGiftPurchaseModel from "../../models/MembershipGiftPurchase.js";
+import MilestoneModel from "../../models/Milestone.js";
+import PollModel from "../../models/Poll.js";
+import RaidModel from "../../models/Raid.js";
+import SuperChatModel from "../../models/SuperChat.js";
+import SuperStickerModel from "../../models/SuperSticker.js";
+```
+
+To:
+
+```ts
+import ChatModel, { type Chat } from "../../models/Chat.js";
+import MembershipModel, { type Membership } from "../../models/Membership.js";
+import MembershipGiftModel, {
+  type MembershipGift,
+} from "../../models/MembershipGift.js";
+import MembershipGiftPurchaseModel, {
+  type MembershipGiftPurchase,
+} from "../../models/MembershipGiftPurchase.js";
+import MilestoneModel, { type Milestone } from "../../models/Milestone.js";
+import PollModel, { type Poll } from "../../models/Poll.js";
+import RaidModel, { type Raid } from "../../models/Raid.js";
+import SuperChatModel, { type SuperChat } from "../../models/SuperChat.js";
+import SuperStickerModel, {
+  type SuperSticker,
+} from "../../models/SuperSticker.js";
+```
+
+`ChannelModel` is NOT imported here — channel resolution moves into `buildVideoSummary`, which the post-loop tail calls directly.
 
 - [ ] **Step 3: Extend the raid cursor query**
 
@@ -483,15 +518,13 @@ With:
     pollCursor,
     raidCursor
   )) {
-    const collectionName = doc.collection.name;
-
     no++;
     ws.write(await renderChatRow({ doc, no, video }));
 
-    const row = buildJsonlRow(doc, collectionName, videoId);
+    const row = buildJsonlRow(doc, videoId);
     if (row) {
       jsonlWs.write(JSON.stringify(row) + "\n");
-      bumpAggregate(aggregates, row.type, doc);
+      bumpAggregate(aggregates, doc);
     }
 
     await job?.touch();
@@ -542,109 +575,126 @@ After the closing `}` of `archiveVideo` (now the last function in the file), app
 ```ts
 type JsonlRow = { type: string; [key: string]: unknown };
 
-function buildJsonlRow(
-  doc: unknown,
-  collectionName: string,
-  videoId: string
-): JsonlRow | null {
-  switch (collectionName) {
-    case "chats":
-      return makeAuthorRow("chat", doc as Record<string, unknown>, {
-        message: (doc as { message: string }).message,
+function buildJsonlRow(doc: ChatRowDoc, videoId: string): JsonlRow | null {
+  switch (doc.collection.name) {
+    case "chats": {
+      const d = doc as DocumentType<Chat>;
+      return makeAuthorRow("chat", d as unknown as Record<string, unknown>, {
+        message: d.message,
       });
+    }
     case "superchats": {
-      const d = doc as Record<string, unknown>;
-      return makeAuthorRow("superChat", d, {
-        message: d.message as string | null,
-        amount: d.amount,
-        currency: d.currency,
-        jpyAmount: d.jpyAmount,
-        ...optional("significance", d.significance),
-        ...optional("color", d.color),
-      });
+      const d = doc as DocumentType<SuperChat>;
+      return makeAuthorRow(
+        "superChat",
+        d as unknown as Record<string, unknown>,
+        {
+          message: d.message,
+          amount: d.amount,
+          currency: d.currency,
+          jpyAmount: d.jpyAmount,
+          ...setIfDefine("significance", d.significance),
+          ...setIfDefine("color", d.color),
+        }
+      );
     }
     case "superstickers": {
-      const d = doc as Record<string, unknown>;
-      return makeAuthorRow("superSticker", d, {
-        ...optional("text", d.text),
-        image: d.image,
-        amount: d.amount,
-        currency: d.currency,
-        jpyAmount: d.jpyAmount,
-        ...optional("significance", d.significance),
-        ...optional("color", d.color),
-      });
+      const d = doc as DocumentType<SuperSticker>;
+      return makeAuthorRow(
+        "superSticker",
+        d as unknown as Record<string, unknown>,
+        {
+          ...setIfDefine("text", d.text),
+          image: d.image,
+          amount: d.amount,
+          currency: d.currency,
+          jpyAmount: d.jpyAmount,
+          ...setIfDefine("significance", d.significance),
+          ...setIfDefine("color", d.color),
+        }
+      );
     }
     case "memberships": {
-      const d = doc as Record<string, unknown>;
-      return makeAuthorRow("membership", d, {
-        ...optional("level", d.level),
-        ...optional("since", d.since),
-      });
+      const d = doc as DocumentType<Membership>;
+      return makeAuthorRow(
+        "membership",
+        d as unknown as Record<string, unknown>,
+        {
+          ...setIfDefine("level", d.level),
+          ...setIfDefine("since", d.since),
+        }
+      );
     }
     case "membershipgifts": {
-      const d = doc as Record<string, unknown>;
-      return makeAuthorRow("membershipGift", d, {
-        ...optional("senderName", d.senderName),
-      });
+      const d = doc as DocumentType<MembershipGift>;
+      return makeAuthorRow(
+        "membershipGift",
+        d as unknown as Record<string, unknown>,
+        {
+          ...setIfDefine("senderName", d.senderName),
+        }
+      );
     }
     case "membershipgiftpurchases": {
-      const d = doc as Record<string, unknown>;
-      return makeAuthorRow("membershipGiftPurchase", d, {
-        amount: d.amount,
-      });
+      const d = doc as DocumentType<MembershipGiftPurchase>;
+      return makeAuthorRow(
+        "membershipGiftPurchase",
+        d as unknown as Record<string, unknown>,
+        {
+          amount: d.amount,
+        }
+      );
     }
     case "milestones": {
-      const d = doc as Record<string, unknown>;
-      return makeAuthorRow("milestone", d, {
-        message: d.message as string | null,
-        ...optional("level", d.level),
-        ...optional("duration", d.duration),
-        ...optional("since", d.since),
-      });
+      const d = doc as DocumentType<Milestone>;
+      return makeAuthorRow(
+        "milestone",
+        d as unknown as Record<string, unknown>,
+        {
+          message: d.message,
+          ...setIfDefine("level", d.level),
+          ...setIfDefine("duration", d.duration),
+          ...setIfDefine("since", d.since),
+        }
+      );
     }
     case "polls": {
-      const d = doc as Record<string, unknown> & {
-        choices: Array<{ text: string; voteRatio?: number }>;
-      };
-      const row: JsonlRow = {
+      const d = doc as DocumentType<Poll>;
+      return {
         type: "poll",
-        id: d.id as string,
-        timestamp: d.updatedAt as Date,
-        ...optional("createdAt", d.createdAt),
-        ...optional("question", d.question),
+        id: d.id,
+        timestamp: d.updatedAt,
+        ...setIfDefine("createdAt", d.createdAt),
+        ...setIfDefine("question", d.question),
         choices: d.choices.map((c) => ({
           text: c.text,
-          ...optional("voteRatio", c.voteRatio),
+          ...setIfDefine("voteRatio", c.voteRatio),
         })),
-        ...optional("voteCount", d.voteCount),
+        ...setIfDefine("voteCount", d.voteCount),
       };
-      return row;
     }
     case "raids": {
-      const d = doc as Record<string, unknown>;
-      const origin = d.originVideoId as string | undefined;
-      const source = d.sourceVideoId as string | undefined;
-      if (origin === videoId) {
+      const d = doc as DocumentType<Raid>;
+      if (d.originVideoId === videoId) {
         return {
           type: "raid",
-          ...optional("id", d.id),
-          timestamp: d.timestamp as Date,
-          ...optional("sourceVideoId", d.sourceVideoId),
-          ...optional("sourceChannelId", d.sourceChannelId),
+          ...setIfDefine("id", d.id),
+          timestamp: d.timestamp,
+          ...setIfDefine("sourceVideoId", d.sourceVideoId),
+          ...setIfDefine("sourceChannelId", d.sourceChannelId),
           sourceName: d.sourceName,
-          ...optional("sourcePhoto", d.sourcePhoto),
+          ...setIfDefine("sourcePhoto", d.sourcePhoto),
         };
       }
-      if (source === videoId) {
+      if (d.sourceVideoId === videoId) {
         return {
           type: "raidOutgoing",
-          ...optional("id", d.id),
-          timestamp: d.timestamp as Date,
+          ...setIfDefine("id", d.id),
+          timestamp: d.timestamp,
           originVideoId: d.originVideoId,
-          ...optional("originChannelId", d.originChannelId),
-          ...optional("originName", d.originName),
-          ...optional("originPhoto", d.originPhoto),
+          ...setIfDefine("originChannelId", d.originChannelId),
+          ...setIfDefine("originName", d.originName),
+          ...setIfDefine("originPhoto", d.originPhoto),
         };
       }
       return null;
@@ -663,25 +713,16 @@ function makeAuthorRow(
     type,
     id: d.id as string,
     timestamp: d.timestamp as Date,
-    ...optional("authorName", d.authorName),
-    ...optional("authorPhoto", d.authorPhoto),
+    ...setIfDefine("authorName", d.authorName),
+    ...setIfDefine("authorPhoto", d.authorPhoto),
     authorChannelId: d.authorChannelId,
     authorType: d.authorType,
-    ...optional("membership", d.membership),
+    ...setIfDefine("membership", d.membership),
     isVerified: d.isVerified,
     isOwner: d.isOwner,
     isModerator: d.isModerator,
     ...extra,
   };
-}
-
-function optional<K extends string>(
-  key: K,
-  value: unknown
-): Partial<Record<K, unknown>> {
-  return value === undefined || value === null
-    ? {}
-    : ({ [key]: value } as Record<K, unknown>);
 }
 
 function bumpAggregate(
@@ -697,37 +738,37 @@ function bumpAggregate(
     pollCount: number;
     raidCount: number;
   },
-  type: string,
-  doc: unknown
+  doc: ChatRowDoc
 ): void {
-  switch (type) {
-    case "chat":
+  switch (doc.collection.name) {
+    case "chats":
       agg.chatCount++;
       break;
-    case "superChat":
+    case "superchats":
       agg.superChatCount++;
       break;
-    case "superSticker":
+    case "superstickers":
       agg.superStickerCount++;
       break;
-    case "membership":
+    case "memberships":
       agg.membershipCount++;
       break;
-    case "membershipGift":
+    case "membershipgifts":
       agg.giftCount++;
       break;
-    case "membershipGiftPurchase":
+    case "membershipgiftpurchases": {
+      const d = doc as DocumentType<MembershipGiftPurchase>;
       agg.giftPurchaseCount++;
-      agg.totalGiftAmount += (doc as { amount: number }).amount;
+      agg.totalGiftAmount += d.amount;
       break;
-    case "milestone":
+    }
+    case "milestones":
       agg.milestoneCount++;
       break;
-    case "poll":
+    case "polls":
       agg.pollCount++;
       break;
-    case "raid":
-    case "raidOutgoing":
+    case "raids":
       agg.raidCount++;
       break;
   }
@@ -737,7 +778,9 @@ function bumpAggregate(
 Notes on serialization:
 
 - All `Date` fields (per-row `timestamp`, poll `createdAt`, `meta.json` top-level date fields like `availableAt` / `scheduledStart`) are emitted as raw `Date` objects. `JSON.stringify` invokes `Date.prototype.toJSON` which returns the same ISO 8601 string as `Date.prototype.toISOString()` would. No custom serializer is used.
-- `optional(key, value)` strips both `undefined` and `null` — Typegoose returns `undefined` for missing optionals, but lean/projected docs can surface `null`; either way the key is omitted.
+- `setIfDefine(key, value)` (imported from `../../util.js`) strips both `undefined` and `null` — Typegoose returns `undefined` for missing optionals, but lean/projected docs can surface `null`; either way the key is omitted.
+- `buildJsonlRow` and `bumpAggregate` both switch on `doc.collection.name` so the discriminator logic stays in lock-step. Each case casts the input to its `DocumentType<Model>` so the extra-field construction and aggregate increment access typed fields (e.g. `d.amount: number`) without ad-hoc cast.
+- `makeAuthorRow` keeps a `Record<string, unknown>` signature because the seven author-bearing variants share the same field names; passing the doc through as `unknown as Record<string, unknown>` is more convenient than enumerating the seven model classes.
 - The first key of every row object is `type`. V8 preserves property insertion order in `JSON.stringify`, so SPA can parse `type` from the leading bytes.
 
 - [ ] **Step 8: Validate**
