@@ -84,9 +84,30 @@ left to FETCH-stage filtering. The set of "uncleaned" videos is already
 small relative to the full collection (every video eventually receives
 `hbCleanedAt`), so FETCH-stage filtering is cheap.
 
-Equality to `null` is allowed in `partialFilterExpression`. Per MongoDB
-semantics, `{ hbCleanedAt: null }` matches both documents where the field is
-explicitly `null` and documents where it is missing.
+Equality to `null` is allowed in `partialFilterExpression`. Per MongoDB query
+semantics (which `partialFilterExpression` reuses), `{ hbCleanedAt: null }`
+matches both documents where the field is explicitly `null` and documents
+where it is missing. This matters because Video documents are inserted via
+two paths:
+
+- `src/models/Video.ts:454`, `:474`, `:496` — explicitly set `hbCleanedAt: null`
+- `src/models/Video.ts:373-378` — `$setOnInsert` for new videos that does
+  not set `hbCleanedAt` at all, so the field is missing on first insert
+
+Both populations must be indexed. Confirm with a one-shot test in production
+before relying on it:
+
+```js
+db.test_partial_null.drop();
+db.test_partial_null.createIndex(
+  { x: 1 },
+  { partialFilterExpression: { x: null } }
+);
+db.test_partial_null.insertMany([{ x: null }, {}, { x: 1 }]);
+db.test_partial_null.find({ x: null }).hint({ x: 1 }).explain("executionStats");
+// expect totalKeysExamined == 2 (null + missing), nReturned == 2
+db.test_partial_null.drop();
+```
 
 ### 3.2 Channel — drop partial filter
 
@@ -101,20 +122,35 @@ Rationale for dropping the filter entirely instead of rewriting it:
 
 - The semantic intent of `{ $ne: true }` is "field is missing, null, or
   false". The `partialFilterExpression` whitelist offers no operator that
-  expresses this without changing semantics. (`$exists: false` is not
-  allowed; `$in: [null, false]` would work but is opaque and easy to break
-  when new boolean fields are added.)
+  expresses this. `$exists: false` is not allowed (only `$exists: true` is).
+  `$in: [null, false]` is allowed but does not express the same set —
+  documents with the field set to other falsy values (e.g. `0`, `""`) would
+  be excluded from the index, and any future read or write paths that begin
+  using `false` vs missing inconsistently would silently drift out of the
+  index.
 - The `channels` collection is small (low thousands of documents). The
   storage/maintenance cost of indexing the inactive / ignored / deleted
   channels too is negligible.
-- Keeping the partial filter would require either a brittle `$in: [null,
-false]` workaround or a schema migration. Both add risk for marginal gain.
+- A schema migration to add `default: false` would let `: false` appear in
+  the partial filter directly, but the migration risk (backfill on a live
+  collection, plus updating every write site to actually set the default)
+  outweighs the gain.
 
 The `SubscribedQuery` at `src/models/Channel.ts:165-185` is unchanged. With
 plain compound indexes, planner is expected to evaluate each `$or` branch
 against the index whose leading field matches that branch's leading equality
 predicate (`organization` for branch 1, `extraCrawl: true` for branch 2),
 producing an OR_UNION plan or two index scans merged.
+
+Known suboptimality for branch 1: when `HOLODEX_FETCH_ORG === HOLODEX_ALL_VTUBERS`
+the predicate becomes `organization: { $ne: null }`. `$ne` on a leading index
+key cannot produce a tight equality bound — the planner scans the range
+`[MinKey, null) ∪ (null, MaxKey]` on the index and then FETCH-filters the
+remaining `$ne: true` predicates. This is still much better than COLLSCAN
+because the `channels` collection is small and most documents do have an
+`organization`, but the verification in section 5.3 must use
+`executionStats` to confirm key-examination volume is bounded, not just that
+some IXSCAN appears.
 
 ### 3.3 Leftover index cleanup
 
@@ -127,7 +163,25 @@ db.channels.dropIndex("organization_1_isInactive_1");
 ```
 
 These are strict prefixes of the new 4-field indexes, so any query that
-previously used them can use the new index instead.
+previously used them can use the new index instead. They likely currently
+serve the `findSubscribed` query as a fallback (see section 5.3 — the
+production `explain` before this work showed those queries hitting `IXSCAN`,
+not `COLLSCAN`). Dropping them only after section 4 step 3 passes ensures
+continuity.
+
+Recovery: if a later regression requires re-creating the leftover indexes,
+the exact commands are:
+
+```js
+db.channels.createIndex(
+  { extraCrawl: 1, isInactive: 1 },
+  { background: true, name: "extraCrawl_1_isInactive_1" }
+);
+db.channels.createIndex(
+  { organization: 1, isInactive: 1 },
+  { background: true, name: "organization_1_isInactive_1" }
+);
+```
 
 ## 4. Deployment runbook
 
@@ -135,7 +189,11 @@ Steps must be executed in order. Step 4 must not begin until step 3 passes.
 
 1. **Deploy code change.** Merging the model changes is enough — mongoose's
    `autoIndex` will create the new indexes on next process start. No
-   migration script.
+   migration script. Note that `src/modules/db.ts` does not register any
+   `mongoose.connection.on("error", ...)` listener, so a failed
+   `createIndex` will be silently swallowed (this is precisely the original
+   bug); the authoritative post-condition is the `getIndexes()` check in
+   step 2, not log inspection.
 2. **Verify index presence.** On the production replica set:
    ```js
    db.videos.getIndexes();
@@ -146,9 +204,10 @@ Steps must be executed in order. Step 4 must not begin until step 3 passes.
    //         extraCrawl_1_isInactive_1_hbIgnore_1_deleted_1
    //         (both without partialFilterExpression)
    ```
-3. **Verify planner selection.** Run the explain plans in section 5. Both
-   must show the new indexes winning, not `status_1` or the leftover 2-field
-   indexes.
+3. **Verify planner selection.** Run the explain plans in section 5.2 and
+   5.3. Both must satisfy the pass criteria stated in those sections (not
+   just "an IXSCAN appears" — section 5.3 in particular requires
+   `executionStats` evidence that key examination is bounded).
 4. **Drop leftover indexes.**
    ```js
    db.channels.dropIndex("extraCrawl_1_isInactive_1");
@@ -212,14 +271,25 @@ const Q = {
     },
   ],
 };
-db.channels.find(Q).explain("queryPlanner");
+db.channels.find(Q).explain("executionStats");
 ```
 
-Pass criteria: each `$or` branch in `winningPlan` resolves to the matching
-new 4-field index — branch 1 to
-`organization_1_isInactive_1_hbIgnore_1_deleted_1`, branch 2 to
-`extraCrawl_1_isInactive_1_hbIgnore_1_deleted_1`. Fail if any branch falls
-back to COLLSCAN or to the leftover 2-field indexes.
+Pass criteria (all must hold):
+
+- `winningPlan` for each `$or` branch reaches an IXSCAN on the matching new
+  4-field index — branch 1 on
+  `organization_1_isInactive_1_hbIgnore_1_deleted_1`, branch 2 on
+  `extraCrawl_1_isInactive_1_hbIgnore_1_deleted_1`. Fail if any branch falls
+  back to `COLLSCAN` or to the leftover 2-field indexes.
+- `executionStats.totalDocsExamined / nReturned ≤ 3`. This guards against
+  the known suboptimality on branch 1 (section 3.2): `$ne` on the leading
+  field still scans a wide index range, but on the small `channels`
+  collection the actual key/doc volume must remain small. If this ratio
+  exceeds 3 the dataset has grown large enough that the partial-filter
+  decision should be revisited.
+- `executionStats.executionTimeMillis < 50`. Sanity bound; the query was
+  fast enough not to appear in slow log before this change either, so it
+  must not regress.
 
 ### 5.4 Slow log observation
 
@@ -231,23 +301,32 @@ After ≥ 1 hour of production traffic post-deploy:
 
 ### 5.5 No unit tests
 
-This change is exclusively about MongoDB server-side index acceptance and
-planner selection. `mongodb-memory-server` and similar in-process MongoDB
-substitutes do not guarantee identical `partialFilterExpression` validation
-behavior to the production server version (8.0.x). The only meaningful
-verification is the production `explain()` and slow-log observation listed
-above.
+Two reasons:
+
+- The thing that broke (a silent server-side rejection of
+  `partialFilterExpression` operators) is already covered by the deploy-time
+  `getIndexes()` check in section 5.1 — running it in a test against
+  `mongodb-memory-server` would only re-prove the operator-whitelist fact,
+  not the design.
+- Planner selection (sections 5.2 / 5.3) is a function of collection size,
+  cardinality, and index statistics. A test fixture cannot reproduce
+  production data distribution faithfully enough for the pass criteria to
+  be meaningful, and a passing in-test `explain` would not justify
+  skipping the production `explain` anyway.
 
 ## 6. Risk assessment
 
 - **Risk: planner picks unexpected plan after index changes.** Mitigated by
-  step 3 of the runbook (explain before dropping leftover indexes). If
-  planner does not select the new Channel indexes, the leftover 2-field
-  indexes still cover the lookup until the issue is diagnosed.
+  step 3 of the runbook (explain before dropping leftover indexes). While
+  steps 1–3 are in progress, the leftover 2-field indexes still cover the
+  lookup as a fallback. After step 4 the leftover indexes are gone; if a
+  later distribution change causes a regression, recover with the
+  `createIndex` commands listed in section 3.3.
 - **Risk: silent autoIndex failure recurs in the future.** Accepted. The
   user explicitly excluded a fail-fast mechanism from this scope. Future
   partial index changes must be hand-verified against the operator whitelist
-  before merge.
+  before merge, and step 2 of every deployment runbook that introduces a
+  new index must check `getIndexes()` output.
 - **Risk: dropping leftover indexes is destructive.** Recovered by re-creating
-  them manually if needed; no data loss. The new 4-field indexes are strict
-  supersets of the leftover 2-field ones.
+  them with the commands listed in section 3.3; no data loss. The new
+  4-field indexes are strict supersets of the leftover 2-field ones.
