@@ -124,6 +124,12 @@ db.test_partial_null.find({ x: null }).hint({ x: 1 }).explain("executionStats");
 db.test_partial_null.drop();
 ```
 
+Verified on production replica `honeybee-mongodb-0` (MongoDB 8.0.3) on
+2026-05-20: `totalKeysExamined: 2`, `nReturned: 2`, plan was
+`FETCH → IXSCAN(x_1, isPartial: true, bounds: [[null, null]])`. The partial
+index captures both explicit-null and missing-field documents on this
+server version.
+
 `@typegoose/typegoose` and the mongoose `IndexOptions` type accept `null` in
 `partialFilterExpression` without a cast: `IndexOptions` extends mongodb's
 `CreateIndexesOptions`, where `partialFilterExpression?: Document`.
