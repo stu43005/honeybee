@@ -10,10 +10,15 @@ Three Typegoose `@index(...)` definitions use `$ne` or `$nin` inside
 `partialFilterExpression` operator whitelist (allowed: equality, `$exists: true`,
 `$gt/$gte/$lt/$lte`, `$type`, `$and`, `$or`, `$in`). When mongoose's
 `autoIndex` runs `Model.ensureIndexes()` on startup, the server rejects the
-spec; mongoose emits the failure as a `Model.on('index', err)` event.
-`src/modules/db.ts` does not register any per-model `index` listener, so the
-failure is silently swallowed and the process keeps running. The result:
-code says "the index exists", DB says it does not.
+index spec. The exact in-process swallow pathway has not been instrumented
+(the candidate mechanisms — model `'error'` event with no listener,
+unhandled rejection on `Model.$init`, or autoIndex internal handling —
+have not been distinguished by reproduction), but the observable production
+outcome is that the failure does not surface in process logs and the code
+runs as if `autoIndex` succeeded. The result: code says "the index exists",
+DB says it does not. The authoritative post-condition for any partial-index
+change is therefore `db.<collection>.getIndexes()`, not log inspection;
+this is wired into the runbook (section 4 step 2).
 
 Affected definitions:
 
@@ -121,9 +126,11 @@ db.test_partial_null.drop();
 
 `@typegoose/typegoose` and the mongoose `IndexOptions` type accept `null` in
 `partialFilterExpression` without a cast: `IndexOptions` extends mongodb's
-`CreateIndexesOptions`, where `partialFilterExpression?: Document` and
-`Document` is `Record<string, any>` (verified against the installed
-`node_modules/mongodb/mongodb.d.ts`).
+`CreateIndexesOptions`, where `partialFilterExpression?: Document`.
+`Document` is declared in `node_modules/bson/bson.d.ts` as
+`interface Document { [key: string]: any }` and re-exported by
+`node_modules/mongodb/mongodb.d.ts`, so any value (including `null`) is
+assignable.
 
 ### 3.2 Channel — drop partial filter
 
@@ -233,8 +240,8 @@ Steps must be executed in order. Step 4 must not begin until step 3 passes.
    db.channels.dropIndex("extraCrawl_1_isInactive_1");
    db.channels.dropIndex("organization_1_isInactive_1");
    ```
-5. **Observe slow log.** Wait ≥ 1 hour; reconfirm the pass criteria in
-   section 5.3.
+5. **Observe slow log.** Wait ≥ 1 hour; verify the pass criteria in
+   section 5.4.
 
 Doing the drop before the deploy would create a window where neither the old
 nor new indexes exist, and `findSubscribed` (used by the discord-bot channel
@@ -302,11 +309,18 @@ const N = db.channels.countDocuments();
 
 Pass criteria (all must hold):
 
-- `winningPlan` for each `$or` branch reaches an IXSCAN on the matching new
-  4-field index — branch 1 on
-  `organization_1_isInactive_1_hbIgnore_1_deleted_1`, branch 2 on
-  `extraCrawl_1_isInactive_1_hbIgnore_1_deleted_1`. Fail if any branch falls
-  back to `COLLSCAN` or to the leftover 2-field indexes.
+- `winningPlan` matches one of these acceptable shapes (`FETCH` wrappers
+  optional at each level):
+  - `SUBPLAN → OR → [ IXSCAN(branch-1-index), IXSCAN(branch-2-index) ]`
+  - `OR → [ IXSCAN(branch-1-index), IXSCAN(branch-2-index) ]`
+
+  where branch-1-index is
+  `organization_1_isInactive_1_hbIgnore_1_deleted_1` and branch-2-index is
+  `extraCrawl_1_isInactive_1_hbIgnore_1_deleted_1`. Reject if any IXSCAN
+  names the leftover 2-field index (`extraCrawl_1_isInactive_1`,
+  `organization_1_isInactive_1`) or `_id_`, or if any `COLLSCAN` appears
+  anywhere in `winningPlan`.
+
 - `executionStats.totalKeysExamined ≤ 2 * N`. The `2×` allowance is for
   branch 1 when `HOLODEX_FETCH_ORG === HOLODEX_ALL_VTUBERS`: the predicate
   `organization: {$ne: null}` scans `[MinKey, null) ∪ (null, MaxKey]`, which
