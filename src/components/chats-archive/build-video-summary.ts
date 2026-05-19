@@ -1,5 +1,4 @@
 import type { DocumentType } from "@typegoose/typegoose";
-import ChannelModel from "../../models/Channel.js";
 import type { Video } from "../../models/Video.js";
 
 export async function buildVideoSummary(
@@ -8,7 +7,7 @@ export async function buildVideoSummary(
 ): Promise<Record<string, unknown>> {
   let channelObj: Record<string, unknown> | undefined;
   if (includeChannel) {
-    const channel = await ChannelModel.findByChannelId(video.channelId);
+    const channel = await video.getChannel();
     channelObj = channel
       ? { id: channel.id, name: channel.name }
       : { id: video.channelId, name: video.channelId };
