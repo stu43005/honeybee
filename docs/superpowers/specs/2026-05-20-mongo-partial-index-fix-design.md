@@ -9,9 +9,11 @@ Three Typegoose `@index(...)` definitions use `$ne` or `$nin` inside
 `partialFilterExpression`. Those operators are not in MongoDB's
 `partialFilterExpression` operator whitelist (allowed: equality, `$exists: true`,
 `$gt/$gte/$lt/$lte`, `$type`, `$and`, `$or`, `$in`). When mongoose's
-`autoIndex` tries to create them on startup, the server rejects them; mongoose
-emits the failure on the connection's `error` event and the process keeps
-running. The result: code says "the index exists", DB says it does not.
+`autoIndex` runs `Model.ensureIndexes()` on startup, the server rejects the
+spec; mongoose emits the failure as a `Model.on('index', err)` event.
+`src/modules/db.ts` does not register any per-model `index` listener, so the
+failure is silently swallowed and the process keeps running. The result:
+code says "the index exists", DB says it does not.
 
 Affected definitions:
 
@@ -30,11 +32,16 @@ up to 891 ms per execution.
 `db.channels.getIndexes()` additionally returned two indexes that are not
 defined anywhere in `src/models/`:
 
-- `extraCrawl_1_isInactive_1`
-- `organization_1_isInactive_1`
+```js
+{ v: 2, key: { extraCrawl: 1, isInactive: 1 },
+  name: "extraCrawl_1_isInactive_1", background: true }
+{ v: 2, key: { organization: 1, isInactive: 1 },
+  name: "organization_1_isInactive_1", background: true }
+```
 
-These are manually-created leftovers (likely added as an emergency workaround
-when the original 4-field partial indexes failed to come up). They are narrower
+No `partialFilterExpression`, no `unique`, no `sparse`, no collation. These
+are manually-created leftovers (likely added as an emergency workaround when
+the original 4-field partial indexes failed to come up). They are narrower
 than the indexes that will replace them and serve no purpose once the new
 indexes exist.
 
@@ -105,9 +112,18 @@ db.test_partial_null.createIndex(
 );
 db.test_partial_null.insertMany([{ x: null }, {}, { x: 1 }]);
 db.test_partial_null.find({ x: null }).hint({ x: 1 }).explain("executionStats");
-// expect totalKeysExamined == 2 (null + missing), nReturned == 2
+// pass criterion: totalKeysExamined == 2 (null + missing).
+// If it returns 1, the partial index excludes missing-field documents and the
+// $setOnInsert path at Video.ts:373-378 would be unindexed — escalate before
+// deploying.
 db.test_partial_null.drop();
 ```
+
+`@typegoose/typegoose` and the mongoose `IndexOptions` type accept `null` in
+`partialFilterExpression` without a cast: `IndexOptions` extends mongodb's
+`CreateIndexesOptions`, where `partialFilterExpression?: Document` and
+`Document` is `Record<string, any>` (verified against the installed
+`node_modules/mongodb/mongodb.d.ts`).
 
 ### 3.2 Channel — drop partial filter
 
@@ -170,7 +186,8 @@ not `COLLSCAN`). Dropping them only after section 4 step 3 passes ensures
 continuity.
 
 Recovery: if a later regression requires re-creating the leftover indexes,
-the exact commands are:
+the commands below reproduce the exact shape captured in section 1 (only
+`background: true`; no other options):
 
 ```js
 db.channels.createIndex(
@@ -190,10 +207,10 @@ Steps must be executed in order. Step 4 must not begin until step 3 passes.
 1. **Deploy code change.** Merging the model changes is enough — mongoose's
    `autoIndex` will create the new indexes on next process start. No
    migration script. Note that `src/modules/db.ts` does not register any
-   `mongoose.connection.on("error", ...)` listener, so a failed
-   `createIndex` will be silently swallowed (this is precisely the original
-   bug); the authoritative post-condition is the `getIndexes()` check in
-   step 2, not log inspection.
+   `Model.on('index', ...)` listener, so a failed `createIndex` from
+   `autoIndex` is swallowed (this is precisely the original bug); the
+   authoritative post-condition is the `getIndexes()` check in step 2, not
+   log inspection.
 2. **Verify index presence.** On the production replica set:
    ```js
    db.videos.getIndexes();
@@ -208,7 +225,10 @@ Steps must be executed in order. Step 4 must not begin until step 3 passes.
    5.3. Both must satisfy the pass criteria stated in those sections (not
    just "an IXSCAN appears" — section 5.3 in particular requires
    `executionStats` evidence that key examination is bounded).
-4. **Drop leftover indexes.**
+4. **Drop leftover indexes.** Precondition: step 3's pass criteria (sections
+   5.2 and 5.3) all passed and the explain output showed the new 4-field
+   indexes being chosen — not the leftover 2-field indexes. If the leftover
+   indexes were still chosen, stop and investigate before dropping.
    ```js
    db.channels.dropIndex("extraCrawl_1_isInactive_1");
    db.channels.dropIndex("organization_1_isInactive_1");
@@ -274,6 +294,12 @@ const Q = {
 db.channels.find(Q).explain("executionStats");
 ```
 
+Before running explain, record the current collection size:
+
+```js
+const N = db.channels.countDocuments();
+```
+
 Pass criteria (all must hold):
 
 - `winningPlan` for each `$or` branch reaches an IXSCAN on the matching new
@@ -281,15 +307,18 @@ Pass criteria (all must hold):
   `organization_1_isInactive_1_hbIgnore_1_deleted_1`, branch 2 on
   `extraCrawl_1_isInactive_1_hbIgnore_1_deleted_1`. Fail if any branch falls
   back to `COLLSCAN` or to the leftover 2-field indexes.
-- `executionStats.totalDocsExamined / nReturned ≤ 3`. This guards against
-  the known suboptimality on branch 1 (section 3.2): `$ne` on the leading
-  field still scans a wide index range, but on the small `channels`
-  collection the actual key/doc volume must remain small. If this ratio
-  exceeds 3 the dataset has grown large enough that the partial-filter
-  decision should be revisited.
-- `executionStats.executionTimeMillis < 50`. Sanity bound; the query was
-  fast enough not to appear in slow log before this change either, so it
-  must not regress.
+- `executionStats.totalKeysExamined ≤ 2 * N`. The `2×` allowance is for
+  branch 1 when `HOLODEX_FETCH_ORG === HOLODEX_ALL_VTUBERS`: the predicate
+  `organization: {$ne: null}` scans `[MinKey, null) ∪ (null, MaxKey]`, which
+  in the worst case is the full key range across both indexes' OR_UNION.
+- `executionStats.totalDocsExamined ≤ executionStats.totalKeysExamined`.
+  Equality is expected (filter covered by index); a higher docs count means
+  the planner is doing extra FETCHes beyond the index, which indicates the
+  filter isn't being applied during the IXSCAN.
+
+Wall-clock bounds are intentionally omitted — `executionTimeMillis` on a
+shared production replica is dominated by cache state and contention, not
+by the index design. The two structural bounds above are load-independent.
 
 ### 5.4 Slow log observation
 
