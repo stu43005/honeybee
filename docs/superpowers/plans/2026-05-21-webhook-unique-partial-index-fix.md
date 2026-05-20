@@ -28,7 +28,7 @@ No other source file changes. No new file, no test file (the spec opts out of un
 
 Run: `sed -n '20,22p' src/models/Webhook.ts`
 
-Expected output (verbatim, including the leading blank line at 20 if present):
+Expected output:
 
 ```
 @index({ updatedAt: 1 })
@@ -73,51 +73,56 @@ Expected: exits 0, no output. No new lint surface introduced.
 
 If lint warnings or errors appear, stop and surface them.
 
-- [ ] **Step 5: Build**
+- [ ] **Step 5: Format the edited file**
+
+Run: `npm run format -- src/models/Webhook.ts`
+
+Expected: Prettier rewrites `src/models/Webhook.ts` if needed and exits 0. Running format BEFORE the commit avoids a follow-up "style" commit polluting history.
+
+Then verify the file is now Prettier-clean:
+
+Run: `npx prettier --check src/models/Webhook.ts`
+
+Expected: exits 0 with output `All matched files use Prettier code style!` or equivalent.
+
+- [ ] **Step 6: Build**
 
 Run: `npm run build`
 
 Expected: tsc compiles `src/` to `dist/` and `chmod +x dist/index.js` succeeds. No errors.
 
-- [ ] **Step 6: Run the model unit tests still pass**
+- [ ] **Step 7: Commit via git-master**
 
-Run: `NODE_OPTIONS='--experimental-vm-modules' npx jest src/models/`
+Invoke the `git-master` skill to create the atomic commit. The skill must be invoked with:
 
-Expected: existing `Channel.spec.ts` (the only spec under `src/models/`) passes. No new tests for `Webhook` are added per the design's §5.4 opt-out — this run is a smoke check that the decorator edit did not break Typegoose model registration globally.
+- Staging path (explicit, no `-A` or `.`): `src/models/Webhook.ts`
+- Commit message:
 
-If any spec fails, stop and surface the failure.
+  ```
+  fix(models): scope Webhook unique index to (track,feature) ObjectId/string pairs
 
-- [ ] **Step 7: Commit**
+  12 legitimate manual webhooks with track:null, feature:null currently
+  break the autoIndex build of track_1_feature_1. Add a partial filter
+  on { track: $type objectId, feature: $type string } so the unique
+  constraint only covers track-derived webhooks (transformTrack upsert
+  target) and ignores manual webhooks.
+  ```
 
-Stage only `src/models/Webhook.ts` by explicit path (the project convention forbids `git add -A`):
-
-```bash
-git add src/models/Webhook.ts
-git commit -m "$(cat <<'EOF'
-fix(models): scope Webhook unique index to (track,feature) ObjectId/string pairs
-
-12 legitimate manual webhooks with track:null, feature:null currently
-break the autoIndex build of track_1_feature_1. Add a partial filter
-on { track: $type objectId, feature: $type string } so the unique
-constraint only covers track-derived webhooks (transformTrack upsert
-target) and ignores manual webhooks.
-EOF
-)"
-```
-
-Expected: one new commit on the current branch.
+Expected: one new commit on the current branch containing only `src/models/Webhook.ts`.
 
 ---
 
 ## Task 2: Whole-tree verification
 
-**Files:** none (verification only).
+**Files:** none (verification only). No commit produced.
 
-- [ ] **Step 1: Format check**
+- [ ] **Step 1: Confirm Prettier is clean across the tree**
 
 Run: `npm run format:check`
 
-Expected: exits 0. If Prettier reports formatting drift on the edited file, run `npm run format` (re-stage if anything changed) and proceed.
+Expected: exits 0. (Task 1 Step 5 already formatted the edited file; this is the safety-net check that nothing else drifted.)
+
+If Prettier reports drift on files this plan did not touch, stop and surface it — do not auto-format unrelated files within this plan's scope.
 
 - [ ] **Step 2: Lint the whole src/ tree**
 
@@ -129,7 +134,7 @@ Expected: exits 0. Catches any cross-file lint regression introduced by the chan
 
 Run: `NODE_OPTIONS='--experimental-vm-modules' npx jest`
 
-Expected: every existing spec passes. The change does not touch any code path under test, so no behavioral change is expected.
+Expected: every existing spec passes. The change does not touch any code path under test, so no behavioral change is expected. This run also covers the implicit "did the decorator edit break Typegoose model registration anywhere" question via the existing model specs.
 
 If any spec fails, stop and investigate before proceeding.
 
@@ -137,19 +142,7 @@ If any spec fails, stop and investigate before proceeding.
 
 Run: `npm run build`
 
-Expected: clean build to `dist/`. Repeats Task 1 Step 5 deliberately — this is the post-format/lint snapshot and is what the deploy pipeline will run.
-
-- [ ] **Step 5: No commit**
-
-This task produces no new commit. If `npm run format` rewrote a file in Step 1, that change should already have been folded into Task 1's commit by amending… but per project convention `git commit --amend` is forbidden; instead stage and commit as a follow-up:
-
-```bash
-# Only if Step 1 reformatted a file:
-git add src/models/Webhook.ts
-git commit -m "style: prettier autoformat after Webhook index edit"
-```
-
-Otherwise nothing to commit.
+Expected: clean build to `dist/`. Repeats Task 1 Step 6 deliberately — this is the post-lint snapshot and is what the deploy pipeline will run.
 
 ---
 
@@ -178,18 +171,41 @@ The implementing subagent must:
 
 ### Operator instructions
 
-After Task 1's commit is merged and the Honeybee services that import the `Webhook` model (any service that boots mongoose models — at minimum the webhook service and the manager service, which run `transformTrack`) have been redeployed so that mongoose's `autoIndex` has run on startup, connect to the production MongoDB primary and run:
+Sequence:
+
+**(a) Pre-deploy baseline.** BEFORE redeploying any service, on the production MongoDB primary run:
+
+```js
+db.webhooks.countDocuments({ track: null, feature: null });
+```
+
+Record the returned integer as `PRE_DEPLOY_NULL_COUNT`. (At plan-finalization time this was `12`; if manual webhooks were added since, the live count takes precedence.)
+
+**(b) Deploy.** Merge Task 1's commit and roll the seven Honeybee services that boot `MongodbModule` / `importAllModels` so that mongoose's `autoIndex` runs on startup. The full set is every command in `src/commands/`:
+
+- `crawler`
+- `discord-bot`
+- `manager`
+- `metrics`
+- `scheduler`
+- `webhook`
+- `worker`
+
+All seven attach the `autoIndex` listener from commit `ad7a4f0` for every model, so all seven are candidates to emit `[mongoose] autoIndex failed for webhooks:` on startup if the build fails.
+
+**(c) Post-deploy verification.** On the production primary, run:
 
 ```js
 db.webhooks.getIndexes();
-db.webhooks.find({ track: null, feature: null }).count();
+db.webhooks.countDocuments({ track: null, feature: null });
+db.webhooks.aggregate([{ $indexStats: {} }]).toArray();
 ```
 
-Also, in parallel, search the post-deploy logs of every restarted Honeybee service for the substring `autoIndex failed for webhooks`.
+In parallel, for each of the seven services listed above, grep its post-deploy startup logs for the substring `autoIndex failed for webhooks`.
 
 ### Pass criteria
 
-**Criterion A — index presence and shape.** `db.webhooks.getIndexes()` output must contain an entry equivalent to:
+**Criterion A — index presence and shape.** `db.webhooks.getIndexes()` output must contain an entry matching this subset:
 
 ```js
 {
@@ -204,19 +220,22 @@ Also, in parallel, search the post-deploy logs of every restarted Honeybee servi
 }
 ```
 
-Specifically the `unique`, `partialFilterExpression.track.$type`, and `partialFilterExpression.feature.$type` fields must all be present and equal to the values shown. `v` may be `2` or higher depending on server defaults; `background` if present is acceptable. Reject if `partialFilterExpression` is missing or any value within it differs.
+Specifically the `unique`, `partialFilterExpression.track.$type`, and `partialFilterExpression.feature.$type` fields must all be present and equal to the values shown. `v` may be `2` or higher depending on server defaults. Additional fields (`background`, `ns`, `2dsphereIndexVersion`, etc.) if present are acceptable as long as none of the named fields above differ. Reject if `partialFilterExpression` is missing, any value within it differs, or the index has `hidden: true` set.
 
-**Criterion B — data untouched.** `db.webhooks.find({ track: null, feature: null }).count()` must return the same count as immediately before the deploy. The expected value at the time this plan was written is `12`; if more manual webhooks were added between plan finalization and deploy, the new pre-deploy count takes precedence. Reject if the count decreased — that would mean data was lost.
+Additionally, `db.webhooks.aggregate([{ $indexStats: {} }])` must list `track_1_feature_1` — an entry in `$indexStats` is only published after the build commits, so its presence proves the build completed rather than being in-progress.
 
-**Criterion C — no warning at startup.** No service emitted a `[mongoose] autoIndex failed for webhooks` line in its post-deploy startup logs. Reject if any service did — the index build failed for an unanticipated reason.
+**Criterion B — data untouched.** The post-deploy `db.webhooks.countDocuments({ track: null, feature: null })` must equal `PRE_DEPLOY_NULL_COUNT` captured in step (a). Reject if the post-deploy count is lower — that would mean data was lost.
+
+**Criterion C — no warning at startup.** No service emitted a `[mongoose] autoIndex failed for webhooks` line in its post-deploy startup logs. Reject if any of the seven services did — the index build failed for an unanticipated reason.
 
 ### Operator returns
 
 The operator pastes:
 
 1. The full output of `db.webhooks.getIndexes()`.
-2. The numeric result of `db.webhooks.find({ track: null, feature: null }).count()` and the immediately-pre-deploy count for comparison.
-3. The grep result for `autoIndex failed for webhooks` across the post-deploy logs (empty result is the expected pass).
+2. The pre-deploy `PRE_DEPLOY_NULL_COUNT` (from step (a)) and the post-deploy `countDocuments` result (from step (c)).
+3. The result of `db.webhooks.aggregate([{ $indexStats: {} }]).toArray()` filtered/visually scanned to confirm `track_1_feature_1` is listed.
+4. The grep result for `autoIndex failed for webhooks` across the post-deploy logs of all seven services (empty result is the expected pass).
 
 The driver verifies all three pass criteria are literally satisfied before declaring the plan complete.
 
@@ -224,4 +243,4 @@ The driver verifies all three pass criteria are literally satisfied before decla
 
 ## Plan complete
 
-When all three Task 3 criteria pass, the plan is complete. No follow-up tasks. The 2026-05-20 partial-index plan's remaining operator tasks (Tasks 5–8 in that plan) are independent and may continue in parallel without interaction.
+When all three Task 3 criteria pass, the plan is complete. No follow-up tasks. The 2026-05-20 partial-index plan's remaining operator tasks are independent and may continue in parallel without interaction.
