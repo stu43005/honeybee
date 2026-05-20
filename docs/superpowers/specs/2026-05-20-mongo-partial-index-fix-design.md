@@ -60,12 +60,14 @@ indexes exist.
    use the new indexes (verified via `explain()`).
 3. Bring the production `channels` collection into agreement with `src/models/`
    by dropping the two leftover indexes.
+4. Surface mongoose `autoIndex` failures as a console warning so future
+   operator-whitelist regressions are noticeable in deploy logs, without
+   blocking process startup.
 
 ### Non-goals
 
-- Startup-time fail-fast for index sync failures. (Considered and explicitly
-  excluded by the user — current `autoIndex` log-and-continue behavior is
-  retained.)
+- Startup-time **hard-fail** for index sync failures. The process must keep
+  running on failure; only a warning is emitted. Goal 4 covers the warning.
 - Schema migration to add `default: false` for `isInactive` / `hbIgnore` /
   `extraCrawl` / `deleted` on `Channel`.
 - Changes to `cleanup.ts` query logic. The simplified Video partial filter
@@ -213,7 +215,48 @@ db.channels.createIndex(
 );
 ```
 
-## 4. Deployment runbook
+### 3.4 Surface autoIndex failures as warnings
+
+`src/modules/db.ts` currently has no `Model.on('index', ...)` listener.
+Extend `importAllModels()` so that after each model module is imported, the
+corresponding `mongoose.models[name]` has an `index` listener attached:
+
+```ts
+// In src/modules/db.ts, inside importAllModels(), after the dynamic
+// import loop completes:
+for (const model of Object.values(mongoose.models)) {
+  if (
+    (model as unknown as { __hbIndexListenerAttached?: boolean })
+      .__hbIndexListenerAttached
+  )
+    continue;
+  (
+    model as unknown as { __hbIndexListenerAttached?: boolean }
+  ).__hbIndexListenerAttached = true;
+  model.on("index", (err: Error | null) => {
+    if (err) {
+      console.warn(
+        `[mongoose] autoIndex failed for ${model.collection.name}:`,
+        err.message
+      );
+    }
+  });
+}
+```
+
+Behavior:
+
+- If `Model.ensureIndexes()` succeeds, the `index` event fires with `err` of
+  `null` — no log line.
+- If it fails (e.g. an invalid `partialFilterExpression` operator), one
+  `console.warn` line is emitted per failed model. The process continues.
+- The idempotency flag (`__hbIndexListenerAttached`) prevents double-binding
+  if `importAllModels()` is ever invoked twice (defensive — current code
+  only calls it once at startup).
+
+No new dependency, no behavior change in healthy state, no `process.exit`.
+The warning is best-effort observability; `db.<collection>.getIndexes()`
+in section 4 step 2 remains the authoritative post-condition.
 
 Steps must be executed in order. Step 4 must not begin until step 3 passes.
 
@@ -371,11 +414,12 @@ Two reasons:
   lookup as a fallback. After step 4 the leftover indexes are gone; if a
   later distribution change causes a regression, recover with the
   `createIndex` commands listed in section 3.3.
-- **Risk: silent autoIndex failure recurs in the future.** Accepted. The
-  user explicitly excluded a fail-fast mechanism from this scope. Future
-  partial index changes must be hand-verified against the operator whitelist
-  before merge, and step 2 of every deployment runbook that introduces a
-  new index must check `getIndexes()` output.
+- **Risk: silent autoIndex failure recurs in the future.** Mitigated by
+  Goal 4 (section 3.4): the `console.warn` line appears in deploy logs on
+  failure. The warning is best-effort and not blocking — operators must
+  still run the `getIndexes()` check (section 4 step 2) after any
+  partial-index change to confirm. The warning is a backstop for accidents,
+  not a substitute for verification.
 - **Risk: dropping leftover indexes is destructive.** Recovered by re-creating
   them with the commands listed in section 3.3; no data loss. The new
   4-field indexes are strict supersets of the leftover 2-field ones.
