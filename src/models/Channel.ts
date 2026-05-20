@@ -15,27 +15,8 @@ import { HOLODEX_ALL_VTUBERS, HOLODEX_FETCH_ORG } from "../constants.js";
 import { setIfDefine } from "../util.js";
 
 @modelOptions({ schemaOptions: { collection: "channels" } })
-@index(
-  { organization: 1, isInactive: 1, hbIgnore: 1, deleted: 1 },
-  {
-    partialFilterExpression: {
-      isInactive: { $ne: true },
-      hbIgnore: { $ne: true },
-      deleted: { $ne: true },
-    },
-  }
-)
-@index(
-  { extraCrawl: 1, isInactive: 1, hbIgnore: 1, deleted: 1 },
-  {
-    partialFilterExpression: {
-      extraCrawl: true,
-      isInactive: { $ne: true },
-      hbIgnore: { $ne: true },
-      deleted: { $ne: true },
-    },
-  }
-)
+@index({ organization: 1, isInactive: 1, hbIgnore: 1, deleted: 1 })
+@index({ extraCrawl: 1, isInactive: 1, hbIgnore: 1, deleted: 1 })
 @index({ updatedAt: 1 })
 export class Channel extends TimeStamps {
   @prop({ required: true, unique: true })
