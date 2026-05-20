@@ -420,23 +420,184 @@ execution they may have been authored in any order.
 If any of the three is missing, the corresponding task did not produce a
 commit; re-run that task before proceeding.
 
-- [ ] **Step 6: Report deployment runbook to operator**
+- [ ] **Step 6: Announce ready for production verification**
 
-Print this message verbatim. It tells the operator that the
-implementation is complete and that the next steps require production
-replica access and operator judgement (and therefore cannot be executed
-from this session):
+Print this message verbatim:
 
-> Implementation merged. The new indexes will be created by mongoose's
-> `autoIndex` on next process start. The remaining work — verifying
-> index creation on the production replica, running the explain checks,
-> observing slow log, and dropping the two leftover 2-field Channel
-> indexes — is described in the design doc at
-> `docs/superpowers/specs/2026-05-20-mongo-partial-index-fix-design.md`.
-> The action items are sections 4 (deployment runbook) and 5
-> (verification commands). Read section 3 first for the design context,
-> then follow section 4 step-by-step; do not skip the precondition gates
-> noted there.
+> Code changes merged. Tasks 5–8 are operator-executed against the
+> production MongoDB replica. The implementing subagent must pause at
+> each of those tasks and wait for the operator to paste back the
+> verification output before continuing.
 
-Do not attempt to run the runbook from this session — it requires
-production replica access and operator judgement on each step's pass/fail.
+---
+
+## Task 5: [Manual] Deploy code and verify new indexes exist
+
+**MANUAL OPERATOR ACTION — PAUSE EXECUTION HERE.**
+
+The implementing subagent must:
+
+1. Present the instructions below to the operator.
+2. Stop and wait. Do not proceed to any subsequent task until the
+   operator pastes back the actual output of the commands and the
+   driver has confirmed the pass criteria below are met.
+3. If the operator reports failure, stop the whole plan and surface the
+   failure — do not attempt remediation from the subagent.
+
+### Operator instructions
+
+After the three code commits from Tasks 1–3 are merged and the relevant
+honeybee services (worker, manager, discord-bot, crawler, scheduler)
+have been redeployed so that mongoose's `autoIndex` has run on
+startup, connect to the production MongoDB primary and run:
+
+```js
+db.videos.getIndexes();
+db.channels.getIndexes();
+```
+
+### Pass criteria
+
+`db.videos.getIndexes()` output must contain an index named
+`hbCleanedAt_1_actualEnd_1_hbEnd_1` with
+`partialFilterExpression: { hbCleanedAt: null }`.
+
+`db.channels.getIndexes()` output must contain both of these (each
+without any `partialFilterExpression`):
+
+- `organization_1_isInactive_1_hbIgnore_1_deleted_1`
+- `extraCrawl_1_isInactive_1_hbIgnore_1_deleted_1`
+
+### What to look for in the deploy logs
+
+If a `[mongoose] autoIndex failed for <collection>: <message>` line
+appears in service startup logs, the operator should report it — that
+means the helper from Task 3 caught a fresh autoIndex failure, and the
+new indexes were not created. Stop the plan.
+
+### Operator returns
+
+The operator pastes the full output of both `getIndexes()` calls and
+the relevant deploy log lines. The driver verifies the pass criteria
+are literally satisfied before unblocking Task 6.
+
+---
+
+## Task 6: [Manual] Verify planner selects the new indexes
+
+**MANUAL OPERATOR ACTION — PAUSE EXECUTION HERE.**
+
+Precondition: Task 5 passed.
+
+### Operator instructions
+
+On the production primary, run the two explain commands defined in the
+design doc section 5.2 (Video cleanup query) and section 5.3 (Channel
+SubscribedQuery). The full command bodies are in the design doc; do
+not paraphrase or modify the predicates.
+
+### Pass criteria (Video — section 5.2)
+
+`winningPlan` reaches `hbCleanedAt_1_actualEnd_1_hbEnd_1` via IXSCAN
+(optionally wrapped in FETCH / OR stages). Reject if `status_1` is
+the chosen index, or if any `COLLSCAN` appears in `winningPlan`.
+
+### Pass criteria (Channel — section 5.3)
+
+All of:
+
+- `winningPlan` matches one of:
+  - `SUBPLAN → OR → [ IXSCAN(branch-1-index), IXSCAN(branch-2-index) ]`
+  - `OR → [ IXSCAN(branch-1-index), IXSCAN(branch-2-index) ]`
+
+  (FETCH wrappers optional at each level.) Branch 1 index is
+  `organization_1_isInactive_1_hbIgnore_1_deleted_1`, branch 2 is
+  `extraCrawl_1_isInactive_1_hbIgnore_1_deleted_1`. Reject if any
+  IXSCAN names `extraCrawl_1_isInactive_1`, `organization_1_isInactive_1`,
+  or `_id_`, or if `COLLSCAN` appears anywhere.
+
+- The collection size captured beforehand as
+  `N = db.channels.countDocuments()`, and
+  `executionStats.totalKeysExamined ≤ 2 * N`.
+
+- `executionStats.totalDocsExamined ≤ executionStats.totalKeysExamined`.
+
+### Operator returns
+
+The operator pastes both explain outputs. The driver verifies every
+criterion literally before unblocking Task 7.
+
+If either pass criterion fails, the plan stops. Do **not** proceed to
+Task 7 (drop) — without confirmed planner selection of the new indexes,
+dropping the leftover 2-field indexes would degrade `findSubscribed`
+to COLLSCAN.
+
+---
+
+## Task 7: [Manual] Drop the two leftover Channel indexes
+
+**MANUAL OPERATOR ACTION — PAUSE EXECUTION HERE.**
+
+**DESTRUCTIVE** — drops indexes from the production `channels`
+collection. Precondition: Tasks 5 and 6 both passed.
+
+### Operator instructions
+
+On the production primary, run:
+
+```js
+db.channels.dropIndex("extraCrawl_1_isInactive_1");
+db.channels.dropIndex("organization_1_isInactive_1");
+```
+
+### Pass criteria
+
+Both commands return `{ "nIndexesWas": <prev-count>, "ok": 1 }`. Re-run
+`db.channels.getIndexes()` and confirm neither index name appears
+anymore.
+
+### Recovery if regression appears later
+
+If a planner regression appears days later that requires bringing the
+leftover indexes back, the exact `createIndex` commands to reproduce
+them are listed in the design doc section 3.3 ("Recovery"). They are
+plain 2-field indexes with only `background: true` set.
+
+### Operator returns
+
+The operator pastes both `dropIndex` results and the post-drop
+`getIndexes()` output. The driver confirms both leftover index names
+are gone before unblocking Task 8.
+
+---
+
+## Task 8: [Manual] Observe slow log for at least 1 hour
+
+**MANUAL OPERATOR ACTION — PAUSE EXECUTION HERE.**
+
+Precondition: Task 7 passed.
+
+### Operator instructions
+
+Wait at least 1 hour of normal production traffic (so that the
+5-minute `cleanEndedStreams` Agenda job and the discord-bot's
+`findSubscribed` calls have run multiple times against the new
+indexes). Then pull recent MongoDB slow log entries — for example, by
+re-running the same Grafana / Loki query that originally surfaced this
+bug (or by hand: tail mongod log filtered on
+`"msg":"Slow query"`).
+
+### Pass criteria
+
+- Entries with `ns: "honeybee.videos"` and a `cleanEndedStreams`-shaped
+  filter (the `hbCleanedAt: null` query) either no longer appear, or
+  have `durationMillis < 100` (down from the pre-fix maximum of
+  891 ms).
+- No new slow-log entries appear with `ns: "honeybee.channels"` for
+  `findSubscribed`-shaped queries.
+
+### Operator returns
+
+A short summary noting either "no matching slow entries" or the new
+`durationMillis` range for the `cleanEndedStreams` query. Once the
+operator confirms pass, the plan is complete.
