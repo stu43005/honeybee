@@ -66,6 +66,24 @@ export async function changeStreamCloseSignal(
   });
 }
 
+function attachIndexWarningListeners(): void {
+  for (const model of Object.values(mongoose.models)) {
+    const flagged = model as unknown as {
+      __hbIndexListenerAttached?: boolean;
+    };
+    if (flagged.__hbIndexListenerAttached) continue;
+    flagged.__hbIndexListenerAttached = true;
+    model.on("index", (err: Error | null) => {
+      if (err) {
+        console.warn(
+          `[mongoose] autoIndex failed for ${model.collection.name}:`,
+          err.message
+        );
+      }
+    });
+  }
+}
+
 export async function importAllModels(): Promise<void> {
   const modelsDir = path.join(__dirname(import.meta), "../models");
   for (const file of await fsp.readdir(modelsDir, { withFileTypes: true })) {
@@ -77,6 +95,7 @@ export async function importAllModels(): Promise<void> {
     ) {
       const importPath = pathToFileURL(path.join(modelsDir, file.name)).href;
       await import(importPath);
+      attachIndexWarningListeners();
     }
   }
 }
