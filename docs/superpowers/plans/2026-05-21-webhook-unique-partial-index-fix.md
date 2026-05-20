@@ -75,9 +75,9 @@ If lint warnings or errors appear, stop and surface them.
 
 - [ ] **Step 5: Format the edited file**
 
-Run: `npm run format -- src/models/Webhook.ts`
+Run: `npx prettier --write src/models/Webhook.ts`
 
-Expected: Prettier rewrites `src/models/Webhook.ts` if needed and exits 0. Running format BEFORE the commit avoids a follow-up "style" commit polluting history.
+Expected: Prettier rewrites `src/models/Webhook.ts` if needed and exits 0. Calling `prettier` directly (rather than `npm run format`, which would forward the path as a positional argument to `prettier --write src/` and reformat the whole tree) ensures only the edited file is touched. Running format BEFORE the commit avoids a follow-up "style" commit polluting history.
 
 Then verify the file is now Prettier-clean:
 
