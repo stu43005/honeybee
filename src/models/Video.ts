@@ -93,8 +93,6 @@ export const IsNotShortQuery = Object.freeze({
   {
     partialFilterExpression: {
       hbCleanedAt: null,
-      hbStatus: { $nin: [HoneybeeStatus.Created] },
-      status: { $nin: LiveStatus },
     },
   }
 )
