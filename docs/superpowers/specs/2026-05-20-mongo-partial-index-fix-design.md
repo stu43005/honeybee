@@ -25,8 +25,8 @@ Affected definitions:
 | File                          | Index key                                                 | Bad operators in partial filter | Consumer                                                                          |
 | ----------------------------- | --------------------------------------------------------- | ------------------------------- | --------------------------------------------------------------------------------- |
 | `src/models/Video.ts:91-99`   | `{ hbCleanedAt:1, actualEnd:1, hbEnd:1 }`                 | `$nin` × 2                      | `cleanEndedStreams` in `src/components/cleanup.ts:61-89`                          |
-| `src/models/Channel.ts:18-26` | `{ organization:1, isInactive:1, hbIgnore:1, deleted:1 }` | `$ne` × 3                       | `Channel.SubscribedQuery` / `findSubscribed()` in `src/models/Channel.ts:165-188` |
-| `src/models/Channel.ts:28-37` | `{ extraCrawl:1, isInactive:1, hbIgnore:1, deleted:1 }`   | `$ne` × 3                       | same as above                                                                     |
+| `src/models/Channel.ts:18-27` | `{ organization:1, isInactive:1, hbIgnore:1, deleted:1 }` | `$ne` × 3                       | `Channel.SubscribedQuery` / `findSubscribed()` in `src/models/Channel.ts:165-188` |
+| `src/models/Channel.ts:28-38` | `{ extraCrawl:1, isInactive:1, hbIgnore:1, deleted:1 }`   | `$ne` × 3                       | same as above                                                                     |
 
 Verified absent in production DB by running `db.videos.getIndexes()` and
 `db.channels.getIndexes()` on 2026-05-19. Both `channels` indexes are missing.
