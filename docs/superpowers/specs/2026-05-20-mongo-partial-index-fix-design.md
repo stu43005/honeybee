@@ -218,29 +218,46 @@ db.channels.createIndex(
 ### 3.4 Surface autoIndex failures as warnings
 
 `src/modules/db.ts` currently has no `Model.on('index', ...)` listener.
-Extend `importAllModels()` so that after each model module is imported, the
-corresponding `mongoose.models[name]` has an `index` listener attached:
+Extend `importAllModels()` so that immediately after each model module is
+dynamically imported, any newly-registered `mongoose.models[*]` entries get
+an `index` listener attached. Attaching inline (rather than once after the
+whole loop completes) avoids a race where a model's `ensureIndexes()` could
+in principle fire its `index` event before the post-loop attachment step
+runs.
 
 ```ts
-// In src/modules/db.ts, inside importAllModels(), after the dynamic
-// import loop completes:
-for (const model of Object.values(mongoose.models)) {
+// In src/modules/db.ts, inside importAllModels():
+for (const file of await fsp.readdir(modelsDir, { withFileTypes: true })) {
   if (
-    (model as unknown as { __hbIndexListenerAttached?: boolean })
-      .__hbIndexListenerAttached
-  )
-    continue;
-  (
-    model as unknown as { __hbIndexListenerAttached?: boolean }
-  ).__hbIndexListenerAttached = true;
-  model.on("index", (err: Error | null) => {
-    if (err) {
-      console.warn(
-        `[mongoose] autoIndex failed for ${model.collection.name}:`,
-        err.message
-      );
-    }
-  });
+    file.isFile() &&
+    file.name.endsWith(".js") &&
+    !file.name.endsWith(".spec.js") &&
+    !file.name.endsWith(".test.js")
+  ) {
+    const importPath = pathToFileURL(path.join(modelsDir, file.name)).href;
+    await import(importPath);
+    attachIndexWarningListeners();
+  }
+}
+```
+
+`attachIndexWarningListeners()` is a small helper, also in `src/modules/db.ts`:
+
+```ts
+function attachIndexWarningListeners(): void {
+  for (const model of Object.values(mongoose.models)) {
+    const flagged = model as unknown as { __hbIndexListenerAttached?: boolean };
+    if (flagged.__hbIndexListenerAttached) continue;
+    flagged.__hbIndexListenerAttached = true;
+    model.on("index", (err: Error | null) => {
+      if (err) {
+        console.warn(
+          `[mongoose] autoIndex failed for ${model.collection.name}:`,
+          err.message
+        );
+      }
+    });
+  }
 }
 ```
 
@@ -250,9 +267,13 @@ Behavior:
   `null` — no log line.
 - If it fails (e.g. an invalid `partialFilterExpression` operator), one
   `console.warn` line is emitted per failed model. The process continues.
-- The idempotency flag (`__hbIndexListenerAttached`) prevents double-binding
-  if `importAllModels()` is ever invoked twice (defensive — current code
-  only calls it once at startup).
+- The idempotency flag (`__hbIndexListenerAttached`) is the mechanism that
+  makes the per-import call cheap: each call only walks new models. It also
+  prevents double-binding if `importAllModels()` is ever invoked twice.
+- A single model file may register multiple models (it can import other
+  files that also call `getModelForClass`), so the helper walks the full
+  `mongoose.models` map rather than tracking only "the model added by this
+  import".
 
 No new dependency, no behavior change in healthy state, no `process.exit`.
 The warning is best-effort observability; `db.<collection>.getIndexes()`
