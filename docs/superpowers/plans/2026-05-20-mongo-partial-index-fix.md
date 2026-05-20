@@ -139,7 +139,7 @@ before them per the listed task order).
 
 **Files:**
 
-- Modify: `src/models/Channel.ts:18-37`
+- Modify: `src/models/Channel.ts:18-38`
 
 Current state of those lines (both partial filters use `$ne` three times,
 which is not in MongoDB's `partialFilterExpression` operator whitelist; the
@@ -184,12 +184,19 @@ Run:
 sed -n '15,42p' src/models/Channel.ts
 ```
 
-Expected output: lines 15-42, showing both `@index(...)` decorators in
-their current broken form. Confirm they match the current state above.
+Expected output: lines 15-42. Confirm:
 
-- [ ] **Step 2: Edit `src/models/Channel.ts:18-37`**
+- Block 1 opens with `@index(` on line 18 and closes with `)` on line 27.
+- Block 2 opens with `@index(` on line 28 and closes with `)` on line 38.
+- Line 39 is `@index({ updatedAt: 1 })` — out of edit scope.
 
-Replace the two `@index(...)` decorator blocks at lines 18-37 with these
+If the closing `)` of block 2 is not on line 38, the file has drifted and
+the line range in the next step is wrong; stop and re-derive the range
+before editing.
+
+- [ ] **Step 2: Edit `src/models/Channel.ts:18-38`**
+
+Replace the two `@index(...)` decorator blocks at lines 18-38 with these
 two single-line decorators (keep the trailing `@index({ updatedAt: 1 })` at
 line 39 untouched):
 
@@ -344,9 +351,24 @@ feat(db): warn when mongoose autoIndex fails for a model
 
 ## Task 4: Whole-tree verification
 
-No code change. Confirms the three commits compose cleanly.
+No code change. Confirms the three commits from the earlier tasks compose
+cleanly.
 
-- [ ] **Step 1: Full typecheck**
+- [ ] **Step 1: Confirm working tree is clean before verifying**
+
+Run:
+
+```bash
+git status --short
+```
+
+Expected: empty output. Any modified or untracked files at this point are
+out of scope for this plan; their lint/tsc errors would spuriously fail
+the next steps. If there is unrelated drift, stash it
+(`git stash push -m "out-of-scope drift"`) and unstash after Task 4
+completes.
+
+- [ ] **Step 2: Full typecheck**
 
 Run:
 
@@ -356,7 +378,7 @@ npx tsc --noEmit
 
 Expected: exits 0.
 
-- [ ] **Step 2: Full lint**
+- [ ] **Step 3: Full lint**
 
 Run:
 
@@ -366,18 +388,21 @@ npx eslint src/
 
 Expected: exits 0.
 
-- [ ] **Step 3: Build**
+- [ ] **Step 4: Build**
 
 Run:
 
 ```bash
-npm run build
+npm run build && ls -l dist/index.js
 ```
 
-Expected: exits 0; `dist/` is regenerated. (This is the same as `tsc`
-plus the `chmod` step in `package.json`.)
+Expected: exits 0; the second command prints a line whose mode column
+starts with `-rwxr-xr-x` (the `chmod 755` step in the build script ran
+successfully). The chmod target is the load-bearing post-condition of
+`npm run build`; without confirming the file exists and is executable
+the build is not provably complete.
 
-- [ ] **Step 4: Confirm commit graph**
+- [ ] **Step 5: Confirm all three commits are present**
 
 Run:
 
@@ -385,30 +410,33 @@ Run:
 git log --oneline -5
 ```
 
-Expected: the top three commits are (in this order, newest first):
+Expected: among the most recent commits there are exactly three whose
+subjects exactly match those introduced by the earlier tasks (the Video
+model partial-filter simplification, the Channel model partial-filter
+drop, and the db.ts autoIndex warning helper). Commit order does not
+matter — the three edits are independent, and under subagent-driven
+execution they may have been authored in any order.
 
-```
-feat(db): warn when mongoose autoIndex fails for a model
-fix(models): drop Channel partial index filter to allowed operators
-fix(models): simplify Video partial index filter to allowed operators
-```
+If any of the three is missing, the corresponding task did not produce a
+commit; re-run that task before proceeding.
 
-If the order differs, the tasks were executed out of sequence — not a
-correctness issue (the three edits are independent), but the commit
-ordering convention prefers leaf-model edits before the infrastructure
-edit. Re-order via `git rebase -i` only if explicitly requested.
+- [ ] **Step 6: Report deployment runbook to operator**
 
-- [ ] **Step 5: Report deployment runbook**
-
-Print the following message verbatim, so the operator knows the
-implementation is complete and the next step is operator-driven:
+Print this message verbatim. It tells the operator that the
+implementation is complete and that the next steps require production
+replica access and operator judgement (and therefore cannot be executed
+from this session):
 
 > Implementation merged. The new indexes will be created by mongoose's
-> `autoIndex` on next process start. Execute the deployment runbook in
-> `docs/superpowers/specs/2026-05-20-mongo-partial-index-fix-design.md`
-> sections 4 and 5 against the production replica to verify the indexes
-> are created, the planner selects them, and the leftover 2-field
-> Channel indexes can be safely dropped.
+> `autoIndex` on next process start. The remaining work — verifying
+> index creation on the production replica, running the explain checks,
+> observing slow log, and dropping the two leftover 2-field Channel
+> indexes — is described in the design doc at
+> `docs/superpowers/specs/2026-05-20-mongo-partial-index-fix-design.md`.
+> The action items are sections 4 (deployment runbook) and 5
+> (verification commands). Read section 3 first for the design context,
+> then follow section 4 step-by-step; do not skip the precondition gates
+> noted there.
 
 Do not attempt to run the runbook from this session — it requires
 production replica access and operator judgement on each step's pass/fail.

@@ -142,7 +142,7 @@ assignable.
 
 ### 3.2 Channel — drop partial filter
 
-`src/models/Channel.ts:18-37` becomes:
+`src/models/Channel.ts:18-38` becomes:
 
 ```ts
 @index({ organization: 1, isInactive: 1, hbIgnore: 1, deleted: 1 })
