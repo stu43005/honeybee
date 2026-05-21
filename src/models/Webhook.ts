@@ -18,7 +18,16 @@ export interface Webhook extends Base {}
   schemaOptions: { collection: "webhooks" },
 })
 @index({ updatedAt: 1 })
-@index({ track: 1, feature: 1 }, { unique: true })
+@index(
+  { track: 1, feature: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      track: { $type: "objectId" },
+      feature: { $type: "string" },
+    },
+  }
+)
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging -- see interface declaration above
 export class Webhook extends TimeStamps {
   // basic info
