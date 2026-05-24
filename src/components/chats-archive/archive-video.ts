@@ -279,6 +279,7 @@ export async function archiveVideo(
 
   const meta = {
     ...(await buildVideoSummary(video)),
+    archiveVersion: 2,
     aggregates: {
       ...aggregates,
       currencyTable: currencies,
