@@ -916,24 +916,25 @@ Expected: clean exit.
 
 - [ ] **Step 5: Commit via git-master**
 
-Invoke the `git-master` skill with:
+Invoke the `git-master` skill with the five exact file paths
+(no `git add -A` / `git add .` — per global CLAUDE.md, deletions are staged
+by explicit path just like additions):
 
 ```
-commit (stage all deletions under src/components/chats-archive/templates/)
+commit these five deletions explicitly:
+  src/components/chats-archive/templates/ChannelIndexPage.tsx
+  src/components/chats-archive/templates/IndexPage.tsx
+  src/components/chats-archive/templates/VideoArchive.tsx
+  src/components/chats-archive/templates/VideoCard.tsx
+  src/components/chats-archive/templates/format.tsx
 with message "refactor(chats-archive): delete tsx templates directory"
 ```
 
-Concretely:
-
-```bash
-git add -A src/components/chats-archive/templates
-git status   # confirm 5 deletions, nothing else
-git commit -m "refactor(chats-archive): delete tsx templates directory"
-```
-
-The `git add -A` is acceptable here because it is scoped to one directory
-that is being fully removed; this is exactly the "narrow path" allowance and
-not the blanket `-A` the global rule forbids.
+`git-master` stages the deletions by exact path
+(`git add <path>` works for deletions too). The empty
+`src/components/chats-archive/templates/` directory disappears automatically
+once the last tracked file is removed, so no separate directory-removal
+step is needed.
 
 ---
 
@@ -990,16 +991,13 @@ preserved, last key has no trailing comma):
 
 Run: `npx tsc --noEmit -p tsconfig.json`
 
-Expected: clean exit.
+Expected: clean exit. `tsc` is JSONC-aware (it natively parses
+`tsconfig.json` with comments and trailing commas), and a malformed config
+makes `tsc` exit non-zero with a clear error. No separate strict-JSON check
+is needed — using `JSON.parse` here would reject any JSONC trailing comma
+that is otherwise valid in a tsconfig.
 
-- [ ] **Step 3: Verify JSON validity**
-
-Run: `node -e "JSON.parse(require('node:fs').readFileSync('tsconfig.json','utf8'))"`
-
-Expected: no output, exit 0. (This is not a print-only command — it actually
-parses the file and fails non-zero if the JSON is malformed.)
-
-- [ ] **Step 4: Commit via git-master**
+- [ ] **Step 3: Commit via git-master**
 
 Invoke the `git-master` skill with:
 
@@ -1026,7 +1024,12 @@ go.
 
 - [ ] **Step 1: Pre-check that nothing in src/ still imports hono**
 
-Run: `grep -rn "from \"hono\|from 'hono\|require.*hono" src/`
+Run (the alternation covers `from "hono…"`, `from 'hono…'`,
+side-effect `import "hono…"` / `import 'hono…'`, and `require("hono…")`):
+
+```bash
+grep -rnE 'from ["'\'']hono|import ["'\'']hono|require\([^)]*hono' src/
+```
 
 Expected: empty output. If any match exists, do not proceed — return to
 Task 1/2/3 and resolve.
@@ -1096,7 +1099,7 @@ Run all three checks:
 
 ```bash
 grep -rn "chats-archive/templates" src/ docs/superpowers/specs docs/superpowers/plans
-grep -rn "from \"hono\|from 'hono" src/
+grep -rnE 'from ["'\'']hono|import ["'\'']hono|require\([^)]*hono' src/
 find src -name "*.tsx"
 ```
 
@@ -1109,10 +1112,15 @@ Expected:
 
 - [ ] **Step 2: Confirm hono is uninstalled**
 
-Run: `npm ls hono 2>&1 | head -5`
+Run: `npm ls hono 2>&1 | head -5 || true`
 
-Expected: contains `(empty)` or `-- (empty)` — i.e., hono is not in the
-dependency tree.
+Note: `npm ls hono` exits non-zero (code 1) when the package is not in the
+dependency tree — that is the expected outcome here, not a failure. The
+`|| true` keeps the step usable under shells with strict-error settings.
+What matters is the stdout content.
+
+Expected stdout: contains `(empty)` or `-- (empty)` — i.e., hono is not in
+the dependency tree.
 
 - [ ] **Step 3: Full build, lint, test**
 
@@ -1128,12 +1136,18 @@ Expected: all four commands exit 0. `npm run build` regenerates `dist/`;
 
 - [ ] **Step 4: Smoke run against a real test video (manual)**
 
-This step requires a local Mongo + a known videoId. If the operator does not
-have one, document the gap in the PR description and skip this step.
+This step requires a local Mongo (with the Honeybee replica set initiated)
+and a populated `videos` collection. If the operator does not have one,
+document the gap in the PR description and skip this step.
+
+The chats-archive CLI entry (`src/components/chats-archive.ts`'s
+`isMain(import.meta)` block) reads `MONGO_URI` and asserts it before
+connecting, so both `MONGO_URI` and `CHAT_ARCHIVE_DIR` must be set:
 
 ```bash
-# Pick a known videoId from the local Mongo. Then:
-CHAT_ARCHIVE_DIR=/tmp/hb-archive-smoke node dist/components/chats-archive.js
+MONGO_URI="mongodb://localhost:27017/honeybee?replicaSet=rs0" \
+CHAT_ARCHIVE_DIR=/tmp/hb-archive-smoke \
+  node dist/components/chats-archive.js
 ```
 
 Then inspect `/tmp/hb-archive-smoke/`:
@@ -1151,14 +1165,45 @@ Expected:
 - `data/index.json` exists.
 - `data/channels/<channelId>.json` exists for at least one channel.
 - `data/videos/<videoId>.meta.json` exists for every video that was
-  processed (including empty videos — verify by picking one with zero
-  archived rows from Mongo and confirming meta.json is present but jsonl
-  is absent).
+  processed.
 - `find … -name "*.html"` returns empty (no new HTML written by this run).
 
-If the smoke run cannot be executed, document in the PR description that
-verification stopped at Step 3 (build + lint + format + jest) and that
-end-to-end smoke is deferred to staging.
+Then verify the empty-video case by finding a videoId that produced a
+`meta.json` but no `.jsonl`:
+
+```bash
+comm -23 \
+  <(ls /tmp/hb-archive-smoke/data/videos/*.meta.json 2>/dev/null \
+      | xargs -n1 basename | sed 's/\.meta\.json$//' | sort) \
+  <(ls /tmp/hb-archive-smoke/data/videos/*.jsonl 2>/dev/null \
+      | xargs -n1 basename | sed 's/\.jsonl$//' | sort) \
+  | head -5
+```
+
+Expected: at least one videoId printed (if any of the videos processed by
+the run happened to have zero archivable rows). For each such videoId,
+confirm it is genuinely empty by querying Mongo:
+
+```bash
+mongosh "$MONGO_URI" --quiet --eval '
+  const id = "<videoId-from-comm-output>";
+  for (const c of ["chats","superchats","superstickers","memberships",
+                   "membershipgifts","membershipgiftpurchases",
+                   "milestones","polls","raids"]) {
+    print(c, db.getCollection(c).countDocuments({ originVideoId: id }));
+  }
+'
+```
+
+Expected: every collection prints `0`. The pre-existing
+`meta.json`-only-no-`jsonl` pair is then the §4.4 behavior in action.
+
+If no empty video happened to be in this smoke run's set, this sub-check is
+inconclusive — note it in the PR description rather than blocking.
+
+If the entire smoke run cannot be executed, document in the PR description
+that verification stopped at Step 3 (build + lint + format + jest) and
+that end-to-end smoke is deferred to staging.
 
 - [ ] **Step 5: No commit — verification only**
 
