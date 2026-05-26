@@ -174,9 +174,22 @@ Currently, when `archiveVideo` finds zero rows (`no === 0`), it removes both
 After this change:
 
 - Skip writing `.jsonl.tmp` (no file is renamed into place).
-- Still build `meta` exactly as in the non-empty branch by calling
-  `buildVideoSummary(video)` and merging in `archiveVersion: 2` plus a
-  zero-aggregate `aggregates` object:
+- Build `meta` exactly the same way as in the non-empty branch — no special
+  case, no override:
+  - `buildVideoSummary(video)` for the base fields.
+  - `archiveVersion: 2`.
+  - `aggregates`: the per-document counter object (whose fields are all `0`
+    because the loop never ran and `bumpAggregate` was never called) plus
+    `currencyTable: currencies` and `jpyTotal: jpySum` using **whatever the
+    pre-loop VideoStats query returned**. The spec does NOT force these to
+    empty/zero; it uses the same expressions as the non-empty branch. In
+    practice, a video with zero archived rows is overwhelmingly likely to
+    have an empty `currencies` array as well, but if VideoStats somehow has
+    SuperChat/SuperSticker entries while the chat cursors return zero rows
+    (e.g. data inconsistency), those values are preserved in the meta.json,
+    not silently zeroed.
+
+  The resulting object for a typical empty video therefore looks like:
 
   ```jsonc
   {
@@ -193,8 +206,8 @@ After this change:
       "milestoneCount": 0,
       "pollCount": 0,
       "raidCount": 0,
-      "currencyTable": [],
-      "jpyTotal": 0,
+      "currencyTable": [], // = currencies; empty in the common case
+      "jpyTotal": 0, // = jpySum; 0 in the common case
     },
   }
   ```
@@ -204,6 +217,12 @@ After this change:
 - The post-success `hbStats.chatsArchiveVersion` update (only in non-`isDirect`
   runs and only when `< 2`) still applies — an empty video is still a
   successfully processed video.
+
+Implementation consequence: the meta-building code path is shared between
+the empty and non-empty branches; both call the same `meta = { ... }`
+construction with the same `currencies` / `jpySum` references. The empty
+branch differs from the non-empty branch only in (a) skipping the `.jsonl`
+rename and (b) not having any data in `.jsonl.tmp` to discard.
 
 Consumer contract: vchat-web treats "meta.json present, jsonl absent" as
 "video was processed but produced no rows". This is a strictly additive
