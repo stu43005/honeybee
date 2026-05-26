@@ -19,6 +19,9 @@ In scope:
   intact, with one behavioral change to the empty-video case (see §4.4).
 - Inline the small number of types/helpers that currently live in TSX files
   but are still required by the JSON output path.
+- Remove the now-unused JSX toolchain: drop the `hono` runtime dependency from
+  `package.json`, and remove the `jsx` / `jsxImportSource` keys from
+  `tsconfig.json`. See §4.6.
 
 Out of scope:
 
@@ -242,6 +245,40 @@ No changes. Specifically:
   `genIndexFile({ isDirect: true })`. It remains the "regenerate all JSON
   data from scratch" command.
 
+### 4.6 JSX toolchain removal (`package.json`, `tsconfig.json`)
+
+Three template files import `raw` from `hono/html`
+(`IndexPage.tsx`, `VideoArchive.tsx`, `ChannelIndexPage.tsx`), and the remaining
+two `.tsx` files use the JSX syntax enabled by the project-wide tsconfig
+settings. Once §3 deletes the `templates/` directory there will be zero
+`.tsx` files and zero `hono` imports in `src/`. The supporting toolchain
+configuration becomes dead weight and is removed in the same change:
+
+- **`package.json`** — remove the `"hono": "^4.12.16"` line from
+  `dependencies`. No other code path in the repo imports `hono`
+  (verified by `grep -rn "from .hono" src/`). After removal, `npm install`
+  prunes the package from `node_modules`.
+- **`tsconfig.json`** — delete the two JSX-related keys from
+  `compilerOptions`:
+  - `"jsx": "react-jsx"`
+  - `"jsxImportSource": "hono/jsx"`
+
+  With no `.tsx` files remaining and no JSX syntax anywhere in `src/`, these
+  keys serve no purpose. TypeScript's default (no `jsx` key) is correct for
+  a pure-TS Node project.
+
+Things explicitly NOT touched in this section:
+
+- `package-lock.json` is regenerated automatically by `npm install` after
+  the `package.json` edit; the plan describes the resulting state, not the
+  literal lockfile diff.
+- `jest.config.mjs` — the existing `tsx?` / `ts?(x)` patterns harmlessly
+  match no files once `.tsx` is gone; left as-is to avoid churn.
+- `eslint.config.js` has no JSX-specific configuration (verified by `grep`),
+  so it requires no change.
+- No `devDependencies` are removed: the project still uses `ts-jest`,
+  `typescript`, etc. unchanged.
+
 ## 5. Things explicitly not changing
 
 - `buildVideoSummary` — already pure data, no JSX.
@@ -277,9 +314,12 @@ No changes. Specifically:
 
 The plan deriving from this spec will verify the change with:
 
-- TypeScript build passes after removing `templates/` (no stale imports).
+- TypeScript build passes after removing `templates/` and the JSX toolchain
+  (no stale imports, no missing JSX config errors).
 - ESLint passes.
 - Jest unit tests pass.
+- `npm ls hono` reports the package is no longer installed.
+- `grep -rn "hono" src/` returns no matches in source files.
 - A manual / scripted invocation of `archiveVideo` against a real test video
   produces only `data/videos/{videoId}.jsonl` and
   `data/videos/{videoId}.meta.json`, and produces only meta.json (no jsonl)
