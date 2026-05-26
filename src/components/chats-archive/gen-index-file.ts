@@ -1,5 +1,4 @@
 import assert from "node:assert";
-import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import moment from "moment";
@@ -9,22 +8,12 @@ import VideoModel from "../../models/Video.js";
 import { archiveVideo } from "./archive-video.js";
 import { genChannelIndexFile } from "./gen-channel-index-file.js";
 import { recalcVideoHbStats } from "../video-stats.js";
-import { renderIndexShell } from "./templates/IndexPage.js";
-import { renderVideoCard } from "./templates/VideoCard.js";
 import { buildVideoSummary } from "./build-video-summary.js";
 
 export async function genIndexFile({
   isDirect = false,
 }: { isDirect?: boolean } = {}): Promise<void> {
   assert(CHAT_ARCHIVE_DIR, "CHAT_ARCHIVE_DIR is not defined.");
-  const outputFilePath = path.join(CHAT_ARCHIVE_DIR, "index.html");
-  await fsp.mkdir(path.dirname(outputFilePath), { recursive: true });
-  const ws = fs.createWriteStream(`${outputFilePath}.tmp`, {
-    encoding: "utf-8",
-  });
-
-  const [head, between, tail] = await renderIndexShell();
-  ws.write(head);
 
   const channelIds = new Set<string>();
   const liveSummaries: Array<Record<string, unknown>> = [];
@@ -48,19 +37,9 @@ export async function genIndexFile({
       if (updated) video = updated;
     }
     channelIds.add(video.channelId);
-    ws.write(
-      await renderVideoCard({
-        video,
-        channel: await video.getChannel(),
-        basePath: "",
-        hbStats: video.hbStats,
-      })
-    );
     liveSummaries.push(await buildVideoSummary(video));
     if (isDirect) await archiveVideo(video.id, { isDirect: true });
   }
-
-  ws.write(between);
 
   for await (let video of VideoModel.findRecentlyEndedVideos(48)
     .sort({ availableAt: -1 })
@@ -78,19 +57,9 @@ export async function genIndexFile({
       if (updated) video = updated;
     }
     channelIds.add(video.channelId);
-    ws.write(
-      await renderVideoCard({
-        video,
-        channel: await video.getChannel(),
-        basePath: "",
-        hbStats: video.hbStats,
-      })
-    );
     pastSummaries.push(await buildVideoSummary(video));
     if (isDirect) await archiveVideo(video.id, { isDirect: true });
   }
-
-  ws.end(tail);
 
   const dataIndexPath = path.join(CHAT_ARCHIVE_DIR, "data", "index.json");
   await fsp.mkdir(path.dirname(dataIndexPath), { recursive: true });
@@ -100,8 +69,6 @@ export async function genIndexFile({
     JSON.stringify({ live: liveSummaries, past: pastSummaries }) + "\n",
     "utf-8"
   );
-
-  await fsp.rename(`${outputFilePath}.tmp`, outputFilePath);
   await fsp.rename(`${dataIndexPath}.tmp`, dataIndexPath);
 
   for (const channelId of channelIds) {
