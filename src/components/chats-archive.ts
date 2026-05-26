@@ -65,7 +65,7 @@ async function archiveAllChats(job?: Job) {
 
   for (const { videoId, statsId } of stats) {
     try {
-      await archiveVideo(videoId, { job });
+      await archiveVideo(videoId);
       await VideoStatsModel.setFlag(
         statsId,
         VideoStatsFlags.ChatsArchiveProcessed

@@ -1,5 +1,4 @@
 import { type DocumentType } from "@typegoose/typegoose";
-import type { Job } from "agenda";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -99,7 +98,7 @@ async function* multiCursorOrderedPeek<T extends DocumentType<object>>(
 
 export async function archiveVideo(
   videoId: string,
-  { job, isDirect = false }: { job?: Job; isDirect?: boolean } = {}
+  { isDirect = false }: { isDirect?: boolean } = {}
 ): Promise<void> {
   const video = await VideoModel.findByVideoId(videoId).setOptions({
     readPreference: "secondaryPreferred",
@@ -261,8 +260,6 @@ export async function archiveVideo(
       jsonlWs.write(JSON.stringify(row) + "\n");
       bumpAggregate(aggregates, doc);
     }
-
-    await job?.touch();
   }
 
   ws.end(tail);
