@@ -3,7 +3,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { finished } from "node:stream/promises";
-import type { Cursor } from "mongoose";
+import type { Cursor, mongo } from "mongoose";
 import assert from "node:assert";
 import { CHAT_ARCHIVE_DIR } from "../../constants.js";
 import { MessageType, VideoStatsType } from "../../interfaces.js";
@@ -25,23 +25,48 @@ import SuperStickerModel, {
 import VideoModel, { type Video } from "../../models/Video.js";
 import VideoStatsModel from "../../models/VideoStats.js";
 import { setIfDefine } from "../../util.js";
-import { getTimestamp, getVideoPath } from "./templates/format.js";
-import {
-  renderChatRow,
-  renderVideoArchiveShell,
-  type ChatRowDoc,
-  type CurrencyAgg,
-} from "./templates/VideoArchive.js";
 import { buildVideoSummary } from "./build-video-summary.js";
 
+export type ChatRowDoc = DocumentType<
+  | Chat
+  | SuperChat
+  | SuperSticker
+  | Membership
+  | MembershipGift
+  | MembershipGiftPurchase
+  | Milestone
+  | Poll
+  | Raid
+>;
+
+export interface CurrencyAgg {
+  currency: string;
+  amount: number;
+  jpyAmount: number;
+}
+
+function getTimestamp(current: DocumentType<object>): Date;
+function getTimestamp(current: DocumentType<object> | null): Date | null;
+function getTimestamp(current: DocumentType<object> | null): Date | null {
+  if (!current) return null;
+  if ("timestamp" in current && current.timestamp instanceof Date) {
+    return current.timestamp;
+  }
+  if ("updatedAt" in current && current.updatedAt instanceof Date) {
+    return current.updatedAt;
+  }
+  if ("createdAt" in current && current.createdAt instanceof Date) {
+    return current.createdAt;
+  }
+  return (current._id as mongo.BSON.ObjectId).getTimestamp();
+}
+
 function getOutputFilePaths(video: DocumentType<Video>): {
-  html: string;
   jsonl: string;
   meta: string;
 } {
   assert(CHAT_ARCHIVE_DIR, "CHAT_ARCHIVE_DIR is not defined.");
   return {
-    html: path.join(CHAT_ARCHIVE_DIR, getVideoPath(video)),
     jsonl: path.join(CHAT_ARCHIVE_DIR, "data", "videos", `${video.id}.jsonl`),
     meta: path.join(
       CHAT_ARCHIVE_DIR,
@@ -52,9 +77,6 @@ function getOutputFilePaths(video: DocumentType<Video>): {
   };
 }
 
-/**
- * Merge multiple cursors ordered by timestamp field.
- */
 async function* multiCursorOrderedPeek<T extends DocumentType<object>>(
   ...cursors: Array<Cursor<T, any>>
 ) {
@@ -142,34 +164,18 @@ export async function archiveVideo(
     0
   );
 
-  const {
-    html: outputFilePath,
-    jsonl: jsonlPath,
-    meta: metaPath,
-  } = getOutputFilePaths(video);
+  const { jsonl: jsonlPath, meta: metaPath } = getOutputFilePaths(video);
 
-  await fsp.mkdir(path.dirname(outputFilePath), { recursive: true });
   await fsp.mkdir(path.dirname(jsonlPath), { recursive: true });
 
   await Promise.all([
-    fsp.rm(`${outputFilePath}.tmp`, { force: true }),
     fsp.rm(`${jsonlPath}.tmp`, { force: true }),
     fsp.rm(`${metaPath}.tmp`, { force: true }),
   ]);
 
-  const ws = fs.createWriteStream(`${outputFilePath}.tmp`, {
-    encoding: "utf-8",
-  });
   const jsonlWs = fs.createWriteStream(`${jsonlPath}.tmp`, {
     encoding: "utf-8",
   });
-
-  const [head, tail] = await renderVideoArchiveShell({
-    video,
-    currencies,
-    jpySum,
-  });
-  ws.write(head);
 
   const ownerChatCursor = ChatModel.find({
     originVideoId: videoId,
@@ -253,8 +259,6 @@ export async function archiveVideo(
     raidCursor
   )) {
     no++;
-    ws.write(await renderChatRow({ doc, no, video }));
-
     const row = buildJsonlRow(doc, videoId);
     if (row) {
       jsonlWs.write(JSON.stringify(row) + "\n");
@@ -262,17 +266,8 @@ export async function archiveVideo(
     }
   }
 
-  ws.end(tail);
   jsonlWs.end();
-  await Promise.all([finished(ws), finished(jsonlWs)]);
-
-  if (no === 0) {
-    await Promise.all([
-      fsp.rm(`${outputFilePath}.tmp`, { force: true }),
-      fsp.rm(`${jsonlPath}.tmp`, { force: true }),
-    ]);
-    return;
-  }
+  await finished(jsonlWs);
 
   const meta = {
     ...(await buildVideoSummary(video)),
@@ -286,10 +281,14 @@ export async function archiveVideo(
 
   await fsp.writeFile(`${metaPath}.tmp`, JSON.stringify(meta) + "\n", "utf-8");
 
-  // Rename in three steps so SPA, which fetches meta.json first, never sees
-  // meta.json without its sibling .jsonl in place at the final name.
-  await fsp.rename(`${outputFilePath}.tmp`, outputFilePath);
-  await fsp.rename(`${jsonlPath}.tmp`, jsonlPath);
+  // Rename jsonl before meta so a consumer fetching meta.json never sees
+  // meta.json without its sibling .jsonl in place at the final name. For
+  // empty videos the .jsonl tmp is discarded instead.
+  if (no > 0) {
+    await fsp.rename(`${jsonlPath}.tmp`, jsonlPath);
+  } else {
+    await fsp.rm(`${jsonlPath}.tmp`, { force: true });
+  }
   await fsp.rename(`${metaPath}.tmp`, metaPath);
 
   if (!isDirect && (video.hbStats?.chatsArchiveVersion ?? 0) < 2) {
