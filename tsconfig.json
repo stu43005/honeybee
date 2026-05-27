@@ -14,8 +14,6 @@
     "emitDecoratorMetadata": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "typeRoots": ["./node_modules/@types", "./src/types"],
-    "jsx": "react-jsx",
-    "jsxImportSource": "hono/jsx"
+    "typeRoots": ["./node_modules/@types", "./src/types"]
   }
 }
