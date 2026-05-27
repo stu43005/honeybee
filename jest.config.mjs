@@ -3,7 +3,7 @@ const config = {
   preset: "ts-jest/presets/default-esm",
   testEnvironment: "node",
   testMatch: ["**/tests/**/*.ts?(x)", "**/?(*.)+(spec|test).ts?(x)"],
-  testPathIgnorePatterns: ["dist"],
+  testPathIgnorePatterns: ["dist", "\\.claude/worktrees/"],
   extensionsToTreatAsEsm: [".ts"],
   moduleNameMapper: {
     "^(\\.{1,2}/.*)\\.js$": "$1",
