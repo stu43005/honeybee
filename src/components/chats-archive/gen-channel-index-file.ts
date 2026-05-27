@@ -1,5 +1,4 @@
 import assert from "node:assert";
-import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { CHAT_ARCHIVE_DIR } from "../../constants.js";
@@ -7,8 +6,6 @@ import ChannelModel from "../../models/Channel.js";
 import VideoModel from "../../models/Video.js";
 import { archiveVideo } from "./archive-video.js";
 import { recalcVideoHbStats } from "../video-stats.js";
-import { renderChannelIndexShell } from "./templates/ChannelIndexPage.js";
-import { renderVideoCard } from "./templates/VideoCard.js";
 import { buildVideoSummary } from "./build-video-summary.js";
 
 export async function genChannelIndexFile(
@@ -16,18 +13,9 @@ export async function genChannelIndexFile(
   { isDirect = false }: { isDirect?: boolean } = {}
 ): Promise<void> {
   assert(CHAT_ARCHIVE_DIR, "CHAT_ARCHIVE_DIR is not defined.");
-  const outputFilePath = path.join(CHAT_ARCHIVE_DIR, channelId, "index.html");
-  await fsp.mkdir(path.dirname(outputFilePath), { recursive: true });
 
   const channel = await ChannelModel.findByChannelId(channelId);
   if (!channel) return;
-
-  const ws = fs.createWriteStream(`${outputFilePath}.tmp`, {
-    encoding: "utf-8",
-  });
-
-  const [head, tail] = await renderChannelIndexShell({ channel });
-  ws.write(head);
 
   let count = 0;
   const summaries: Array<Record<string, unknown>> = [];
@@ -44,20 +32,10 @@ export async function genChannelIndexFile(
       const updated = await VideoModel.findByVideoId(video.id);
       if (updated) video = updated;
     }
-    ws.write(
-      await renderVideoCard({
-        video,
-        channel: await video.getChannel(),
-        basePath: "../",
-        hbStats: video.hbStats,
-      })
-    );
     summaries.push(await buildVideoSummary(video, { includeChannel: false }));
     if (isDirect) await archiveVideo(video.id, { isDirect: true });
     count++;
   }
-
-  ws.end(tail);
 
   const dataChannelPath = path.join(
     CHAT_ARCHIVE_DIR,
@@ -68,10 +46,7 @@ export async function genChannelIndexFile(
   await fsp.mkdir(path.dirname(dataChannelPath), { recursive: true });
 
   if (count === 0) {
-    await Promise.all([
-      fsp.rm(`${outputFilePath}.tmp`, { force: true }),
-      fsp.rm(`${dataChannelPath}.tmp`, { force: true }),
-    ]);
+    await fsp.rm(`${dataChannelPath}.tmp`, { force: true });
     return;
   }
 
@@ -89,7 +64,5 @@ export async function genChannelIndexFile(
     JSON.stringify(channelJson) + "\n",
     "utf-8"
   );
-
-  await fsp.rename(`${outputFilePath}.tmp`, outputFilePath);
   await fsp.rename(`${dataChannelPath}.tmp`, dataChannelPath);
 }
