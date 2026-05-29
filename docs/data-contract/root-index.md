@@ -36,10 +36,10 @@ interface VideoSummaryWithChannel {
     name: string;
     avatarUrl?: string;
   };
-  status: string; // holodex VideoStatus
-  duration: number; // seconds
+  status: string; // holodex VideoStatus: "new" | "upcoming" | "live" | "past" | "missing"
+  duration: number; // seconds; 0 for live/upcoming streams (true duration not yet known)
   availableAt: string; // ISO 8601
-  archiveVersion: number; // reflects the version of the corresponding video-meta.json (informational)
+  archiveVersion: number; // archived data version for this video; 1 = legacy / not yet re-archived by the v2 writer, 2 = processed by the current archiver
   stats: {
     superChatTotalJpy: number;
     memberCount: number;
@@ -111,11 +111,12 @@ const version = (json.version ?? 1) as number;
   `stats.superChatTotalJpy`, `stats.memberCount`, `stats.giftCount`.
 - **May be absent per video summary:** `channel.avatarUrl`,
   `scheduledStart`, `actualStart`, `actualEnd`, `publishedAt`.
-- **Embedded `archiveVersion`:** the value mirrors the
-  `video-meta.json` version of the corresponding video. It is informational
-  (helps the reader decide which `video-meta` schema to apply when
-  navigating to the per-video file) and is **not** the root-index's own
-  version.
+- **Embedded `archiveVersion`:** the corresponding video's archived data
+  version. Values currently observed in production are `1` (legacy,
+  pre-v2 archive on S3 with the old shape; will not be re-archived) and
+  `2` (current v2 archive). Use this to decide which `video-meta.json`
+  schema to apply when navigating to the per-video file. This is **not**
+  the root-index's own version.
 - **Ordering:** `live` is sorted ascending by `availableAt`; `past` is
   sorted descending by `availableAt`.
 - **Regeneration cadence:** root-index is regenerated on a schedule by
