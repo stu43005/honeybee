@@ -139,9 +139,12 @@ revision counter that resets to `r0` whenever the version bumps.
 
 In file-type documents, the prose says "version 2", "revision r1" (matching
 the identifier used in section headers and history tables), or
-"version 2, revision r2" (often abbreviated "v2 r2"). The names
-`archiveVersion` and `version` (as JSON field names) are reserved for the
-JSON-on-disk and must not be used as the document's prose vocabulary.
+"version 2, revision r2" (often abbreviated "v2 r2"). The `rN` token is
+permitted only as a label inside section headers, the revision-history
+table's `Revision` column, and the "vN rM" abbreviation; it is not used as
+a bare noun in narrative prose (write "revision r1", not just "r1"). The
+names `archiveVersion` and `version` (as JSON field names) are reserved for
+the JSON-on-disk and must not be used as the document's prose vocabulary.
 
 ### 3.2 Old files are never rewritten
 
@@ -600,10 +603,14 @@ exists. Individual file-type documents (`video-meta.md`,
 `video-chats.md`, `root-index.md`, `channel-index.md`) do not mention it.
 
 Workflow documents — this spec, future specs that change the contract,
-and the reviewer checklist — may reference `Video.hbStats.chatsArchiveVersion`
-when describing writer obligations during a version bump (see §4.4
-Phase 2b). The boundary that excludes the field is the file-type markdown
-under `docs/data-contract/`, not all documentation in the honeybee repo.
+and the reviewer checklist (including its verbatim copy in
+`docs/data-contract/README.md`) — may reference
+`Video.hbStats.chatsArchiveVersion` when describing writer obligations
+during a version bump (see §4.4 Phase 2b). The boundary that excludes the
+field is the four file-type markdown documents (`video-meta.md`,
+`video-chats.md`, `root-index.md`, `channel-index.md`) under
+`docs/data-contract/`, not `README.md` and not other documentation in the
+honeybee repo.
 
 ---
 
@@ -623,10 +630,10 @@ cross-reference this spec.
 - [ ] Research subagent report is present in the honeybee PR confirming the
       data is obtainable from YouTube / Holodex / Masterchat. The report may
       be waived only when the PR introduces **no new field that requires a
-      data source** — i.e. the change is one of: a field removal, a rename
-      of a field whose value comes from a source already used by an existing
-      field, a pure documentation correction of an existing field, or the
-      initial bootstrap of an existing writer's output (§8). The waiver must
+      data source** — i.e. the change is one of: a field removal, a pure
+      rename of an existing field with no change to the value's source or
+      semantic, a pure documentation correction of an existing field, or
+      the initial bootstrap of an existing writer's output (§8). The waiver must
       be stated explicitly in the PR description with one sentence naming
       which of these categories applies; the reviewer rejects implicit
       waivers.
@@ -741,7 +748,8 @@ For the Phase 2b PR:
   `data-contract`, `contract md`, `contract document`, `contract spec`,
   or any paraphrase whose intent is to direct the reader to the markdown
   contract (examples: "see the contract", "per the contract spec", "as
-  documented in docs/"). Writer source must be self-explanatory inline.
+  documented in docs/", "refer to the data-contract folder"). Writer
+  source must be self-explanatory inline.
 - Any frozen version chapter (per §5.4) receives a change that is not
   either a pure typo / formatting fix or a `Clarification:` sentence that
   introduces no new field name, type, optionality, enum value, unit,
