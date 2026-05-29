@@ -34,7 +34,7 @@ interface VideoSummaryNoChannel {
   id: string;
   title: string;
   status: string; // holodex VideoStatus: "new" | "upcoming" | "live" | "past" | "missing"
-  duration: number; // seconds; 0 for live/upcoming streams (true duration not yet known)
+  duration: number; // seconds; 0 for new/live/upcoming streams (true duration not yet known)
   availableAt: string; // ISO 8601
   archiveVersion: number; // archived data version for this video; 1 = legacy / not yet re-archived by the v2 writer, 2 = processed by the current archiver
   stats: {
@@ -42,10 +42,10 @@ interface VideoSummaryNoChannel {
     memberCount: number;
     giftCount: number;
   };
-  scheduledStart?: string;
-  actualStart?: string;
-  actualEnd?: string;
-  publishedAt?: string;
+  scheduledStart?: string; // ISO 8601
+  actualStart?: string; // ISO 8601
+  actualEnd?: string; // ISO 8601
+  publishedAt?: string; // ISO 8601
 }
 ```
 
@@ -83,10 +83,14 @@ const version = (json.version ?? 1) as number;
 ### Reader guidance
 
 - **Version detection:** absence of a `version` key implies version 1.
-- **File absence:** the file is **not written** when the channel has
-  zero videos in the last 100 (post-archive). Readers must tolerate a
-  404 / missing key in S3 for any given channelId and treat it as "no
-  archived content yet for this channel".
+- **File absence:** the file is **not written** when the channel has no
+  non-uploaded streams in the database (the writer's query filter is
+  `uploadedVideo !== true`). Readers must tolerate a 404 / missing key
+  in S3 for any given channelId and treat it as "no archived content
+  yet for this channel". Note: if a previously-created file exists from
+  an earlier writer run, it is not automatically deleted when the channel
+  later has no qualifying videos — readers should not rely on file
+  absence as proof a channel has no content.
 - **Always present at root:** `id`, `name`, `videos` (non-empty when the
   file exists).
 - **May be absent at root:** `avatarUrl`.

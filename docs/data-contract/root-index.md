@@ -37,7 +37,7 @@ interface VideoSummaryWithChannel {
     avatarUrl?: string;
   };
   status: string; // holodex VideoStatus: "new" | "upcoming" | "live" | "past" | "missing"
-  duration: number; // seconds; 0 for live/upcoming streams (true duration not yet known)
+  duration: number; // seconds; 0 for new/live/upcoming streams (true duration not yet known)
   availableAt: string; // ISO 8601
   archiveVersion: number; // archived data version for this video; 1 = legacy / not yet re-archived by the v2 writer, 2 = processed by the current archiver
   stats: {
