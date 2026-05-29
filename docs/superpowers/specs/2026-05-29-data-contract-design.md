@@ -137,8 +137,9 @@ effect on the version of `root-index` or any other file type. Each file type
 maintains its own monotonically increasing version sequence and its own
 revision counter that resets to `r0` whenever the version bumps.
 
-In file-type documents, the prose says "version 2", "revision 1", or
-"version 2, revision 2" (often abbreviated "v2 r2"). The names
+In file-type documents, the prose says "version 2", "revision r1" (matching
+the identifier used in section headers and history tables), or
+"version 2, revision r2" (often abbreviated "v2 r2"). The names
 `archiveVersion` and `version` (as JSON field names) are reserved for the
 JSON-on-disk and must not be used as the document's prose vocabulary.
 
@@ -179,6 +180,34 @@ Notes:
   two file types; the absence of the field implies version 1. Readers must
   use the defensive read
   `const version = (json.version ?? 1) as number;`.
+
+**Embedded per-video summaries inside `root-index` and `channel-index`:**
+Each entry under `index.live[]`, `index.past[]`, and `channel.videos[]` is a
+video summary produced by `buildVideoSummary`
+(`src/components/chats-archive/build-video-summary.ts`). That summary
+already carries its own `archiveVersion` field whose value mirrors
+`Video.hbStats.chatsArchiveVersion` for the corresponding video.
+
+The contract treats the embedded summary as follows:
+
+- The **shape** of the embedded summary object (which fields exist, their
+  types, optionality, units, ordering) is part of the `root-index` and
+  `channel-index` contracts respectively. Each index document fully
+  describes the shape of the summaries it embeds; it does not delegate the
+  shape to `video-meta`.
+- The **value** of `archiveVersion` inside each embedded summary is
+  informational: it tells the reader which version of the corresponding
+  `video-meta` file is on S3. The value is not interpreted as a version
+  marker for the embedded summary itself.
+- Therefore, adding an optional field to the embedded summary is an
+  **additive** change to `root-index` / `channel-index` (new revision).
+  Renaming, removing, or changing the type / semantic of an existing field
+  in the embedded summary is a **breaking** change to those file types
+  (version bump), independent of whatever `video-meta`'s own version does.
+- `video-meta` may bump (additive or breaking) without affecting
+  `root-index` / `channel-index` so long as the embedded summary's shape
+  stays valid; and conversely `root-index` / `channel-index` may bump
+  without touching `video-meta`.
 
 ### 3.4 What counts as a breaking change
 
@@ -222,7 +251,7 @@ contain files at multiple versions of the same file type. The reader's
 guidance is:
 
 - For `video-meta` and `video-chats`: any version that the contract has ever
-  documented (and not retracted under §6.3) may be present. The reader must
+  documented (and not retracted under §4.5) may be present. The reader must
   branch on `archiveVersion` and handle every documented version.
 - For `root-index` and `channel-index`: at most two versions may coexist
   during a deployment window (the previous one and the current one).
@@ -324,6 +353,13 @@ honeybee issue with a comment in the following form:
 
 > vchat-web reader for `{file-type}` version {N} deployed at
 > `{vchat-web-prod-version}`. Ready to flip writer.
+
+`{vchat-web-prod-version}` is the vchat-web git commit SHA (full 40-char or
+7-char prefix) that is currently running in production. The reviewer
+checklist (§7.3) requires that this looks like a hex SHA and that the
+issue comment is authored by a vchat-web maintainer; verifying the SHA is
+reachable from vchat-web `main` is the vchat-web team's responsibility, not
+the honeybee reviewer's.
 
 **Phase 2b — "writer flip" PR.** The honeybee maintainer opens a second PR
 that:
@@ -428,7 +464,10 @@ order, and section order are fixed.
 # {File type display name} (`{file path pattern}`)
 
 **File path pattern:** `{exact glob, e.g. data/videos/{videoId}.meta.json}`
-**Companion file:** `{path or "none"}` — same version when applicable.
+**Companion file:** `{path or "none"}`. When a companion exists, its
+version is always identical to this file's version; readers determine the
+version of the file with no JSON version field by reading the companion's
+version field.
 **Writer:** `{relative path to writer source file}`
 **Version field in JSON:** `{exact field name in the JSON, or "none — version comes from companion file"}`
 **Current writer emits:** version {N}, revision r{M}
@@ -515,9 +554,23 @@ A version chapter is frozen once any of:
 - Phase 2b has merged (so writer has started emitting that version), or
 - Any file at that version has been produced on S3.
 
-Frozen chapters may receive corrections only for: typographical mistakes,
-clarifications of pre-existing prose that do not change semantics. They may
-not receive new revisions and may not be removed.
+Frozen chapters may receive corrections only when the diff falls into one
+of two narrowly-defined categories:
+
+1. **Typo / formatting fix.** Pure typographical, grammatical, or markdown
+   formatting changes. No word that names a field, type, value, unit, or
+   ordering is altered, added, or removed.
+2. **Clarification sentence.** A new sentence that begins literally with
+   the word `Clarification:` may be added to a Reader guidance bullet or
+   to a revision subsection's prose. The clarification must not introduce
+   any new field name, change an existing type or optionality marker,
+   change an enum value, alter a unit or encoding, or assert a new
+   ordering. The reviewer subagent confirms this by diff inspection.
+
+Any other change to a frozen chapter is a violation. To express something
+that would change the contract, create a new revision (additive change to
+the current version) or a new version (breaking change). Frozen chapters
+may not receive new revisions and may not be removed.
 
 ---
 
@@ -543,7 +596,14 @@ version on disk in each `meta.json` is authoritative.
 ### 6.3 Mention in the contract
 
 `README.md` carries a single paragraph (§5.2 item 7) acknowledging the field
-exists. Individual file-type documents do not mention it.
+exists. Individual file-type documents (`video-meta.md`,
+`video-chats.md`, `root-index.md`, `channel-index.md`) do not mention it.
+
+Workflow documents — this spec, future specs that change the contract,
+and the reviewer checklist — may reference `Video.hbStats.chatsArchiveVersion`
+when describing writer obligations during a version bump (see §4.4
+Phase 2b). The boundary that excludes the field is the file-type markdown
+under `docs/data-contract/`, not all documentation in the honeybee repo.
 
 ---
 
@@ -561,9 +621,21 @@ cross-reference this spec.
 ### 7.1 Common checks (apply to every contract change)
 
 - [ ] Research subagent report is present in the honeybee PR confirming the
-      data is obtainable from YouTube / Holodex / Masterchat.
+      data is obtainable from YouTube / Holodex / Masterchat. The report may
+      be waived only when the PR introduces **no new field that requires a
+      data source** — i.e. the change is one of: a field removal, a rename
+      of a field whose value comes from a source already used by an existing
+      field, a pure documentation correction of an existing field, or the
+      initial bootstrap of an existing writer's output (§8). The waiver must
+      be stated explicitly in the PR description with one sentence naming
+      which of these categories applies; the reviewer rejects implicit
+      waivers.
 - [ ] The file-type document being changed corresponds to the file path the
       spec is actually touching.
+- [ ] No frozen version chapter (per §5.4) is modified except by a pure
+      typo / formatting fix or by adding a sentence beginning with
+      `Clarification:` that satisfies §5.4 (no field name, type,
+      optionality, enum value, unit, encoding, or ordering altered).
 - [ ] The revision history table has one new row added; `Version`,
       `Revision`, `Date`, and `PR` columns all have concrete values (no `TBD`,
       no empty cells).
@@ -575,9 +647,16 @@ cross-reference this spec.
       merges.
 - [ ] Writer source code matches the contract's TypeScript interface
       (field names, optional `?:` markers, types, enum values). No drift.
-- [ ] No writer code, writer code comment, or commit message body
-      references `docs/data-contract` or any synonym (per honeybee `CLAUDE.md`
-      "Document reference leaks" rule).
+- [ ] No writer source file, JSDoc, inline comment, or commit message
+      body in honeybee references the contract documents — either by
+      literal string or by paraphrase. Reject on any of: the literal
+      strings `docs/data-contract`, `data-contract`, `contract md`,
+      `contract document`, `contract spec`; or any phrase whose intent is
+      to direct the reader to the markdown contract (examples: "see the
+      contract", "per the contract spec", "as documented in docs/", "refer
+      to the data-contract folder"). Writer source code must describe the
+      field shape inline (TypeScript types, runtime checks, brief JSDoc on
+      the value's meaning) without pointing at external markdown.
 - [ ] If the TypeScript interface and the JSON example disagree, the TS
       interface is the canonical form and the JSON example is fixed.
 
@@ -622,6 +701,11 @@ For the Phase 2b PR:
       successful write.
 - [ ] The previous version chapter is unchanged. Its `Reader guidance`
       section is intact.
+- [ ] The "reader deployed" comment on the tracking issue specifies a
+      `{vchat-web-prod-version}` value that looks like a git commit SHA
+      (hex, 7 or 40 chars) and is authored by a vchat-web maintainer.
+      Verifying the SHA is reachable from vchat-web `main` is the
+      vchat-web team's responsibility, not the reviewer's.
 
 ### 7.4 vchat-web draft checks (when the spec was triggered by Phase 0)
 
@@ -631,8 +715,13 @@ For the Phase 2b PR:
 - [ ] Every new field in the draft has all four columns filled: TS type,
       UX purpose, UI behaviour when absent, expected update frequency.
 - [ ] The draft makes an explicit additive / breaking preference, and the
-      honeybee PR's classification matches it (or the issue records why
-      honeybee disagreed).
+      honeybee PR's classification matches it. If the classifications
+      differ, the honeybee issue contains a comment authored by the
+      honeybee maintainer that (a) quotes the vchat-web draft's preference
+      verbatim, (b) states the honeybee classification, and (c) states the
+      technical reason by naming which §3.4 criterion is or is not
+      triggered. The reviewer rejects vague disagreement notes that lack
+      one of (a), (b), (c).
 
 ### 7.5 Anti-patterns (any match → reviewer must reject)
 
@@ -647,9 +736,16 @@ For the Phase 2b PR:
 - For `root-index` / `channel-index`, the version was bumped in the
   contract but the writer code does not actually write the new value into
   the JSON `version` field.
-- Any writer source file, comment, or commit message body contains the
-  string `docs/data-contract`, `data-contract`, `contract md`, or any
-  equivalent reference.
+- Any writer source file, JSDoc, inline comment, or commit message body
+  in honeybee contains the literal strings `docs/data-contract`,
+  `data-contract`, `contract md`, `contract document`, `contract spec`,
+  or any paraphrase whose intent is to direct the reader to the markdown
+  contract (examples: "see the contract", "per the contract spec", "as
+  documented in docs/"). Writer source must be self-explanatory inline.
+- Any frozen version chapter (per §5.4) receives a change that is not
+  either a pure typo / formatting fix or a `Clarification:` sentence that
+  introduces no new field name, type, optionality, enum value, unit,
+  encoding, or ordering.
 - A vchat-web spec / plan starts before the corresponding honeybee Phase
   2a PR has merged (for Path B) or Phase 2 PR has merged (for Path A).
 - A honeybee Phase 2b PR is opened without a prior "reader deployed"
