@@ -38,7 +38,7 @@ other document.
   two versions coexist during a deployment window.
 - Prose vocabulary: **"version"** and **"revision"**. The `rN` token
   appears only as a label inside section headers, the revision-history
-  `Revision` column, and the abbreviation "vN rM". Never as a bare noun
+  `Revision` column, and the abbreviation form (e.g. "v2 r1" in a section header). Never as a bare noun
   in narrative prose.
 
 ## 4. Breaking change checklist
@@ -81,34 +81,37 @@ vchat-web brainstorms a UI that wants them.
 **Path B — breaking (two PRs).** Used whenever a change matches the
 Breaking change checklist above.
 
-1. **Phase 2a — contract preview PR.** A honeybee PR that touches only
-   contract markdown: adds a brand-new version chapter to the affected
-   file-type document; leaves the previous version chapter unchanged.
-   Writer keeps emitting the previous version. After merge, the tracking
-   issue gets the label `data-contract:awaiting-reader` and the
-   maintainer posts the following comment verbatim (substituting only
-   the bracketed placeholders):
+(Phase 1 is the cross-repo triage / discussion stage and is not a
+honeybee PR; it is omitted from the per-PR breakdown below.)
 
-   > Contract for `{file-type}` version {N} locked at `{sha}`. Writer is
-   > still emitting version {N-1}. Waiting for vchat-web reader before
-   > flipping writer.
+**Phase 2a — contract preview PR.** A honeybee PR that touches only
+contract markdown: adds a brand-new version chapter to the affected
+file-type document; leaves the previous version chapter unchanged.
+Writer keeps emitting the previous version. After merge, the tracking
+issue gets the label `data-contract:awaiting-reader` and the maintainer
+posts the following comment verbatim (substituting only the bracketed
+placeholders):
 
-2. **Phase 3 — vchat-web ships dual-version reader.** vchat-web
-   implements and deploys a reader that handles both v{N-1} and v{N}.
-   After production deployment, vchat-web replies on the issue:
+> Contract for `{file-type}` version {N} locked at `{sha}`. Writer is
+> still emitting version {N-1}. Waiting for vchat-web reader before
+> flipping writer.
 
-   > vchat-web reader for `{file-type}` version {N} deployed at
-   > `{vchat-web-prod-version}`. Ready to flip writer.
+**Phase 3 — vchat-web ships dual-version reader.** vchat-web implements
+and deploys a reader that handles both v{N-1} and v{N}. After production
+deployment, vchat-web replies on the issue:
 
-   `{vchat-web-prod-version}` is the vchat-web git commit SHA (7 or 40
-   hex chars) currently running in production.
+> vchat-web reader for `{file-type}` version {N} deployed at
+> `{vchat-web-prod-version}`. Ready to flip writer.
 
-3. **Phase 2b — writer flip PR.** A second honeybee PR that updates the
-   writer to emit v{N} (and, for `video-meta`, also bumps the value
-   written to `Video.hbStats.chatsArchiveVersion`). Phase 2b may not
-   open until the Phase 3 deployment comment is posted. After merge,
-   the issue label moves from `data-contract:awaiting-reader` to
-   `data-contract:done` and the issue is closed.
+`{vchat-web-prod-version}` is the vchat-web git commit SHA (7 or 40 hex
+chars) currently running in production.
+
+**Phase 2b — writer flip PR.** A second honeybee PR that updates the
+writer to emit v{N} (and, for `video-meta`, also bumps the value
+written to `Video.hbStats.chatsArchiveVersion`). Phase 2b may not
+open until the Phase 3 deployment comment is posted. After merge,
+the issue label moves from `data-contract:awaiting-reader` to
+`data-contract:done` and the issue is closed.
 
 ## 6. Issue and label conventions
 
@@ -129,7 +132,7 @@ informational `archiveVersion` field embedded in `root-index` /
 `channel-index` per-video summaries. This field is **not** part of the
 vchat-web contract — vchat-web does not read MongoDB. The per-file
 authoritative version on S3 is whatever `archiveVersion` reads inside
-each `meta.json`.
+each `{videoId}.meta.json`.
 
 ## 8. Reviewer checklist
 
@@ -227,11 +230,11 @@ For the Phase 2b PR:
       > vchat-web reader for `{file-type}` version {N} deployed at
       > `{vchat-web-prod-version}`. Ready to flip writer.
 
-- [ ] The PR (a) updates the writer to emit the new version, (b) updates
-      the `Current writer emits` header to the new version with `revision
-r0`, and (c) for `root-index` / `channel-index`, the writer is
-      changed to write the new value into the `version` field of the
-      produced JSON.
+- [ ] The PR updates the writer to emit the new version, and the
+      `Current writer emits` header is updated to the new version with
+      `revision r0`.
+- [ ] For `root-index` / `channel-index`: the writer is changed to write
+      the new value into the `version` field of the produced JSON.
 - [ ] For `video-meta`, the Phase 2b PR updates the writer's
       `archiveVersion` literal **and** the value written to
       `Video.hbStats.chatsArchiveVersion` to the new version. (The fact
