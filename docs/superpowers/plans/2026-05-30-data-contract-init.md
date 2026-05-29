@@ -344,7 +344,9 @@ defines the row union. All rows have `type` and `id` (`raid` allows
 (`archive-video.ts:422-442`); per-type extras follow.
 
 Author-base fields (chat / superChat / superSticker / membership /
-membershipGift / membershipGiftPurchase / milestone):
+membershipGift / membershipGiftPurchase / milestone). Note the Mongo
+models store author content as plain strings, not as YouTube run-arrays —
+the writer emits whatever is in the doc directly.
 
 ```ts
 {
@@ -354,8 +356,8 @@ membershipGift / membershipGiftPurchase / milestone):
   authorName?: string;
   authorPhoto?: string;
   authorChannelId: string;
-  authorType: string;   // e.g. "Member", "Owner", "Verified", etc.
-  membership?: unknown; // present when the author has a YouTube membership
+  authorType: "owner" | "moderator" | "member" | "verified" | "other"; // src/interfaces.ts MessageAuthorType
+  membership?: string;  // membership duration ("new" or a since-date string)
   isVerified: boolean;
   isOwner: boolean;
   isModerator: boolean;
@@ -364,15 +366,15 @@ membershipGift / membershipGiftPurchase / milestone):
 
 Type-specific extras (each merged onto the author-base):
 
-| `type`                   | Extra fields                                                                   |
-| ------------------------ | ------------------------------------------------------------------------------ |
-| `chat`                   | `message`                                                                      |
-| `superChat`              | `message`, `amount`, `currency`, `jpyAmount`, `significance?`, `color?`        |
-| `superSticker`           | `text?`, `image`, `amount`, `currency`, `jpyAmount`, `significance?`, `color?` |
-| `membership`             | `level?`, `since?`                                                             |
-| `membershipGift`         | `senderName?`                                                                  |
-| `membershipGiftPurchase` | `amount`                                                                       |
-| `milestone`              | `message`, `level?`, `duration?`, `since?`                                     |
+| `type`                   | Extra fields                                                                                    |
+| ------------------------ | ----------------------------------------------------------------------------------------------- |
+| `chat`                   | `message: string`                                                                               |
+| `superChat`              | `message: string \| null`, `amount`, `currency`, `jpyAmount`, `significance?`, `color?: string` |
+| `superSticker`           | `text?`, `image: string`, `amount`, `currency`, `jpyAmount`, `significance?`, `color?: string`  |
+| `membership`             | `level?`, `since?`                                                                              |
+| `membershipGift`         | `senderName?`                                                                                   |
+| `membershipGiftPurchase` | `amount`                                                                                        |
+| `milestone`              | `message: string \| null`, `level?`, `duration?`, `since?`                                      |
 
 Non-author row types:
 
@@ -476,8 +478,8 @@ interface AuthorRowBase {
   authorName?: string;
   authorPhoto?: string;
   authorChannelId: string;
-  authorType: string;
-  membership?: unknown; // present when the author has a YouTube membership
+  authorType: "owner" | "moderator" | "member" | "verified" | "other";
+  membership?: string; // membership duration string (`"new"` or a since-date) when the author has a YouTube membership
   isVerified: boolean;
   isOwner: boolean;
   isModerator: boolean;
@@ -485,28 +487,28 @@ interface AuthorRowBase {
 
 interface ChatRow extends AuthorRowBase {
   type: "chat";
-  message: unknown; // YouTube chat message runs (text + emoji segments)
+  message: string; // serialised chat text (emoji segments rendered into the string)
 }
 
 interface SuperChatRow extends AuthorRowBase {
   type: "superChat";
-  message: unknown;
+  message: string | null;
   amount: number;
   currency: string; // ISO 4217 code
   jpyAmount: number;
   significance?: number;
-  color?: number;
+  color?: string; // SuperChat color name e.g. "blue", "lightblue", "green", "yellow", "orange", "magenta", "red"
 }
 
 interface SuperStickerRow extends AuthorRowBase {
   type: "superSticker";
   text?: string;
-  image: unknown;
+  image: string; // image URL
   amount: number;
   currency: string;
   jpyAmount: number;
   significance?: number;
-  color?: number;
+  color?: string; // SuperSticker color name
 }
 
 interface MembershipRow extends AuthorRowBase {
@@ -527,7 +529,7 @@ interface MembershipGiftPurchaseRow extends AuthorRowBase {
 
 interface MilestoneRow extends AuthorRowBase {
   type: "milestone";
-  message: unknown;
+  message: string | null;
   level?: string;
   duration?: number; // months
   since?: string;
@@ -575,11 +577,11 @@ A representative sequence of three rows (one per line in the actual file):
   "timestamp": "2026-05-29T12:05:00.000Z",
   "authorName": "Someone",
   "authorChannelId": "UCxxxxxxxxxxxxxxxxxxxxxx",
-  "authorType": "Verified",
+  "authorType": "verified",
   "isVerified": true,
   "isOwner": false,
   "isModerator": false,
-  "message": [{ "text": "hello!" }]
+  "message": "hello!"
 }
 ```
 
@@ -590,15 +592,15 @@ A representative sequence of three rows (one per line in the actual file):
   "timestamp": "2026-05-29T12:07:00.000Z",
   "authorName": "Supporter",
   "authorChannelId": "UCyyyyyyyyyyyyyyyyyyyyyy",
-  "authorType": "Member",
+  "authorType": "member",
   "isVerified": false,
   "isOwner": false,
   "isModerator": false,
-  "message": [{ "text": "thanks!" }],
+  "message": "thanks!",
   "amount": 1000,
   "currency": "JPY",
   "jpyAmount": 1000,
-  "color": 4280391411
+  "color": "blue"
 }
 ```
 
