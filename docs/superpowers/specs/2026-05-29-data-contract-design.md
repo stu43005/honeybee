@@ -230,8 +230,11 @@ Any one of the following requires a version bump:
   same field).
 - Removing a file type from the contract (the writer stops producing those
   files entirely).
-- For `root-index` / `channel-index`: changing the meaning of `version` (it
-  must always reflect the current document's version).
+- For `root-index` / `channel-index` once they reach version 2 or higher:
+  any change to the meaning of the `version` field is breaking (it must
+  always reflect the current document's version). Inert while these file
+  types are still at the implicit version 1 with no `version` field
+  written.
 
 ### 3.5 What counts as additive
 
@@ -456,7 +459,15 @@ these four.
    not part of the vchat-web contract, and vchat-web does not read it.
 8. **Reviewer checklist** — the full text of §7 of this spec, with no
    reductions. Cross-references to §7 are not sufficient; the README must
-   stand alone.
+   stand alone. When copying §7 verbatim, every cross-reference to a
+   section of this spec that does **not** have a counterpart inside README
+   (notably §4.4 verbatim comment templates, §5.4 frozen-chapter rule, and
+   §8 initialisation note) must be expanded inline at the reference site so
+   the README reader can resolve it without leaving the README. Mechanical
+   transformation: replace `(per §5.4)` with the §5.4 body inlined as a
+   short footnote or parenthetical; replace `specified in §4.4` with the
+   verbatim quoted comment templates; replace `(§8)` with "(the one-time
+   bootstrap; this clause is inert after that bootstrap is complete)".
 
 ### 5.3 Per file-type document template
 
@@ -510,7 +521,7 @@ revisions of the same version.
 
 ### r2 ({YYYY-MM-DD}, PR #{NNNN})
 
-Same shape as r1's description.
+Same shape as the revision r1 description above.
 
 ### Cumulative JSON example (covers r0 through r{latest})
 
@@ -703,9 +714,12 @@ For the Phase 2b PR:
       the `Current writer emits` header to the new version with `revision r0`,
       and (c) for `root-index` / `channel-index`, the writer is changed to
       write the new value into the `version` field of the produced JSON.
-- [ ] For `video-meta`, the spec mandates that the writer also updates
-      `Video.hbStats.chatsArchiveVersion` to the new version on every
-      successful write.
+- [ ] For `video-meta`, the Phase 2b PR updates the writer's
+      `archiveVersion` literal **and** the value written to
+      `Video.hbStats.chatsArchiveVersion` to the new version. (The fact
+      that the writer always sets `Video.hbStats.chatsArchiveVersion` after
+      a successful write is standing behaviour; this check verifies the
+      bumped value lands in both places in this PR.)
 - [ ] The previous version chapter is unchanged. Its `Reader guidance`
       section is intact.
 - [ ] The "reader deployed" comment on the tracking issue specifies a
