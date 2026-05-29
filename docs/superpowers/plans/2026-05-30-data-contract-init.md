@@ -28,7 +28,9 @@ existing writer code at:
   `data/channels/{channelId}.json`)
 
 The PR description for the implementing PR must reproduce this paragraph
-verbatim as the waiver justification.
+verbatim as the waiver justification. Additionally, the §7.1 "Revision
+history table has one new row added" check is satisfied for each
+file-type document by adding the `r0` bootstrap row to its table.
 
 ---
 
@@ -152,19 +154,17 @@ field.
 
 ## Revision history
 
-| Version | Revision | Date       | PR  | Summary                                                                                |
-| ------- | -------- | ---------- | --- | -------------------------------------------------------------------------------------- |
-| 1       | r0       | (legacy)   | —   | Pre-v2 archive output. Files may still exist on S3 from earlier runs.                  |
-| 2       | r0       | 2026-05-30 | —   | Initial documentation of the existing v2 writer output (bootstrap; §8 of design spec). |
+| Version | Revision | Date       | PR  | Summary                                                               |
+| ------- | -------- | ---------- | --- | --------------------------------------------------------------------- |
+| 1       | r0       | (legacy)   | —   | Pre-v2 archive output. Files may still exist on S3 from earlier runs. |
+| 2       | r0       | 2026-05-30 | —   | Initial documentation of the existing v2 writer output (bootstrap).   |
 
 ## version 1 (legacy)
 
 Files at this version may still exist on S3 for videos archived before the
-v2 writer landed. Their structure is similar to v2 minus several
-`aggregates` fields and minus the `currencyTable` / `jpyTotal` totals.
-Full v1 schema is not normatively documented; readers should branch on
-`archiveVersion === 1` and treat all fields except `id` and `title` as
-optional.
+v2 writer landed. Full v1 schema is not normatively documented; readers
+should branch on `archiveVersion === 1` and treat all fields except `id`
+and `title` as optional.
 
 ## version 2
 
@@ -703,16 +703,17 @@ Use the Write tool with this exact content:
 **File path pattern:** `data/index.json`
 **Companion file:** none.
 **Writer:** `src/components/chats-archive/gen-index-file.ts`
-**Version field in JSON:** none — implicit version 1 (no `version` key).
-A future bump to version 2 will introduce a `version: 2` root field; see
-the design spec §3.3.
+**Version field in JSON:** none at version 1 — readers detect version
+defensively as `(json.version ?? 1)`. A future bump will introduce a
+`version: number` field at the root; until then the field's absence
+implies version 1.
 **Current writer emits:** version 1, revision r0
 
 ## Revision history
 
-| Version | Revision | Date       | PR  | Summary                                                                             |
-| ------- | -------- | ---------- | --- | ----------------------------------------------------------------------------------- |
-| 1       | r0       | 2026-05-30 | —   | Initial documentation of the existing pre-versioned format (bootstrap; §8 of spec). |
+| Version | Revision | Date       | PR  | Summary                                                                 |
+| ------- | -------- | ---------- | --- | ----------------------------------------------------------------------- |
+| 1       | r0       | 2026-05-30 | —   | Initial documentation of the existing pre-versioned format (bootstrap). |
 
 ## version 1
 
@@ -748,10 +749,10 @@ interface VideoSummaryWithChannel {
 }
 ```
 
-Reader version detection (see also the design spec §3.3):
+Reader version detection — treat absence of the `version` key as v1:
 
 ```ts
-const version = ((json as { version?: number }).version ?? 1) as number;
+const version = (json.version ?? 1) as number;
 ```
 
 ### Cumulative JSON example (r0)
@@ -887,16 +888,17 @@ Use the Write tool with this exact content:
 **File path pattern:** `data/channels/{channelId}.json`
 **Companion file:** none.
 **Writer:** `src/components/chats-archive/gen-channel-index-file.ts`
-**Version field in JSON:** none — implicit version 1 (no `version` key).
-A future bump to version 2 will introduce a `version: 2` root field; see
-the design spec §3.3.
+**Version field in JSON:** none at version 1 — readers detect version
+defensively as `(json.version ?? 1)`. A future bump will introduce a
+`version: number` field at the root; until then the field's absence
+implies version 1.
 **Current writer emits:** version 1, revision r0
 
 ## Revision history
 
-| Version | Revision | Date       | PR  | Summary                                                                             |
-| ------- | -------- | ---------- | --- | ----------------------------------------------------------------------------------- |
-| 1       | r0       | 2026-05-30 | —   | Initial documentation of the existing pre-versioned format (bootstrap; §8 of spec). |
+| Version | Revision | Date       | PR  | Summary                                                                 |
+| ------- | -------- | ---------- | --- | ----------------------------------------------------------------------- |
+| 1       | r0       | 2026-05-30 | —   | Initial documentation of the existing pre-versioned format (bootstrap). |
 
 ## version 1
 
@@ -929,10 +931,10 @@ interface VideoSummaryNoChannel {
 }
 ```
 
-Reader version detection (see also the design spec §3.3):
+Reader version detection — treat absence of the `version` key as v1:
 
 ```ts
-const version = ((json as { version?: number }).version ?? 1) as number;
+const version = (json.version ?? 1) as number;
 ```
 
 ### Cumulative JSON example (r0)
@@ -1049,10 +1051,9 @@ documentation only: there is no generated package, no published
 typings, and no runtime artifact. Each file-type document describes one
 output file's path pattern, the writer that produces it, the JSON shape
 (as TypeScript interfaces), a cumulative JSON example, and a reader
-guidance section. Authoring rules and the cross-repo workflow are defined
-in the design spec at
-[../superpowers/specs/2026-05-29-data-contract-design.md](../superpowers/specs/2026-05-29-data-contract-design.md);
-this README is a reader-facing index plus the reviewer checklist.
+guidance section. This README is a reader-facing index plus the reviewer
+checklist; it stands alone and does not require the reader to consult any
+other document.
 
 ## 2. File type index
 
@@ -1070,9 +1071,9 @@ this README is a reader-facing index plus the reviewer checklist.
   type.
 - `version` bumps only on a **breaking** change (see §4).
 - **Additive** changes (new optional field, etc.) add a new **revision**
-  inside the current version's chapter, identified as `r0`, `r1`, `r2`,
-  ... `revision` lives only in the contract markdown. It is **not**
-  written into the JSON file.
+  inside the current version's chapter, labelled `r0`, `r1`, `r2`, … in
+  section headers. The revision counter lives only in the contract
+  markdown. It is **not** written into the JSON file.
 - Old files at older versions are never retroactively rewritten. For
   `video-meta` / `video-chats`, multiple versions coexist on S3 forever.
   For `root-index` / `channel-index` (regenerated on a schedule), at most
@@ -1111,7 +1112,7 @@ chapter):
 
 ## 5. Workflow summary
 
-The full workflow lives in the design spec §4. Two paths:
+There are two paths:
 
 **Path A — additive (single PR).** vchat-web's request (or honeybee's
 own additive idea) is implemented in one honeybee PR that adds the
@@ -1119,7 +1120,8 @@ writer change and the matching contract markdown revision. vchat-web
 needs no immediate action; the new optional fields show up the next time
 vchat-web brainstorms a UI that wants them.
 
-**Path B — breaking (two PRs).** Used whenever a change matches §4.
+**Path B — breaking (two PRs).** Used whenever a change matches the
+Breaking change checklist above.
 
 1. **Phase 2a — contract preview PR.** A honeybee PR that touches only
    contract markdown: adds a brand-new version chapter to the affected
@@ -1172,10 +1174,6 @@ authoritative version on S3 is whatever `archiveVersion` reads inside
 each `meta.json`.
 
 ## 8. Reviewer checklist
-
-This checklist is the verbatim copy of §7 of the design spec, with all
-cross-references to spec-only sections (§4.4 comment templates, §5.4
-frozen-chapter rule, §8 initialisation) inlined at the reference site.
 
 Every spec / plan that proposes a contract change must be passed by a
 review subagent that runs through every applicable item below. The
@@ -1266,7 +1264,7 @@ For the Phase 2b PR:
       this README.
 - [ ] The PR (a) updates the writer to emit the new version, (b) updates
       the `Current writer emits` header to the new version with `revision
-    r0`, and (c) for `root-index` / `channel-index`, the writer is
+r0`, and (c) for `root-index` / `channel-index`, the writer is
       changed to write the new value into the `version` field of the
       produced JSON.
 - [ ] For `video-meta`, the Phase 2b PR updates the writer's
@@ -1406,72 +1404,70 @@ project `CLAUDE.md` under the "Spec/plan authoring rules" section
 directing spec / plan review subagents to consult the contract checklist
 whenever the diff touches `chats-archive` or `docs/data-contract/`.
 
-- [ ] **Step 1: Locate insertion point**
+- [ ] **Step 1: Confirm CLAUDE.md ends with "Spec/plan authoring rules" and locate the last existing subsection**
 
 Run:
 
 ```bash
-grep -n "^## Spec/plan authoring rules" CLAUDE.md
+grep -nE "^(## |### )" CLAUDE.md | tail -10
 ```
 
-Expected: a single matching line number. That line is the start of the
-target section. The pointer will be added as the **last** bullet of the
-last subsection inside this section (after all existing project-specific
-pitfalls), so the addition does not change any existing rule wording or
-ordering.
+Expected: the last `## ` line is `## Spec/plan authoring rules` (no
+later `## ` heading exists in the file). The very last `### ` line is
+`### Reuse existing util helpers; do not re-invent`. The new
+`### Data contract checklist` subsection will be appended **at end of
+file**, which structurally places it inside `## Spec/plan authoring
+rules` (since no later `## ` section closes it).
 
-- [ ] **Step 2: Find the end of the last subsection of "Spec/plan authoring rules"**
+- [ ] **Step 2: Append the new subsection at end of file**
 
-Run:
+Use the Edit tool. `old_string` is the verbatim final sentence of the
+last existing subsection (`### Reuse existing util helpers; do not
+re-invent`). `new_string` is that same sentence followed by a blank line
+and the new subsection.
 
-```bash
-awk '/^## Spec\/plan authoring rules/,/^## /' CLAUDE.md | grep -n "^### "
+`old_string`:
+
+```
+helper whose behavior is already covered by an export from these files; fix
+the call site to use the existing helper instead.
 ```
 
-Expected: a list of every `### ` subsection inside the parent. The
-**last** one is where the new subsection will be appended.
+`new_string`:
 
-- [ ] **Step 3: Append a new `### Data contract checklist` subsection at the end of "Spec/plan authoring rules"**
+```
+helper whose behavior is already covered by an export from these files; fix
+the call site to use the existing helper instead.
 
-Use the Edit tool to insert the following block **immediately before** the
-next top-level `## ` heading that follows "Spec/plan authoring rules"
-(i.e. after every existing `### ` subsection and the blank line that
-follows the last existing subsection's content):
-
-```markdown
 ### Data contract checklist
 
 When the PR diff touches `src/components/chats-archive/` or
-`docs/data-contract/`, the spec / plan review subagent must additionally
-run through the reviewer checklist at
-[docs/data-contract/README.md](docs/data-contract/README.md) §8 (Common
-checks, plus Path A or Path B depending on classification, plus the
-anti-pattern scan). The reviewer reports `OKAY` only when both the local
-checklist (this file) and the data-contract checklist pass.
+`docs/data-contract/`, the spec / plan review subagent must additionally pass
+the checklist at
+[docs/data-contract/README.md](docs/data-contract/README.md) §8 before
+reporting `OKAY`.
 ```
 
-(Note the trailing blank line after the block.)
+The new subsection's body is one sentence per spec §8 step 2 ("one-line
+pointer"); it does not duplicate any checklist content, only points at
+the README.
 
-To do this with Edit:
-
-1. Use `Read` first to confirm what immediately precedes the next `## `
-   heading after "Spec/plan authoring rules".
-2. Use `Edit` with `old_string` set to the last paragraph of the last
-   existing subsection (including its trailing blank line and the next
-   `## ` heading), and `new_string` set to that same content with the new
-   block inserted between the existing content and the next heading.
-
-- [ ] **Step 4: Verify the new subsection was added inside the right parent**
+- [ ] **Step 3: Verify the new subsection landed in the right place**
 
 Run:
 
 ```bash
-awk '/^## Spec\/plan authoring rules/,/^## /' CLAUDE.md | grep -nE "^### Data contract checklist"
+grep -nE "^## Spec/plan authoring rules$|^### Data contract checklist$|^## " CLAUDE.md
 ```
 
-Expected: exactly one match, and the match is inside the block (not at
-the start of the next section). The line should appear before the
-delimiter `## ` that closes the awk range.
+Expected output (three lines, in this order):
+
+1. `<N>:## Spec/plan authoring rules`
+2. `<M>:### Data contract checklist` with `M > N`
+3. No additional `^## ` line appears between line `N` and line `M`
+   (i.e. the new subsection sits inside "Spec/plan authoring rules", not
+   after a different `## ` section). If a `^## ` line appears between
+   them, the edit went in the wrong place — revert and retry.
 
 - [ ] **Step 5: Verify the link target exists**
 
