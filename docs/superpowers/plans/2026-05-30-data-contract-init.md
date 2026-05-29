@@ -140,7 +140,7 @@ and `jpyTotal: number` appended — see the `meta` literal above.)
 Use the Write tool with this exact content:
 
 ````markdown
-# Video meta (`<videoId>.meta.json`)
+# Video meta (`{videoId}.meta.json`)
 
 **File path pattern:** `data/videos/{videoId}.meta.json`
 **Companion file:** `data/videos/{videoId}.jsonl` — see
@@ -420,7 +420,7 @@ explicitly `null`) when the source value is undefined.
 Use the Write tool with this exact content:
 
 ````markdown
-# Video chats (`<videoId>.jsonl`)
+# Video chats (`{videoId}.jsonl`)
 
 **File path pattern:** `data/videos/{videoId}.jsonl`
 **Companion file:** `data/videos/{videoId}.meta.json` — see
@@ -701,7 +701,10 @@ Use the Write tool with this exact content:
 # Root index (`data/index.json`)
 
 **File path pattern:** `data/index.json`
-**Companion file:** none.
+**Companion file:** none. (When a companion exists, its version is always
+identical to this file's version; readers determine the version of the
+file with no JSON version field by reading the companion's version
+field.)
 **Writer:** `src/components/chats-archive/gen-index-file.ts`
 **Version field in JSON:** none at version 1 — readers detect version
 defensively as `(json.version ?? 1)`. A future bump will introduce a
@@ -886,7 +889,10 @@ Use the Write tool with this exact content:
 # Channel index (`data/channels/{channelId}.json`)
 
 **File path pattern:** `data/channels/{channelId}.json`
-**Companion file:** none.
+**Companion file:** none. (When a companion exists, its version is always
+identical to this file's version; readers determine the version of the
+file with no JSON version field by reading the companion's version
+field.)
 **Writer:** `src/components/chats-archive/gen-channel-index-file.ts`
 **Version field in JSON:** none at version 1 — readers detect version
 defensively as `(json.version ?? 1)`. A future bump will introduce a
@@ -1189,8 +1195,8 @@ it lists the failures.
       removal, a pure rename of an existing field with no change to the
       value's source or semantic, a pure documentation correction of an
       existing field, or the **initial bootstrap of an existing writer's
-      output** (this clause is inert after that one-time bootstrap is
-      complete). The waiver must be stated explicitly in the PR
+      output** (the one-time bootstrap; this clause is inert after that
+      bootstrap is complete). The waiver must be stated explicitly in the PR
       description with one sentence naming which of these categories
       applies; the reviewer rejects implicit waivers.
 - [ ] The file-type document being changed corresponds to the file path
@@ -1254,14 +1260,21 @@ For the Phase 2a PR:
       version (it will change in Phase 2b).
 - [ ] The spec mandates that after merge, the
       `data-contract:awaiting-reader` label is added to the tracking
-      issue and the maintainer posts the locking comment from §5 of
-      this README verbatim.
+      issue and the maintainer posts the following locking comment
+      verbatim (substituting only the bracketed placeholders):
+
+      > Contract for `{file-type}` version {N} locked at `{sha}`. Writer
+      > is still emitting version {N-1}. Waiting for vchat-web reader
+      > before flipping writer.
 
 For the Phase 2b PR:
 
 - [ ] The spec states that Phase 2b may not open until the issue has a
-      vchat-web "reader deployed" comment matching the form from §5 of
-      this README.
+      vchat-web "reader deployed" comment of the following form:
+
+      > vchat-web reader for `{file-type}` version {N} deployed at
+      > `{vchat-web-prod-version}`. Ready to flip writer.
+
 - [ ] The PR (a) updates the writer to emit the new version, (b) updates
       the `Current writer emits` header to the new version with `revision
 r0`, and (c) for `root-index` / `channel-index`, the writer is
@@ -1307,8 +1320,8 @@ r0`, and (c) for `root-index` / `channel-index`, the writer is
   interface and the change is classified as additive.
 - An existing field's units, encoding, sort order, enum, or semantic
   meaning are changed without bumping the version.
-- A prior version chapter is deleted, shortened, or its `Reader
-guidance` removed.
+- A prior version chapter is deleted, shortened, or its
+  `Reader guidance` removed.
 - For `root-index` / `channel-index`, the version was bumped in the
   contract but the writer code does not actually write the new value
   into the JSON `version` field.
@@ -1469,7 +1482,7 @@ Expected output (three lines, in this order):
    after a different `## ` section). If a `^## ` line appears between
    them, the edit went in the wrong place — revert and retry.
 
-- [ ] **Step 5: Verify the link target exists**
+- [ ] **Step 4: Verify the link target exists**
 
 ```bash
 test -f docs/data-contract/README.md && echo OK
@@ -1477,7 +1490,7 @@ test -f docs/data-contract/README.md && echo OK
 
 Expected: `OK`. (This task runs after Task 5, so README.md must exist.)
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add CLAUDE.md
