@@ -275,3 +275,11 @@ not on name — a helper with a different name but the same semantics still
 counts as a duplicate. The spec/plan review subagent must reject any new local
 helper whose behavior is already covered by an export from these files; fix
 the call site to use the existing helper instead.
+
+### Data contract checklist
+
+When the PR diff touches `src/components/chats-archive/` or
+`docs/data-contract/`, the spec / plan review subagent must additionally pass
+the checklist at
+[docs/data-contract/README.md](docs/data-contract/README.md) §8 before
+reporting `OKAY`.
