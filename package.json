@@ -33,7 +33,7 @@
     "decimal.js": "^10.6.0",
     "discord.js": "^14.19.3",
     "fastify": "^4.26.2",
-    "googleapis": "^134.0.0",
+    "googleapis": "^173.0.0",
     "holodex.js": "^2.0.5",
     "json-templates": "^5.0.0",
     "kafkajs": "^2.2.4",
