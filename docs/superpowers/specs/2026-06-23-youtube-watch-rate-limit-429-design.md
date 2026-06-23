@@ -179,18 +179,41 @@ dead code。
 
 ## 錯誤處理與邊界情況
 
-### Redis 執行期故障（fail-open）
+### Redis 執行期故障（tryAcquire 故障即關閉、penalize 盡力而為）
 
 `tryAcquire()` 與 `penalize()` 內部的 Redis 操作以 try/catch 包覆，吞掉非預期例外
-（連線斷、`WATCH`/`GET`/`EXEC` 失敗且非 `WatchError`）：
+（連線斷、`WATCH`/`GET`/`EXEC` 失敗且非 `WatchError`）。兩者採不同策略：
 
-- `tryAcquire()` 例外 → 回傳 `false`。保守選擇：在失去協調能力時寧可本輪不更新，
-  也不放任 3 pod 無節制打 YouTube。
-- `penalize()` 例外 → 直接 return（best-effort，退避失敗不影響 chat 收集）。
+- `tryAcquire()` 例外 → 回傳 `false`（對 stats 更新而言是 **fail-closed**：本輪跳過
+  更新）。保守選擇：在失去協調能力時寧可本輪不更新，也不放任 3 pod 無節制打
+  YouTube。
+- `penalize()` 例外 → 直接 return（**best-effort**：退避失敗不影響 chat 收集，下次
+  429 仍會再次嘗試）。
 
-stats 更新整段本就包在 best-effort try/catch 內，Redis 故障不得使 job 失敗或中斷
-chat 收集。worker 啟動時 `RedisModule.init()` 會 `connect()`，連不上會在 init 階段
-直接 fail（與既有模組行為一致）；上述 fail-open 針對執行期暫時抖動。
+注意：此處的 fail-closed 只作用在「stats 更新這一次是否進行」，**不**影響 chat 收集
+主流程——整段 stats 更新本就包在 best-effort try/catch 內，Redis 故障不得使 job 失敗
+或中斷 chat 收集。上述策略針對的是執行期暫時抖動；啟動期行為見下節。
+
+### 啟動期 Redis 不可用：不引入新的硬性依賴
+
+新增 `RedisModule` **不會**讓 worker 變得「比現在更依賴 Redis」。worker 既有的
+`QueueModule`（Bee-Queue）已使用與 `RedisModule` 完全相同的 `REDIS_URI`
+（`src/modules/queue.ts` 第 18–21 行 `redis: { url: REDIS_URI }`），因此 Redis 在本
+設計之前就已是 worker 的硬性前置依賴：
+
+- 沒有 Redis，worker 根本收不到任何 `honeybee` job，chat 收集本就無從開始。
+- Redis 故障時，既有的 `queue.on("error")`（`src/commands/worker.ts` 第 1064–1068
+  行）會 `process.exit(1)`，worker 直接結束。
+
+因此啟動期行為定義為：`RedisModule.init()` 的 `connect()` 連不上時，`app.init()`
+拋例外、process 結束——這與「Redis 故障時 Bee-Queue 讓 worker exit」是**同一個**失敗
+封套，不是本設計新增的失敗模式。`RedisModule` 與 Bee-Queue 指向同一 Redis 實例，兩
+者要嘛同時可用、要嘛同時不可用；不存在「Bee-Queue 連得上但 watch gate 連不上」而
+獨自卡死 worker 的情境。
+
+> 操作面：first-run / 部署時的 Redis 失敗本就由既有的 queue-error → `process.exit(1)`
+> 行為涵蓋（k8s 會重啟並在 Redis 恢復後成功啟動），本設計不改變此行為，故不需新增
+> 啟動期 Redis 失敗的測試或檢查。
 
 ### WatchError 重試上限
 
@@ -243,8 +266,8 @@ pod 各印一次，仍遠少於現狀的洪水。
    冷卻內 `tryAcquire` 持續回 `false`；時間前進過冷卻後恢復回 `true`。
 3. **penalize 的 max 語意** — 先 `penalize` 設較長冷卻，再以較早時間 `penalize`
    不縮短既有 key 值（由 stateful fake 觀察 key 未被改小）。
-4. **fail-open** — 令 fake Redis 指令丟例外：`tryAcquire` 回 `false`、`penalize`
-   不向外拋例外。
+4. **Redis 故障處理** — 令 fake Redis 指令丟例外：`tryAcquire` 回 `false`
+   （fail-closed，跳過本輪更新）、`penalize` 不向外拋例外（best-effort）。
 5. **log 去重** — 冷卻由未啟用→啟用只輸出一次；冷卻仍有效時重複 `penalize` 不再
    輸出（以 spy 觀察輸出次數）。
 
