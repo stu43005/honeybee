@@ -91,25 +91,36 @@ runWorker (Application)
 `init`/`close` 無連線責任（最多 `close` 時清掉自身的 in-flight 等待，不 `disconnect`
 共享連線）。
 
-- 降級狀態（共享 client 未就緒：Redis 啟動連不上仍在背景重連、或執行期斷線）下，
-  gate 對 client 的 `EVAL` 會被 reject；`acquire` 以此 fail-closed 回 `false`（跳過
-  stats 更新，不影響 chat 收集）、`penalize` 走本地後備（見下），兩者皆不向呼叫端拋
-  例外。
+- **正常狀態**（共享 client `redis.isReady === true`）：`acquire`/`penalize` 走全域
+  Redis 協調（跨所有 pod）。
+- **降級狀態**（共享 client 未就緒：Redis 啟動連不上仍在背景重連、或執行期斷線）：
+  `acquire` **退回 process 本地限速**（per-process 1 req/s，等同變更前的
+  `rate-limiter.ts` 行為），使 stats 更新持續進行、**不會靜默陳舊**；同時發 rate-limited
+  的降級告警 log（見「降級可觀測性與操作」）。`penalize` 仍設本地後備冷卻並回
+  `false`（Redis 未記錄）。兩者皆不向呼叫端拋例外。降級模式≈變更前的生產基準（stats
+  新鮮、3 pod 各自 1/s + 本地 429 退避，對 YouTube 風險不高於現況）。
 
 對外只暴露兩個方法，內部封裝所有 Redis 互動與型別細節。閘門狀態存於兩個 Redis
 key：`hb:yt:watch:gate`（值為 `nextAllowedAtMs`，epoch 毫秒字串）與
-`hb:yt:watch:cooldown-log`（log-once 旗標，見 `penalize`）。模組另持有一個 process
-本地欄位 `localCooldownUntilMs`（後備退避，見「penalize 失敗的可見性與本地後備」）。
+`hb:yt:watch:cooldown-log`（log-once 旗標，見 `penalize`）。模組另持有三個 process
+本地欄位：`localNextAllowedMs`（降級時 per-process 限速的 next-allowed 時間戳）、
+`localCooldownUntilMs`（429 後備退避）、`lastDegradedLogAtMs`（降級告警 rate-limit）。
 
 #### `acquire(maxWaitMs: number, signal?: AbortSignal): Promise<boolean>`
 
-有界阻塞地嘗試取得一個全域請求額度。在 `maxWaitMs` 預算內排隊等待閘門開啟：等到
-空檔即 claim 並回傳 `true`（可送請求）；預算耗盡（例如正處於冷卻）或 `signal` 被
-abort（優雅關閉）→ 回傳 `false`（本輪跳過）。
+有界阻塞地嘗試取得一個請求額度。在 `maxWaitMs` 預算內排隊等待空檔：等到即 claim 並
+回傳 `true`（可送請求）；預算耗盡（例如正處於冷卻）或 `signal` 被 abort（優雅關閉）
+→ 回傳 `false`（本輪跳過）。
 
-底層用一段原子的 Lua **claim 腳本**（`EVAL`）配合 client 端等待迴圈：
+`acquire` 用**單一有界等待迴圈**，依共享 client 是否就緒切換 claim 後端：
 
-claim 腳本（`KEYS[1]=gate key`，`ARGV=[now, INTERVAL_MS, GATE_KEY_TTL_MS]`）邏輯：
+- **全域後端（`redis.isReady === true`）**：以原子 Lua **claim 腳本**（`EVAL`）對
+  `hb:yt:watch:gate` 做「讀-比較-寫」，跨所有 pod 協調。
+- **降級後端（`redis.isReady === false`）**：對 process 本地欄位 `localNextAllowedMs`
+  做同一套「讀-比較-寫」（純記憶體、per-process），達成等同變更前 `rate-limiter.ts`
+  的 1 req/s；並呼叫 rate-limited 的降級告警（見「降級可觀測性與操作」）。
+
+claim 腳本（全域後端，`KEYS[1]=gate key`，`ARGV=[now, INTERVAL_MS, GATE_KEY_TTL_MS]`）：
 
 ```lua
 local nextAllowed = tonumber(redis.call('GET', KEYS[1])) or 0
@@ -122,21 +133,27 @@ else
 end
 ```
 
+降級後端的本地 claim 等價邏輯（同語意，無 Redis）：`if now >= localNextAllowedMs then
+localNextAllowedMs = now + INTERVAL_MS; claimed else 回傳 localNextAllowedMs`。
+
 client 端 `acquire` 迴圈：
 
-1. 若共享 client 未就緒（`redis.isReady === false`，降級中）或
-   `Date.now() < localCooldownUntilMs`（本地後備冷卻中）→ 立即回 `false`。
-   （`EVAL` 仍包在 try/catch 內，即使 readiness 檢查與實際斷線間有空窗，reject 也會
-   fail-closed 回 `false`。）
+1. 若 `Date.now() < localCooldownUntilMs`（本地後備冷卻中，**兩種後端皆適用**）→ 立即
+   回 `false`。
 2. `deadline = Date.now() + maxWaitMs`。
 3. 迴圈：若 `signal?.aborted` → 回 `false`。
-4. 以 `now = Date.now()` 執行 claim 腳本（`EVAL` 例外 → fail-closed 回 `false`）。
-   回傳 `-1` → 回 `true`（搶到）。
-5. 否則 `nextAllowed = Number(回傳值)`，`delay = nextAllowed - Date.now()`；若
-   `delay <= 0` 立即重試（競爭落空，極短）。
+4. 以 `now = Date.now()` 依當下 `redis.isReady` 選後端執行一次 claim：
+   - 全域後端 `EVAL` 例外 → fail-closed 回 `false`。
+   - 降級後端：先 `maybeLogDegraded()`，再做本地 claim（不會丟例外）。
+   - claim 成功（全域回 `-1` / 本地命中）→ 回 `true`。
+5. 否則取得未命中時的 `nextAllowed`（全域為腳本回傳值、降級為 `localNextAllowedMs`），
+   `delay = nextAllowed - Date.now()`；若 `delay <= 0` 立即重試（競爭落空，極短）。
 6. `remaining = deadline - Date.now()`；若 `remaining <= 0` → 回 `false`（預算耗盡）。
 7. `await setTimeout(min(delay, remaining), undefined, { signal })`（`node:timers/promises`，
    可被 abort），喚醒後回到步驟 3。
+
+> 後端在「每次迴圈迭代」依當下 `redis.isReady` 決定，故連線在等待中恢復/斷線時，下一
+> 次迭代會自動切換到對應後端，不會卡在錯誤後端。
 
 多個 waiter 在閘門開啟時各自重試 claim，腳本原子性保證只有一個搶到、其餘讀到被推
 進的 `nextAllowed` 後再排到下一個 `INTERVAL`——形成分散式版「排隊直到釋放」。`now`
@@ -144,10 +161,22 @@ client 端 `acquire` 迴圈：
 
 #### `penalize(): Promise<boolean>`
 
-偵測到 429 時呼叫。先**無條件設定 process 本地後備冷卻**
-`localCooldownUntilMs = Date.now() + YOUTUBE_WATCH_COOLDOWN_MS`（即使 Redis 失效，本
-pod 也會本地退避，不會 1 秒後立刻又打 YouTube）；再嘗試把全域冷卻寫入 Redis，回傳
-**Redis 是否成功記錄**（`EVAL` 例外 → 回 `false`，呼叫端據此印一次可見的告警）。
+偵測到 429 時呼叫。**回傳值語意：`recorded`——「這次 429 是否成功寫入全域 Redis 冷
+卻」**（`true` = `EVAL` 成功執行；`false` = client 未就緒或 `EVAL` 例外）。回傳值**不**
+代表 log-once（log 是 gate 內部副作用，見下），呼叫端只用 `recorded === false` 決定是
+否印一次「全域冷卻未記錄」告警。
+
+行為：
+
+1. **無條件**設定 process 本地後備冷卻
+   `localCooldownUntilMs = Date.now() + YOUTUBE_WATCH_COOLDOWN_MS`（即使 Redis 失效，
+   本 pod 也會本地退避，不會 1 秒後立刻又打 YouTube）。
+2. 若 `redis.isReady === false` → 直接回 `false`（`recorded = false`，不嘗試 `EVAL`）。
+3. 否則執行 penalize 腳本；`EVAL` 例外 → catch 後回 `false`。
+4. 腳本回傳 `1`（本 cooldown episode 首次）時，**gate 內部**印單行
+   `entering YouTube watch rate-limit cooldown for 60s`；回 `0` 不印。此 log-once 副作
+   用與 `recorded` 回傳值無關。
+5. 步驟 2–4 正常完成（`EVAL` 有跑）→ 回 `true`。
 
 penalize 腳本（`KEYS[1]=gate key`、`KEYS[2]=cooldown-log 旗標 key`，
 `ARGV=[now, COOLDOWN_MS, GATE_KEY_TTL_MS]`）邏輯：
@@ -162,17 +191,19 @@ if target > current then
 end
 -- log-once 旗標：每個冷卻 episode 僅首次 SET 成功（NX），TTL = 冷卻長度
 local fresh = redis.call('SET', KEYS[2], '1', 'NX', 'PX', cooldown)
-if fresh then return 1 else return 0 end   -- 1 = 本 episode 首次，應 log
+if fresh then return 1 else return 0 end   -- 1 = 本 episode 首次，gate 內部 log 一次
 ```
 
 `max` 語意（`if target > current`）保證不縮短既有更長的冷卻。**log-once 改用獨立旗標
 key `KEYS[2]`（`SET NX PX cooldown`）判斷，而非比較 `nextAllowedAtMs`**：因為剛成功
 claim 會把 `nextAllowedAtMs` 留在 `now + INTERVAL`（未來 1 秒），若用時間戳比較會把
 「首次進入冷卻」誤判成「冷卻已啟用」而吞掉首條 log。旗標 NX 語意則精準對應「每個冷
-卻 episode 一條 log」：腳本回 `1` 時 client 印單行
-`entering YouTube watch rate-limit cooldown for 60s`，回 `0` 不印。持續 429 超過一個
-冷卻長度後旗標到期，下次 penalize 會再印一次（每分鐘至多一條，仍遠少於現狀洪水，且
-有助於辨識「仍在限速中」）。
+卻 episode 一條 log」。持續 429 超過一個冷卻長度後旗標到期，下次 penalize 的腳本會再
+回 `1`、再印一次（每分鐘至多一條，仍遠少於現狀洪水，且有助於辨識「仍在限速中」）。
+
+> 為何把 cooldown-entry log 放進 gate 內部、而非由呼叫端依回傳值印：避免把「Redis 記
+> 錄成功與否（`recorded`）」與「本 episode 是否首次（log-once）」兩個正交概念混在同一
+> 個回傳值——否則 `recorded=true` 但 `0`（已記錄過）會被誤讀成「未記錄」而印錯告警。
 
 #### 為何用 Lua `EVAL` 而非 `WATCH`/`MULTI`
 
@@ -236,9 +267,10 @@ async function updateVideoStats() {
 
 ### 移除既有 per-process limiter
 
-`src/modules/rate-limiter.ts` 僅被 `src/commands/worker.ts` 匯入使用。替換完成後，
-刪除整個 `src/modules/rate-limiter.ts` 並移除 worker.ts 中對應的 import，清除
-dead code。
+`src/modules/rate-limiter.ts` 僅被 `src/commands/worker.ts` 匯入使用。其「per-process
+1 req/s」行為已被 `YoutubeWatchGate` 的**降級後端**（`localNextAllowedMs` 的本地
+claim）以等價語意吸收，故替換完成後刪除整個 `src/modules/rate-limiter.ts` 並移除
+worker.ts 中對應的 import，避免留下功能重複的孤兒類別。
 
 ### `RedisModule` 的可選 init 容錯（`src/modules/redis.ts`）
 
@@ -288,6 +320,9 @@ RedisModule()` 不傳參數即維持 `await connect()` 行為）。
   上限。取 5 秒（= 5 個 `INTERVAL_MS`）足以吸收穩態下的併發排隊；遠小於
   `COOLDOWN_MS`（冷卻中等滿即跳過、不空耗 job），也遠小於 `SHUTDOWN_TIMEOUT`（45s）
   且等待可被 abort，確保不拖延優雅關閉。
+- `YOUTUBE_WATCH_DEGRADED_LOG_INTERVAL_MS = 60_000` — gate 處於降級（共享 client 未就
+  緒）時，降級告警 log 的最小間隔。取 1 分鐘讓「持續連不上」可被觀測/告警，又不致洗
+  版（相對於每次 `acquire` 都印）。
 
 數值為起始值；上線後可依實測調整。
 
@@ -296,17 +331,18 @@ RedisModule()` 不傳參數即維持 `await connect()` 行為）。
 ### Redis 執行期故障（acquire 故障即關閉、penalize 盡力而為）
 
 `acquire()` 與 `penalize()` 內部的 `EVAL` 操作以 try/catch 包覆，吞掉非預期例外
-（連線斷、`EVAL` 失敗）。兩者採不同策略：
+（連線斷、`EVAL` 失敗）：
 
-- `acquire()` 例外 → 回傳 `false`（對 stats 更新而言是 **fail-closed**：本輪跳過
-  更新）。保守選擇：在失去協調能力時寧可本輪不更新，也不放任 3 pod 無節制打
-  YouTube。
-- `penalize()` 例外 → 直接 return（**best-effort**：退避失敗不影響 chat 收集，下次
-  429 仍會再次嘗試）。
+- `acquire()` 全域後端的單次 `EVAL` 例外（`isReady` 仍 true 時的瞬時抖動）→ 該次回
+  `false`（**fail-closed**，本輪跳過）。若是**持續**不就緒（`isReady === false`），
+  則由降級後端（per-process 本地限速）接手，stats 更新照常進行、不會無限跳過（見
+  「降級可觀測性與操作」）。
+- `penalize()` 例外或 `isReady === false` → 回 `false`（`recorded = false`，
+  **best-effort**：已先設好本地後備冷卻，呼叫端印一次告警；不影響 chat 收集）。
 
-注意：此處的 fail-closed 只作用在「stats 更新這一次是否進行」，**不**影響 chat 收集
-主流程——整段 stats 更新本就包在 best-effort try/catch 內，Redis 故障不得使 job 失敗
-或中斷 chat 收集。上述策略針對的是執行期暫時抖動；啟動期行為見下節。
+注意：上述「跳過」只作用在「stats 更新這一次是否進行」，**不**影響 chat 收集主流程——
+整段 stats 更新本就包在 best-effort try/catch 內，Redis 故障不得使 job 失敗或中斷
+chat 收集。本節針對執行期抖動；啟動期行為見下節。
 
 ### 啟動期 Redis 不可用：RedisModule 可選 init 容錯，worker 不死
 
@@ -327,13 +363,31 @@ node-redis 預設無限重試策略在背景完成，連上後 `isReady` 轉真�
 預設關閉，故 webhook 等既有使用 `RedisModule` 的服務維持 `await connect()` 行為完全
 不變。
 
-降級狀態下（`redis.isReady === false`，仍在背景連線）gate 對共享 client 的 `EVAL`
-會 reject，`acquire` fail-closed 回 `false`（跳過 stats 更新，不影響 chat 收集）、
-`penalize` 走本地後備冷卻；Redis 連上後 gate 自動回到正常全域限速。
+降級狀態下（`redis.isReady === false`，啟動仍在背景連線、或執行期斷線）gate 的
+`acquire` 退回 **per-process 本地限速**（見「降級可觀測性與操作」），stats 更新照常以
+1 req/s 進行、**不會無限跳過**；Redis 連上後 gate 自動回到全域限速。
 
-> 連線數影響：每個 worker pod 因 `RedisModule` 多一條 Redis 連線（3 pod = +3）。此量
-> 級遠在 Redis `maxclients` 餘裕內（webhook 服務早已同時持有 QueueModule + RedisModule
-> 兩條連線於生產運行）。計畫階段仍應確認部署的 `maxclients` 設定有對應餘裕。
+### 降級可觀測性與操作
+
+降級（共享 client 持續未就緒）必須**可被觀測**，不可變成全 worker 的靜默資料陳舊：
+
+- **行為（非靜默陳舊）：** 降級時 `acquire` 用 per-process 本地限速（≈變更前基準），
+  stats 仍持續更新，只是退回單 pod 1 req/s、失去跨 pod 協調；本地 429 後備冷卻仍生
+  效。對 YouTube 的風險不高於變更前現況。
+- **可觀測（rate-limited log）：** `maybeLogDegraded()` 在降級且距上次降級 log
+  ≥ `YOUTUBE_WATCH_DEGRADED_LOG_INTERVAL_MS`（60s）時印一行告警（如
+  `<!> [YT GATE DEGRADED] redis not ready; using per-process rate limit`），更新
+  `lastDegradedLogAtMs`；持續中斷時每分鐘至多一條，足以告警又不洗版。
+- **恢復訊號：** 由降級轉回就緒（上次處於降級、本次 `isReady === true`）時印一行
+  `[YT GATE] recovered; resumed global coordination` 並清掉降級 log 節流狀態。
+- **操作恢復路徑：** 看到 `[YT GATE DEGRADED]` 表示該 worker 的 Redis 連線長時間建不
+  起來——處置為提高 Redis `maxclients` / 修復網路；或回滾本次部署（變更為附加式，回
+  滾即恢復原 per-process limiter，且降級模式本就≈該基準，回滾無資料風險）。
+
+> 連線數與部署前置：每個 worker pod 因 `RedisModule` 多一條 Redis 連線（3 pod = +3）。
+> 部署前應確認 Redis `maxclients` 有對應餘裕（webhook 服務早已同時持有 QueueModule +
+> RedisModule 兩條連線於生產運行，量級可參照）。即便餘裕不足導致 gate 連不上，worker
+> 也只會降級（per-process 限速 + 上述告警），不會中斷 chat 收集。
 
 ### 等待迴圈終止與原子性
 
@@ -438,20 +492,29 @@ timers）：
    冷卻內 `acquire` 預算耗盡回 `false`；時間前進過冷卻後再 `acquire` 回 `true`。
 6. **penalize 的 max 語意** — 先 `penalize` 設較長冷卻，再以較早時間 `penalize`
    不縮短既有 key 值（由 stateful fake 觀察 key 未被改小）。
-7. **Redis 故障處理** — 令 fake `eval` 丟例外：`acquire` 回 `false`（fail-closed，跳
-   過本輪更新）、`penalize` 不向外拋例外且回 `false`（best-effort）。
+7. **全域後端瞬時 EVAL 例外** — `isReady === true` 但單次 `eval` 丟例外：該次
+   `acquire` 回 `false`（fail-closed）、`penalize` 回 `false` 不拋（best-effort）。
 8. **log-once 旗標** — 同一冷卻 episode 內重複 `penalize`：首次旗標 `SET NX` 成功、
-   腳本回 `1`（應 log）；其後旗標已存在、回 `0`（不 log）。並驗證「剛 claim 後
-   `nextAllowedAtMs = now + INTERVAL`」的情況下首次 `penalize` 仍回 `1`（旗標機制不
-   受時間戳干擾，避免吞掉首條 log）。
-9. **共享 client 降級** — 注入 `redis.isReady === false` 的 fake client：`acquire`
-   立即回 `false`（不呼叫 `eval`）；另以「`eval` reject」的 fake 驗證即使略過
-   readiness 檢查，`acquire` 仍 fail-closed 回 `false`、`penalize` 回 `false` 不拋。
-10. **penalize 本地後備** — `penalize` 後（不論 Redis 成功與否）`localCooldownUntilMs`
-    被設為 `now + COOLDOWN`；在該本地冷卻內呼叫 `acquire` 立即回 `false`（即使 gate
-    key 顯示可 claim，也因本地後備而跳過）；時間前進過本地冷卻後 `acquire` 恢復。
-11. **penalize 失敗回傳 false** — fake `eval` 丟例外時 `penalize` 回 `false`（供呼叫
-    端印告警），且本地後備仍被設定（驗證 `localCooldownUntilMs` 已更新）。
+   腳本回 `1`（gate 內部 log 一次）；其後旗標已存在、回 `0`（不 log）。並驗證「剛
+   claim 後 `nextAllowedAtMs = now + INTERVAL`」的情況下首次 `penalize` 的腳本仍回
+   `1`（旗標機制不受時間戳干擾，避免吞掉首條 log）；此測試同時確認 `penalize` 的回傳
+   值（`recorded`）為 `true`（`eval` 有成功跑），與 log-once 解耦。
+9. **降級後端：本地限速接手** — 注入 `redis.isReady === false` 的 fake client：
+   `acquire` **不呼叫 `eval`**、改走本地 claim：首次回 `true` 且 `localNextAllowedMs`
+   被設為 `now + INTERVAL`；同一視窗第二次有界等待，推進 timer 過 `INTERVAL` 後回
+   `true`（驗證 stats 仍以 1 req/s 持續，而非無限跳過）。
+10. **降級告警節流 + 恢復 log** — 降級下連續多次 `acquire`：降級告警 log 僅在距上次
+    ≥ `YOUTUBE_WATCH_DEGRADED_LOG_INTERVAL_MS` 時印（以 spy 計次，推進 timer 驗證節
+    流）；隨後將 fake `isReady` 切回 `true` 再 `acquire`，印一次「recovered」log（轉
+    換偵測），且後端切回全域 `eval`（結構性斷言 gate key 被寫入）。
+11. **penalize 本地後備** — `penalize` 後（不論 Redis 成功與否）`localCooldownUntilMs`
+    被設為 `now + COOLDOWN`；在該本地冷卻內呼叫 `acquire` 立即回 `false`（即使全域 gate
+    key 或本地 `localNextAllowedMs` 顯示可 claim，也因本地後備而跳過）；時間前進過本地
+    冷卻後 `acquire` 恢復。
+12. **penalize 回傳 recorded** — `isReady===true` 且 `eval` 成功 → `penalize` 回
+    `true`（含腳本回 `0` 的「已記錄過」情況也回 `true`，不被誤判為未記錄）；`eval` 丟
+    例外或 `isReady===false` → 回 `false`，且本地後備仍被設定（`localCooldownUntilMs`
+    已更新）。
 
 每個案例至少一項結構性斷言（key 實際值 / 回傳值 / 輸出次數 / 本地欄位值），不以
 `toHaveBeenCalled` 單獨充數；Redis 狀態變化以 stateful fake 觀察；涉及 timer 的案例
