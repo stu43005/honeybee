@@ -677,8 +677,8 @@ describe("YoutubeWatchGate.acquire", () => {
 
   it("15. mid-wait disconnect (eval rejects while not ready) is classified degraded", async () => {
     // acquire starts ready, blocks on a future key, then the connection drops
-    // DURING the wait and the next eval rejects. Spec: classify as degraded, not
-    // EVAL ERROR (which is reserved for "rejected while still connected").
+    // DURING the wait and the next eval rejects. That is classified as degraded,
+    // not EVAL ERROR (which is reserved for "rejected while still connected").
     let time = 1_000_000;
     let isReady = true;
     let evalCalls = 0;
