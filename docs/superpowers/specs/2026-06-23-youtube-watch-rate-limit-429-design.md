@@ -572,20 +572,29 @@ runbook（reviewer 建議的「以 runbook 管理回滾期間 gate 狀態與 rep
 - **不連續的上界是「回到變更前基準」，非新增風暴**：舊版 per-process（3 pod × 1/s ＝
   共用 IP 上約 3/s）正是本變更前的**生產既有行為**。回滾 = 卸下本次改善 = 回到既有基
   準速率，並非製造一個比歷史更糟的新狀態。
-- **k8s 滾動回滾天然分階段**：Deployment 回滾沿用 RollingUpdate（`maxUnavailable` 預設
-  約 1 pod），pod 逐一替換；任一時刻最多 1 個舊版 pod 上線，不會 3 pod 同時瞬間恢復獨
-  立流量造成尖峰。待全部替換完成時，原本 ≤ `YOUTUBE_WATCH_COOLDOWN_MS`（60s）的冷卻多
-  半已自然到期。
 - **gate key 自動過期、對舊版無害**：`hb:yt:watch:gate` 帶 TTL、其 `nextAllowedAtMs`
-  亦 ≤60s 後成為過去；舊版讀不到此 key 也不受影響，**無需手動刪除**。
-- **若正逢 YouTube 限速事件中要回滾**：建議操作為（a）優先以滾動回滾讓其自然分階段；
-  （b）若要更保守，等待 ≤60s 讓全域冷卻自然到期後再完成回滾；（c）若需即時，接受回滾
-  即恢復到既有基準速率（歷史常態），並以原有 429 監控觀察。三者皆不需 kill switch 或保
-  留雙限速路徑。
+  亦 ≤ `YOUTUBE_WATCH_COOLDOWN_MS`（60s）後成為過去；舊版讀不到此 key 也不受影響，
+  **無需手動刪除**——key 自然過期後，新舊版皆回到「無 backoff」基準。
+- **回滾安全不依賴 rollout 順序（明確 pre-rollback gate）**：本設計**不**倚賴 k8s 滾動
+  替換「同時只有 1 個舊 pod」這類未由本 spec 強制、且受 `maxSurge`/`maxUnavailable`/
+  readiness/手動 `kubectl rollout undo`/緊急重啟影響的隱性行為來保證安全。改以一個**明
+  確的操作步驟**使安全與 rollout 形狀無關：
 
-> 此狀態不連續僅存在於「回滾」這個人為、低頻、且可由上述 runbook 控管的動作；穩態與
-> 升級（前進部署）皆無此問題（新版一律遵守全域 gate）。本設計據此維持「不引入 runtime
-> flag」的取捨（見「殘餘風險與接受理由」）。
+  **若回滾時可能有 active 全域冷卻（即正逢 YouTube 限速事件）**，runbook 規定先讓全域
+  冷卻**排空**再讓舊版承接流量，二擇一：
+  - **(a) Drain-then-rollback**：回滾前先把 worker Deployment `scale --replicas=0`
+    （或暫停其 watch-page 來源），等待 ≥ `YOUTUBE_WATCH_COOLDOWN_MS`（60s）讓
+    `hb:yt:watch:gate` 自然過期，再部署舊版並 ramp replicas 回原值。舊版上線時冷卻已
+    不存在，不會「無視 active 冷卻而立即恢復」。
+  - **(b) Wait-out**：若不便 scale，至少在觸發回滾前等待 ≥60s（冷卻上界）讓 key 過期，
+    再執行回滾。
+
+  非限速事件（無 active 冷卻）的常規回滾無此顧慮，直接滾動回滾即可。
+
+> 此狀態不連續僅存在於「**回滾且恰有 active 冷卻**」這個人為、低頻、且由上述明確
+> pre-rollback gate 控管的動作；穩態與升級（前進部署）皆無此問題（新版一律遵守全域
+> gate）。據此本設計維持「不引入 runtime flag / 不保留雙限速路徑」的取捨——以一個 ops
+> runbook 步驟換取程式面的單一限速路徑（見「殘餘風險與接受理由」）。
 
 ### 監控與告警
 
