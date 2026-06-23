@@ -57,8 +57,9 @@ masterchat 的 `fetchMetadataFromWatch` 以 `err.code === "429"` 判斷限速並
 ## 設計總覽
 
 新增一個跨 pod 的分散式速率閘門模組 `YoutubeWatchGate`，取代現有的 per-process
-`youtubeRateLimiter` 單例。閘門狀態存放於 worker 共用的 Redis，以單一 Redis key
-（存「下一次可請求的絕對時間戳」`nextAllowedAtMs`）表達全域節奏。沿襲既有
+`youtubeRateLimiter` 單例。閘門狀態存放於 worker 共用的 Redis，核心是一個存「下一次
+可請求的絕對時間戳」`nextAllowedAtMs` 的 key（另有一個 log-once 旗標 key，見
+`penalize`）來表達全域節奏。沿襲既有
 `src/modules/webhook/queue.ts` 的「next-allowed timestamp」語意，但原子操作改以 Lua
 `EVAL` 腳本實作，而非 `WATCH`/`MULTI`（理由見下方「為何用 Lua `EVAL`」）。
 
@@ -382,9 +383,14 @@ worker pod 共享**。stats 更新需求主要來自 first-replica（`replica ==
 `INTERVAL_MS`（提高全域 throughput，但每次調整後觀察 429 是否回升），或調高
 `MAX_WAIT_MS`（容忍更深排隊、減少跳過，代價是單次 `acquire` 佔用更久——仍須遠小於
 `SHUTDOWN_TIMEOUT` 且可被 abort）。`MAX_WAIT_MS` 不必精準等於最壞併發；它是「願意為一
-次 stats 更新排多久」的上限，超界跳過由下一輪週期補上、並由告警可見。`YOUTUBE_WATCH_INTERVAL_MS`
-與 `YOUTUBE_WATCH_ACQUIRE_MAX_WAIT_MS` 設計為可由環境變數覆寫，便於不重編譯即依實測
-（含負載測試，見測試一節）調整。
+次 stats 更新排多久」的上限，超界跳過由下一輪週期補上、並由告警可見。
+
+`YOUTUBE_WATCH_INTERVAL_MS` 與 `YOUTUBE_WATCH_ACQUIRE_MAX_WAIT_MS` 可由同名環境變數覆
+寫，沿用 `src/constants.ts` 既有慣例（如 `JOB_CONCURRENCY`）：
+`Number(process.env.YOUTUBE_WATCH_INTERVAL_MS ?? 1000)`、
+`Number(process.env.YOUTUBE_WATCH_ACQUIRE_MAX_WAIT_MS ?? 5000)`——未設時退回上述預設；
+便於不重編譯即依實測（含負載測試，見測試一節）調整。`COOLDOWN_MS`、`GATE_KEY_TTL_MS`、
+`DEGRADED_LOG_INTERVAL_MS` 維持常數即可，無調校需求。
 
 ## 錯誤處理與邊界情況
 
@@ -621,21 +627,40 @@ runbook（reviewer 建議的「以 runbook 管理回滾期間 gate 狀態與 rep
   readiness/手動 `kubectl rollout undo`/緊急重啟影響的隱性行為來保證安全。改以一個**明
   確的操作步驟**使安全與 rollout 形狀無關：
 
-  **若回滾時可能有 active 全域冷卻（即正逢 YouTube 限速事件）**，runbook 規定先讓全域
-  冷卻**排空**再讓舊版承接流量，二擇一：
-  - **(a) Drain-then-rollback**：回滾前先把 worker Deployment `scale --replicas=0`
-    （或暫停其 watch-page 來源），等待 ≥ `YOUTUBE_WATCH_COOLDOWN_MS`（60s）讓全域冷卻
-    **失效**（`nextAllowedAtMs` 落到過去），再部署舊版並 ramp replicas 回原值。舊版上
-    線時冷卻已失效，不會「無視 active 冷卻而立即恢復」。
-  - **(b) Wait-out**：若不便 scale，至少在觸發回滾前等待 ≥60s（冷卻上界）讓冷卻失效，
-    再執行回滾。
+  **若回滾時可能有 active 全域冷卻（即正逢 YouTube 限速事件）**，runbook 規定以
+  **drain（scale-to-zero）+ 狀態驗證**回滾，而**非**固定 sleep：
+  1. **Drain**：先把 worker Deployment `scale --replicas=0`。這是關鍵——沒有任何 worker
+     在跑，就**沒有人能再呼叫 `penalize` 把 `nextAllowedAtMs` 往後推**。（單純 sleep 而
+     不 drain 不可靠：等待期間仍在跑的 new pod 一旦再撞 429 就把冷卻再延 60s，sleep 無
+     法保證冷卻已排空。）
+  2. **狀態驗證**：drain 後讀 `hb:yt:watch:gate`，確認 `nextAllowedAtMs <= now`（冷卻
+     已失效；key 不存在亦同義）。因已 drain，此值不會再被推遲，是穩定可驗證的條件，取
+     代「等夠久」的時間猜測。
+  3. **Rollback**：條件滿足後再部署舊版並 ramp replicas 回原值。舊版上線時冷卻已失效，
+     不會「無視 active 冷卻而立即恢復」。
 
   非限速事件（無 active 冷卻）的常規回滾無此顧慮，直接滾動回滾即可。
 
-> 此狀態不連續僅存在於「**回滾且恰有 active 冷卻**」這個人為、低頻、且由上述明確
-> pre-rollback gate 控管的動作；穩態與升級（前進部署）皆無此問題（新版一律遵守全域
-> gate）。據此本設計維持「不引入 runtime flag / 不保留雙限速路徑」的取捨——以一個 ops
-> runbook 步驟換取程式面的單一限速路徑（見「殘餘風險與接受理由」）。
+#### 前進部署（混版窗口）
+
+同理，正常 k8s 滾動更新會短暫讓**舊 pod（per-process 限速、不讀 gate）與新 pod（全域
+gate）並存**：此窗口的對外速率 ≈ 仍在跑的舊 pod 的 per-process 量 + 新 pod 的全域
+≤1/s。要點：
+
+- **上界是「≈ 變更前基準」、且為過渡**：混版窗口最壞約等於變更前舊基準（3 pod × 1/s
+  ≈ 3/s）再加新 pod 的 ≤1/s，**非**製造比歷史更糟的新穩態；滾動更新完成（全部新版）後
+  即降到安全的全域 1/s。窗口長度 = 一次滾動更新時間（數分鐘級）。
+- **新 pod 仍遵守全域 backoff**：混版期間若撞 429，新 pod 會寫全域冷卻、彼此退避；僅舊
+  pod 不認 gate。
+- **若部署恰逢已知 YouTube 限速事件**：採與回滾相同的保守作法——先 drain（scale-to-zero）
+  再 ramp 新版，避免新舊疊加；平時（無 active 限速）的常規滾動部署接受該過渡上界即可。
+
+> 上述 deploy/rollback 的狀態不連續，本質是「以跨 pod 協調（需 Redis）取代 per-process
+> 限速」在**版本切換瞬間**無法跨版本協調的固有結果：其速率上界被「變更前既有基準」
+> （≈3/s）所夾、且僅為過渡（穩態收斂為安全的全域 1/s）。據此本設計維持「不引入 runtime
+> flag / 不保留雙限速路徑」的取捨，改以 **drain（scale-to-zero）+ 狀態驗證的 ops
+> runbook** 覆蓋「限速事件期間的 deploy/rollback」這個低頻情境（見「殘餘風險與接受理
+> 由」）。此為已與需求方確認的刻意取捨。
 
 ### 監控與告警
 
