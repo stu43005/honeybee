@@ -65,11 +65,18 @@ masterchat 的 `fetchMetadataFromWatch` 以 `err.code === "429"` 判斷限速並
 `acquire` 採**有界阻塞**語意：等同現有 `youtubeRateLimiter.acquire()` 的「排隊直到
 釋放」，但加上時間上限與可中斷性，避免在冷卻期間無限期阻塞 job。
 
+連線管理走專案既有的模組化慣例：worker 註冊 `RedisModule`，`YoutubeWatchGate` 注入
+`redisModule.redis` 使用（與 webhook 服務同時用 `RedisModule` + `QueueModule` 的組成
+方式一致）。為避免「gate 這個 best-effort 設施的 Redis 連不上就拖垮整個 worker」，
+`RedisModule` 增加一個**可選的 `nonBlockingConnect` 選項**，僅 worker 啟用；啟動時不
+以 `await connect()` 阻塞、改背景連線並降級，其他使用 `RedisModule` 的服務（如
+webhook）行為不變（詳見「啟動期 Redis 不可用」一節）。
+
 ```text
 runWorker (Application)
   ├─ MongodbModule
-  ├─ RedisModule            ← 新增（提供 redis client）
-  ├─ YoutubeWatchGate       ← 新增（建構時注入 redisModule.redis）
+  ├─ RedisModule            ← 新增（啟用 nonBlockingConnect；啟動不被 Redis 阻塞）
+  ├─ YoutubeWatchGate       ← 新增（注入 redisModule.redis 使用）
   └─ QueueModule(honeybee)
          └─ queue.process(N, job => handleJob(job, signal, gate))  ← 將 gate 傳入
 ```
@@ -79,11 +86,20 @@ runWorker (Application)
 ### `YoutubeWatchGate`（新模組 `src/modules/youtube-watch-gate.ts`）
 
 唯一職責：跨所有 worker pod 協調對 YouTube watch page 的請求節奏。實作 `Module`
-介面（`name`，無 `init`/`close` 需求，因為它不擁有 Redis 連線生命週期——連線由
-`RedisModule` 擁有）。建構子接受一個已連線的 node-redis client。
+介面，**不自管 Redis 連線**——建構子注入 `RedisModule` 的共享 client
+（`redisModule.redis`），連線生命週期由 `RedisModule` / `Application` 擁有。gate 的
+`init`/`close` 無連線責任（最多 `close` 時清掉自身的 in-flight 等待，不 `disconnect`
+共享連線）。
 
-對外只暴露兩個方法，內部封裝所有 Redis 互動與型別細節。閘門狀態存於單一 Redis
-key `hb:yt:watch:gate`，其值為 `nextAllowedAtMs`（epoch 毫秒，字串）。
+- 降級狀態（共享 client 未就緒：Redis 啟動連不上仍在背景重連、或執行期斷線）下，
+  gate 對 client 的 `EVAL` 會被 reject；`acquire` 以此 fail-closed 回 `false`（跳過
+  stats 更新，不影響 chat 收集）、`penalize` 走本地後備（見下），兩者皆不向呼叫端拋
+  例外。
+
+對外只暴露兩個方法，內部封裝所有 Redis 互動與型別細節。閘門狀態存於兩個 Redis
+key：`hb:yt:watch:gate`（值為 `nextAllowedAtMs`，epoch 毫秒字串）與
+`hb:yt:watch:cooldown-log`（log-once 旗標，見 `penalize`）。模組另持有一個 process
+本地欄位 `localCooldownUntilMs`（後備退避，見「penalize 失敗的可見性與本地後備」）。
 
 #### `acquire(maxWaitMs: number, signal?: AbortSignal): Promise<boolean>`
 
@@ -108,52 +124,65 @@ end
 
 client 端 `acquire` 迴圈：
 
-1. `deadline = Date.now() + maxWaitMs`。
-2. 迴圈：若 `signal?.aborted` → 回 `false`。
-3. 以 `now = Date.now()` 執行 claim 腳本。回傳 `-1` → 回 `true`（搶到）。
-4. 否則 `nextAllowed = Number(回傳值)`，`delay = nextAllowed - Date.now()`；若
+1. 若共享 client 未就緒（`redis.isReady === false`，降級中）或
+   `Date.now() < localCooldownUntilMs`（本地後備冷卻中）→ 立即回 `false`。
+   （`EVAL` 仍包在 try/catch 內，即使 readiness 檢查與實際斷線間有空窗，reject 也會
+   fail-closed 回 `false`。）
+2. `deadline = Date.now() + maxWaitMs`。
+3. 迴圈：若 `signal?.aborted` → 回 `false`。
+4. 以 `now = Date.now()` 執行 claim 腳本（`EVAL` 例外 → fail-closed 回 `false`）。
+   回傳 `-1` → 回 `true`（搶到）。
+5. 否則 `nextAllowed = Number(回傳值)`，`delay = nextAllowed - Date.now()`；若
    `delay <= 0` 立即重試（競爭落空，極短）。
-5. `remaining = deadline - Date.now()`；若 `remaining <= 0` → 回 `false`（預算耗盡）。
-6. `await setTimeout(min(delay, remaining), undefined, { signal })`（`node:timers/promises`，
-   可被 abort），喚醒後回到步驟 2。
+6. `remaining = deadline - Date.now()`；若 `remaining <= 0` → 回 `false`（預算耗盡）。
+7. `await setTimeout(min(delay, remaining), undefined, { signal })`（`node:timers/promises`，
+   可被 abort），喚醒後回到步驟 3。
 
 多個 waiter 在閘門開啟時各自重試 claim，腳本原子性保證只有一個搶到、其餘讀到被推
 進的 `nextAllowed` 後再排到下一個 `INTERVAL`——形成分散式版「排隊直到釋放」。`now`
 一律取自 `Date.now()`。
 
-#### `penalize(): Promise<void>`
+#### `penalize(): Promise<boolean>`
 
-偵測到 429 時呼叫，將同一個 key 原子地推進為
-`max(current, now + YOUTUBE_WATCH_COOLDOWN_MS)`，使所有 pod 在冷卻視窗內的 `acquire`
-都等不到空檔而退避。
+偵測到 429 時呼叫。先**無條件設定 process 本地後備冷卻**
+`localCooldownUntilMs = Date.now() + YOUTUBE_WATCH_COOLDOWN_MS`（即使 Redis 失效，本
+pod 也會本地退避，不會 1 秒後立刻又打 YouTube）；再嘗試把全域冷卻寫入 Redis，回傳
+**Redis 是否成功記錄**（`EVAL` 例外 → 回 `false`，呼叫端據此印一次可見的告警）。
 
-penalize 腳本（`KEYS[1]=gate key`，`ARGV=[now, COOLDOWN_MS, GATE_KEY_TTL_MS]`）邏輯：
+penalize 腳本（`KEYS[1]=gate key`、`KEYS[2]=cooldown-log 旗標 key`，
+`ARGV=[now, COOLDOWN_MS, GATE_KEY_TTL_MS]`）邏輯：
 
 ```lua
 local current = tonumber(redis.call('GET', KEYS[1])) or 0
 local now = tonumber(ARGV[1])
-local target = now + tonumber(ARGV[2])
-local wasActive = now < current        -- 冷卻是否已啟用
+local cooldown = tonumber(ARGV[2])
+local target = now + cooldown
 if target > current then
   redis.call('SET', KEYS[1], target, 'PX', tonumber(ARGV[3]))
 end
-if wasActive then return 0 else return 1 end   -- 1 = 由未啟用→啟用
+-- log-once 旗標：每個冷卻 episode 僅首次 SET 成功（NX），TTL = 冷卻長度
+local fresh = redis.call('SET', KEYS[2], '1', 'NX', 'PX', cooldown)
+if fresh then return 1 else return 0 end   -- 1 = 本 episode 首次，應 log
 ```
 
-`max` 語意（`if target > current`）保證不縮短既有更長的冷卻。腳本回傳 `1`（由未
-啟用轉啟用）時，client 端輸出單行 log，例如
-`entering YouTube watch rate-limit cooldown for 60s`；回傳 `0`（冷卻已啟用）則不
-輸出。log-once 的判斷在腳本內原子完成，並發 `penalize` 不會各自誤判而重複輸出
-（除非剛好同時跨越啟用邊界，最壞數個 pod 各印一次）。
+`max` 語意（`if target > current`）保證不縮短既有更長的冷卻。**log-once 改用獨立旗標
+key `KEYS[2]`（`SET NX PX cooldown`）判斷，而非比較 `nextAllowedAtMs`**：因為剛成功
+claim 會把 `nextAllowedAtMs` 留在 `now + INTERVAL`（未來 1 秒），若用時間戳比較會把
+「首次進入冷卻」誤判成「冷卻已啟用」而吞掉首條 log。旗標 NX 語意則精準對應「每個冷
+卻 episode 一條 log」：腳本回 `1` 時 client 印單行
+`entering YouTube watch rate-limit cooldown for 60s`，回 `0` 不印。持續 429 超過一個
+冷卻長度後旗標到期，下次 penalize 會再印一次（每分鐘至多一條，仍遠少於現狀洪水，且
+有助於辨識「仍在限速中」）。
 
 #### 為何用 Lua `EVAL` 而非 `WATCH`/`MULTI`
 
 `WATCH` 是**連線層級**狀態。worker 在 `JOB_CONCURRENCY > 1` 時會有多個 job 並發在
-**同一條共享 Redis 連線**（`RedisModule.redis`）上呼叫 `acquire`/`penalize`；並發的
-`WATCH`/`MULTI`/`EXEC` 在單一連線上會互相干擾，且有界阻塞會拉長 `acquire` 的存活
-時間、放大重疊。Lua `EVAL` 將「讀-比較-寫」收斂為單一原子指令，無連線狀態、無
-`WatchError` 重試迴圈，在共享連線並發下安全，且讓上述等待迴圈的每次重試只是一個
-`EVAL`。代價是引入 Lua 這一新慣例（取捨後選擇此方案）。
+**`RedisModule.redis` 這條共享連線**上呼叫 `acquire`/`penalize`；並發的 `WATCH`/
+`MULTI`/`EXEC` 在單一連線上會互相干擾，且有界阻塞會拉長 `acquire` 的存活時間、放大
+重疊。
+Lua `EVAL` 將「讀-比較-寫」收斂為單一原子指令，無連線狀態、無 `WatchError` 重試迴
+圈，在共享連線並發下安全，且讓上述等待迴圈的每次重試只是一個 `EVAL`。代價是引入
+Lua 這一新慣例（取捨後選擇此方案）。
 
 ### `updateVideoStats` 的改動（`src/commands/worker.ts`）
 
@@ -180,7 +209,14 @@ async function updateVideoStats() {
     if (err instanceof AbortError || axios.isCancel(err)) {
       // ignore
     } else if (is429(err)) {
-      await gate.penalize(); // 全域退避
+      // 全域退避；penalize 已先設好本地後備冷卻。Redis 記錄失敗時印一次告警，
+      // 讓「偵測到 429 但全域冷卻未記錄」的降級狀態可見（非靜默）
+      const recorded = await gate.penalize();
+      if (!recorded) {
+        videoLog(
+          "<!> [STATS UPDATE ERROR] 429 detected; global cooldown not recorded (local backoff active)"
+        );
+      }
     } else if (isAxiosError(err)) {
       videoLog(`<!> [STATS UPDATE ERROR] ${err}`);
     } else {
@@ -194,21 +230,46 @@ async function updateVideoStats() {
 偵測；另防禦性地將 masterchat 的 `AccessDeniedError` 一併視為 429（涵蓋未來上游修
 正、或 embed 路徑改丟該錯誤的情況）。
 
+注意：penalize 失敗時印的告警**不會**像原始 429 洪水那樣氾濫——因為 penalize 已設好
+本地後備冷卻（`localCooldownUntilMs`），該 pod 在冷卻期間的 `acquire` 會直接回
+`false` 跳過，不再觸發新的 watch-page 請求，自然不會反覆進到這個分支。
+
 ### 移除既有 per-process limiter
 
 `src/modules/rate-limiter.ts` 僅被 `src/commands/worker.ts` 匯入使用。替換完成後，
 刪除整個 `src/modules/rate-limiter.ts` 並移除 worker.ts 中對應的 import，清除
 dead code。
 
+### `RedisModule` 的可選 init 容錯（`src/modules/redis.ts`）
+
+為 `RedisModule` 建構子增加一個可選選項（例如 `new RedisModule({ nonBlockingConnect:
+true })`，預設 `false`）。語意依 node-redis v4 實際行為（見「第三方套件行為依據」，已
+讀原始碼確認）設計：
+
+- `false`（預設，現狀）：`init()` **`await connect()`**。node-redis 預設策略
+  `Math.min(retries*50, 500)` 會無限重試初次連線，故 Redis 不可達時 `await` 會阻塞至
+  連上為止——維持既有服務（webhook 等）行為不變。
+- `true`（僅 worker 啟用）：`init()` **不 await `connect()`**，改以 fire-and-forget
+  發起連線（`this.redis.connect().catch(...)`）並立即返回，使 worker 啟動不被 Redis
+  阻塞；初次連線由 node-redis 預設無限重試策略在背景重連，連上後 `isReady` 轉真。
+  **必須**先掛 `this.redis.on('error', ...)`（node-redis 每次連線失敗會 `emit('error')`，
+  無 listener 會讓 process 崩潰）。`close()` 比照既有 `disconnect()`，並確保未連上時
+  呼叫不致拋出未處理錯誤。
+
+此選項是本設計對 `src/modules/redis.ts` 的唯一改動，且向後相容（既有呼叫 `new
+RedisModule()` 不傳參數即維持 `await connect()` 行為）。
+
 ### Application 接線與關閉順序
 
-於 `runWorker` 中註冊順序：`MongodbModule` → `RedisModule` →
-`YoutubeWatchGate`（建構子傳入 `redisModule.redis`）→ `QueueModule`。
+於 `runWorker` 中註冊順序：`MongodbModule` → `RedisModule`（啟用 `nonBlockingConnect`）→
+`YoutubeWatchGate`（建構子注入 `redisModule.redis`）→ `QueueModule`。
 
-- `RedisModule` 在 `YoutubeWatchGate` 之前註冊，確保 init 時 Redis 已連線、close
-  時（LIFO）gate 先於 Redis 關閉。`YoutubeWatchGate` 不擁有 Redis 連線，故其
-  `close()` 無需 disconnect。
+- `RedisModule` 在 `YoutubeWatchGate` 之前註冊，gate 才能取得共享 client；close 為
+  LIFO，故 QueueModule 先關、gate 次之、`RedisModule` 再關（gate 不擁有連線、不
+  `disconnect`）、Mongo 最後。
 - `QueueModule` 在最後，確保 job 消費者先於其依賴（Redis/Mongo）停止。
+- worker 的 `RedisModule` 以容錯選項註冊，使「gate 的 Redis 連不上」不致命（理由見
+  「啟動期 Redis 不可用」）。
 
 ## 常數（`src/constants.ts`）
 
@@ -247,26 +308,32 @@ dead code。
 主流程——整段 stats 更新本就包在 best-effort try/catch 內，Redis 故障不得使 job 失敗
 或中斷 chat 收集。上述策略針對的是執行期暫時抖動；啟動期行為見下節。
 
-### 啟動期 Redis 不可用：不引入新的硬性依賴
+### 啟動期 Redis 不可用：RedisModule 可選 init 容錯，worker 不死
 
-新增 `RedisModule` **不會**讓 worker 變得「比現在更依賴 Redis」。worker 既有的
-`QueueModule`（Bee-Queue）已使用與 `RedisModule` 完全相同的 `REDIS_URI`
-（`src/modules/queue.ts` 第 18–21 行 `redis: { url: REDIS_URI }`），因此 Redis 在本
-設計之前就已是 worker 的硬性前置依賴：
+gate 是 best-effort 的 stats 限速設施，**不得**因它依賴的 Redis 連不上而讓整個
+worker 無法消費 job / 收集 chat。問題在於：若直接把標準 `RedisModule` 加進 worker，
+其 `init()` 的 `await connect()` 在 Redis 啟動不可達時會**阻塞**——node-redis 預設無限
+重試策略下 `connect()` 不會 reject，而是持續重試直到連上（已讀 `@redis/client`
+1.5.14 原始碼確認，見「第三方套件行為依據」）。也就是說 worker 會卡在 `app.init()`
+等 Redis，遲遲無法啟動 `QueueModule`、無法收集 chat——即使 Bee-Queue 可能仍連得上
+（相同 `REDIS_URI` **不等於**相同可用性：第二條連線有獨立的握手、認證/TLS，以及
+Redis `maxclients` 壓力，存在「Bee-Queue 仍可處理 job，但新連線因 `maxclients` 或瞬時
+握手失敗而連不上」的情境）。為一個 stats-only 功能阻塞 chat 收集得不償失。
 
-- 沒有 Redis，worker 根本收不到任何 `honeybee` job，chat 收集本就無從開始。
-- Redis 故障時，既有的 `queue.on("error")`（`src/commands/worker.ts` 第 1064–1068
-  行）會 `process.exit(1)`，worker 直接結束。
+解法：**為 `RedisModule` 增加可選的 `nonBlockingConnect` 選項（預設關閉），僅 worker
+啟用。** 啟用時 `init()` **不 await `connect()`**，改以 fire-and-forget 發起連線並先掛
+`'error'` handler，立即返回——worker 照常啟動 `QueueModule`、收集 chat；初次連線由
+node-redis 預設無限重試策略在背景完成，連上後 `isReady` 轉真，gate 自動回到全域限速。
+預設關閉，故 webhook 等既有使用 `RedisModule` 的服務維持 `await connect()` 行為完全
+不變。
 
-因此啟動期行為定義為：`RedisModule.init()` 的 `connect()` 連不上時，`app.init()`
-拋例外、process 結束——這與「Redis 故障時 Bee-Queue 讓 worker exit」是**同一個**失敗
-封套，不是本設計新增的失敗模式。`RedisModule` 與 Bee-Queue 指向同一 Redis 實例，兩
-者要嘛同時可用、要嘛同時不可用；不存在「Bee-Queue 連得上但 watch gate 連不上」而
-獨自卡死 worker 的情境。
+降級狀態下（`redis.isReady === false`，仍在背景連線）gate 對共享 client 的 `EVAL`
+會 reject，`acquire` fail-closed 回 `false`（跳過 stats 更新，不影響 chat 收集）、
+`penalize` 走本地後備冷卻；Redis 連上後 gate 自動回到正常全域限速。
 
-> 操作面：first-run / 部署時的 Redis 失敗本就由既有的 queue-error → `process.exit(1)`
-> 行為涵蓋（k8s 會重啟並在 Redis 恢復後成功啟動），本設計不改變此行為，故不需新增
-> 啟動期 Redis 失敗的測試或檢查。
+> 連線數影響：每個 worker pod 因 `RedisModule` 多一條 Redis 連線（3 pod = +3）。此量
+> 級遠在 Redis `maxclients` 餘裕內（webhook 服務早已同時持有 QueueModule + RedisModule
+> 兩條連線於生產運行）。計畫階段仍應確認部署的 `maxclients` 設定有對應餘裕。
 
 ### 等待迴圈終止與原子性
 
@@ -331,8 +398,23 @@ gate 既有假設相同，不額外處理。
 ### 並發 penalize
 
 多個 pod 幾乎同時撞 429 各自呼叫 `penalize()`，`max(current, now + COOLDOWN)` 語意
-保證收斂到最遠的冷卻時間，不會互相縮短；log 去重靠「轉換時才印」，最壞情況數個
-pod 各印一次，仍遠少於現狀的洪水。
+保證收斂到最遠的冷卻時間，不會互相縮短；log 去重靠獨立旗標 key 的 `SET NX`（每個冷
+卻 episode 只有一個 penalize 搶到旗標而印一次），最壞情況跨 pod 競態下數個各印一
+次，仍遠少於現狀的洪水。
+
+### penalize 失敗的可見性與本地後備
+
+防止「偵測到 429，但全域冷卻沒被記錄而靜默失效」：
+
+- **可見性：** `penalize()` 回傳 Redis 是否成功記錄；`updateVideoStats` 在失敗時印一
+  次告警（見上方程式碼），讓限速機制降級不再是隱形的。此告警本身不會氾濫，因為下一
+  點的本地後備會立即讓該 pod 停止再打 watch page。
+- **本地後備冷卻：** `penalize()` 一進入就**無條件**設定 process 本地
+  `localCooldownUntilMs = now + COOLDOWN_MS`，且 `acquire` 會先檢查它。因此即使 Redis
+  協調完全失效（`EVAL` 例外、降級），撞到 429 的該 pod 仍會本地退避一個 `COOLDOWN`，
+  **不會**在 1 秒 INTERVAL 後立刻又恢復 watch-page 流量、重燃 429。其他 pod 若 Redis
+  正常則照常吃到全域冷卻；若連 Redis 都壞了，各 pod 也會在各自撞到 429 後本地退避，
+  收斂到「大家都安靜」。本地後備是全域協調的下位保險，不取代它。
 
 ## 測試
 
@@ -357,13 +439,32 @@ timers）：
 6. **penalize 的 max 語意** — 先 `penalize` 設較長冷卻，再以較早時間 `penalize`
    不縮短既有 key 值（由 stateful fake 觀察 key 未被改小）。
 7. **Redis 故障處理** — 令 fake `eval` 丟例外：`acquire` 回 `false`（fail-closed，跳
-   過本輪更新）、`penalize` 不向外拋例外（best-effort）。
-8. **log 去重** — 冷卻由未啟用→啟用只輸出一次（腳本回 `1`）；冷卻仍有效時重複
-   `penalize`（腳本回 `0`）不再輸出（以 spy 觀察輸出次數）。
+   過本輪更新）、`penalize` 不向外拋例外且回 `false`（best-effort）。
+8. **log-once 旗標** — 同一冷卻 episode 內重複 `penalize`：首次旗標 `SET NX` 成功、
+   腳本回 `1`（應 log）；其後旗標已存在、回 `0`（不 log）。並驗證「剛 claim 後
+   `nextAllowedAtMs = now + INTERVAL`」的情況下首次 `penalize` 仍回 `1`（旗標機制不
+   受時間戳干擾，避免吞掉首條 log）。
+9. **共享 client 降級** — 注入 `redis.isReady === false` 的 fake client：`acquire`
+   立即回 `false`（不呼叫 `eval`）；另以「`eval` reject」的 fake 驗證即使略過
+   readiness 檢查，`acquire` 仍 fail-closed 回 `false`、`penalize` 回 `false` 不拋。
+10. **penalize 本地後備** — `penalize` 後（不論 Redis 成功與否）`localCooldownUntilMs`
+    被設為 `now + COOLDOWN`；在該本地冷卻內呼叫 `acquire` 立即回 `false`（即使 gate
+    key 顯示可 claim，也因本地後備而跳過）；時間前進過本地冷卻後 `acquire` 恢復。
+11. **penalize 失敗回傳 false** — fake `eval` 丟例外時 `penalize` 回 `false`（供呼叫
+    端印告警），且本地後備仍被設定（驗證 `localCooldownUntilMs` 已更新）。
 
-每個案例至少一項結構性斷言（key 實際值 / 回傳值 / 輸出次數），不以
+每個案例至少一項結構性斷言（key 實際值 / 回傳值 / 輸出次數 / 本地欄位值），不以
 `toHaveBeenCalled` 單獨充數；Redis 狀態變化以 stateful fake 觀察；涉及 timer 的案例
 以 fake timers 明確推進並 await promise 結算，不以「等事件發生」草草帶過。
+
+### `src/modules/redis.spec.ts`（RedisModule `nonBlockingConnect` 選項）
+
+1. **預設 await 連線** — 不傳選項時，`init()` 會 `await this.redis.connect()`：以 spy
+   驗證 `init()` 等待 connect 結算（既有行為，確保 webhook 等服務不受影響）。
+2. **non-blocking 啟用** — `nonBlockingConnect: true` 時，即使 fake `connect()` 尚未
+   resolve（pending），`init()` 仍立即 resolve（以 fake timers / 未結算的 connect
+   promise 驗證 init 不等待）；且 `init()` 前已掛上 `'error'` listener（避免 connect
+   背景失敗的 `error` 事件讓 process 崩潰）；`close()` 不因未連線而拋例外。
 
 ### worker.ts 429 偵測
 
@@ -373,12 +474,25 @@ timers）：
 
 ## 第三方套件行為依據
 
-- **node-redis v4**：以 `EVAL`（client `eval(script, { keys, arguments })`，arguments
-  皆為字串）執行 Lua 腳本，於腳本內 `redis.call('GET'/'SET', ...)` 並以
-  `SET key value PX ms` 設定毫秒 TTL；腳本回傳值經 client 轉為 JS number。`EVAL` 為
-  單一原子指令，並發呼叫由 Redis 序列化，無 `WATCH` 連線狀態問題。專案既有
+- **node-redis v4**：gate 使用 `RedisModule.redis` 注入的共享 client（不自建連線）；
+  以 `redis.isReady` 判斷連線就緒、以 `EVAL`（client `eval(script, { keys, arguments
+})`，arguments 皆為字串）執行 Lua 腳本，腳本內 `redis.call('GET'/'SET', ...)`，
+  `SET key value PX ms` 設定毫秒 TTL、`SET ... NX` 在 key 已存在時回 `nil`（Lua 內
+  `false`）、否則回 `OK`；腳本回傳值經 client 轉為 JS number。`EVAL` 為單一原子指令，
+  並發呼叫由 Redis 序列化，無 `WATCH` 連線狀態問題。專案既有
   `src/modules/webhook/queue.ts`、`partition.ts` 使用 `SET ... { PX }` 與 `multi`，
   本設計改用 `eval`，屬新增用法。
+- **node-redis v4 連線/重連**（已讀 `node_modules/@redis/client@1.5.14`
+  `dist/lib/client/socket.js` 確認）：預設 `reconnectStrategy` 為
+  `Math.min(retries*50, 500)`（L129），**永遠回傳數字 → 無限重試**。初次 `connect()`
+  自身的 `do...while (isOpen && !isReady)` 迴圈（L143–170）即依此策略重試初次連線；
+  因此 `await connect()` 在 Redis 不可達時**阻塞重試直到連上**（每次嘗試受
+  `connectTimeout=5000ms` 限制），**不會 reject**——只有當 `reconnectStrategy` 回傳
+  `false`/`Error` 時才會 reject 並把 `isOpen` 設為 `false`（L132–141）。每次失敗會
+  `emit('error')`（L166），故背景連線模式**必須**先掛 `client.on('error')`，否則
+  Node 對無 listener 的 `'error'` 事件會丟出。據此，worker 的 `nonBlockingConnect`
+  以「不 await `connect()` + 掛 `'error'` handler」即可達成「啟動不阻塞、背景自動連
+  上」，不需自訂 `reconnectStrategy` 或顯式重試迴圈。
 - **axios**：HTTP 429 時 `isAxiosError(err)` 為真且 `err.response?.status === 429`；
   `err.code` 為 `ERR_BAD_REQUEST` / `ERR_BAD_RESPONSE` 而非 `"429"`（此即 masterchat
   偵測失效的原因）。
@@ -388,6 +502,7 @@ timers）：
   時 reject（`AbortError`）；worker 既有程式已使用此模式（`src/commands/worker.ts`
   第 17、906、925 行）。
 
-> 計畫階段須依專案規範以 research subagent 讀取 `node_modules/` 原始碼，確認上述
-> node-redis `eval` 簽名／回傳型別、`setTimeout` abort 行為與 masterchat 行為與專案
-> 實際版本一致後，才將具體呼叫寫入實作計畫。
+> node-redis 連線/重連行為已於本設計階段讀 `@redis/client@1.5.14` 原始碼確認（見上
+> 條，含行號）。計畫階段仍須依專案規範以 research subagent 確認 `eval` 簽名／回傳型
+> 別、`SET ... NX` 回傳值、`setTimeout` abort 行為與 masterchat 行為與專案實際版本一
+> 致後，才將具體呼叫寫入實作計畫。
