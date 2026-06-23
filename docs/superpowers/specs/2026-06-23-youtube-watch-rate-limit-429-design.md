@@ -524,8 +524,34 @@ Bee-Queue 連線會先失敗、worker 根本無法消費 job。換言之，gate 
 `RedisModule` 加一個預設關閉的選項，並以 gate 取代 worker 內部對 `rate-limiter.ts` 的
 呼叫——不改動 chat 收集（`mc.iterate`）與 queue 流程。若上線後觀察到 gate 導致 stats
 被跳過（`[YT GATE DEGRADED]` log），回滾 = **重新部署前一版**，即恢復原 per-process
-`rate-limiter.ts` 行為、stats 立即恢復。回滾期間與降級期間 chat 收集皆不受影響；stats
+`rate-limiter.ts` 行為、stats 恢復。回滾期間與降級期間 chat 收集皆不受影響；stats
 為 best-effort，且 `maxViewers` 等 `$max` 欄位保留既有峰值，無資料破壞風險。
+
+#### 回滾遇上「全域冷卻仍生效」的狀態相容性
+
+需明確一個狀態不連續：舊版 per-process limiter **不認識** gate key
+`hb:yt:watch:gate`，故若在「gate 已因 429 寫入全域冷卻、且冷卻尚未到期」時回滾，舊版
+各 pod 不會遵守該全域冷卻，而是各自以 per-process 速率恢復 watch-page 流量。要點與
+runbook（reviewer 建議的「以 runbook 管理回滾期間 gate 狀態與 replica 速率」路徑，無
+需 runtime flag）：
+
+- **不連續的上界是「回到變更前基準」，非新增風暴**：舊版 per-process（3 pod × 1/s ＝
+  共用 IP 上約 3/s）正是本變更前的**生產既有行為**。回滾 = 卸下本次改善 = 回到既有基
+  準速率，並非製造一個比歷史更糟的新狀態。
+- **k8s 滾動回滾天然分階段**：Deployment 回滾沿用 RollingUpdate（`maxUnavailable` 預設
+  約 1 pod），pod 逐一替換；任一時刻最多 1 個舊版 pod 上線，不會 3 pod 同時瞬間恢復獨
+  立流量造成尖峰。待全部替換完成時，原本 ≤ `YOUTUBE_WATCH_COOLDOWN_MS`（60s）的冷卻多
+  半已自然到期。
+- **gate key 自動過期、對舊版無害**：`hb:yt:watch:gate` 帶 TTL、其 `nextAllowedAtMs`
+  亦 ≤60s 後成為過去；舊版讀不到此 key 也不受影響，**無需手動刪除**。
+- **若正逢 YouTube 限速事件中要回滾**：建議操作為（a）優先以滾動回滾讓其自然分階段；
+  （b）若要更保守，等待 ≤60s 讓全域冷卻自然到期後再完成回滾；（c）若需即時，接受回滾
+  即恢復到既有基準速率（歷史常態），並以原有 429 監控觀察。三者皆不需 kill switch 或保
+  留雙限速路徑。
+
+> 此狀態不連續僅存在於「回滾」這個人為、低頻、且可由上述 runbook 控管的動作；穩態與
+> 升級（前進部署）皆無此問題（新版一律遵守全域 gate）。本設計據此維持「不引入 runtime
+> flag」的取捨（見「殘餘風險與接受理由」）。
 
 ### 監控與告警
 
