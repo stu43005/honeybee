@@ -483,11 +483,70 @@ gate 既有假設相同，不額外處理。
   次告警（見上方程式碼），讓限速機制降級不再是隱形的。此告警本身不會氾濫，因為下一
   點的本地後備會立即讓該 pod 停止再打 watch page。
 - **本地後備冷卻：** `penalize()` 一進入就**無條件**設定 process 本地
-  `localCooldownUntilMs = now + COOLDOWN_MS`，且 `acquire` 會先檢查它。因此即使 Redis
-  協調完全失效（`EVAL` 例外、降級），撞到 429 的該 pod 仍會本地退避一個 `COOLDOWN`，
-  **不會**在 1 秒 INTERVAL 後立刻又恢復 watch-page 流量、重燃 429。其他 pod 若 Redis
-  正常則照常吃到全域冷卻；若連 Redis 都壞了，各 pod 也會在各自撞到 429 後本地退避，
-  收斂到「大家都安靜」。本地後備是全域協調的下位保險，不取代它。
+  `localCooldownUntilMs = now + COOLDOWN_MS`，且 `acquire` 會先檢查它。針對的情境是
+  「`isReady` 為真、`acquire` 成功打了 watch page、收到 429，但 `penalize` 的全域
+  `EVAL` 寫入**瞬時失敗**（`recorded = false`）」——此時全域冷卻沒寫成，本地後備仍讓
+  該 pod 退避一個 `COOLDOWN`，**不會**在 1 秒 INTERVAL 後立刻又重打、重燃 429。其他
+  pod 的全域 `EVAL` 通常成功、照常吃到全域冷卻。本地後備是全域協調的下位保險，不取代
+  它。（注意：完全降級時 `acquire` 本就不打 watch page、不會收到 429，故此後備只在
+  「正常模式 + 寫入瞬時失敗」這條窄路生效。）
+
+## 上線安全：遷移、回滾與監控
+
+降級採 fail-closed（Redis 不可用時跳過所有 stats 更新），故「gate 的 Redis 連線是否
+與既有 worker 路徑一樣可靠」必須在上線前說清楚。本節即為該遷移/相容性計畫。本設計
+**不**引入 runtime feature flag/kill switch——理由見末段「殘餘風險與接受理由」。
+
+### gate 連線可靠性 = 既有 worker 路徑（除 +1 連線外無新變數）
+
+gate 透過 `RedisModule` 連線，其 `REDIS_URI` 與 worker 既有的 `QueueModule`
+（Bee-Queue）**完全相同**（同 host、認證、TLS、Redis 版本、網路政策）。因此 auth /
+TLS / 版本 / 網路政策這些可靠性因素**不可能與既有路徑不同**：若其中任一有問題，
+Bee-Queue 連線會先失敗、worker 根本無法消費 job。換言之，gate 連線**唯一新增**的失敗
+變數是「每個 worker pod 多一條 Redis 連線」是否撞到 Redis `maxclients` 上限——這是單
+一、可在部署前量化檢查的條件，而非一組未知的相容性風險。
+
+### 部署前檢查清單（migration checklist）
+
+- **maxclients 餘裕**：確認 Redis `maxclients` ≥（現有每 pod 連線數 + 1）× 各服務
+  replica 總和，含 worker 的 `+3`（3 pod 各 +1）。webhook 服務早已每 pod 持有
+  QueueModule + RedisModule 兩條連線於生產運行，可作為餘裕量級的參照。
+- **可達性**：`REDIS_URI` 對 worker 可達——此點 Bee-Queue 既有運行已證實，無需額外
+  驗證；不需任何新的 auth/TLS 設定（沿用既有）。
+- **首次上線無既有 gate 狀態**：gate key (`hb:yt:watch:gate`) 與 log 旗標
+  (`hb:yt:watch:cooldown-log`) 不存在時，claim 腳本讀到 `nextAllowed = 0` → 立即可
+  claim、penalize 旗標 `SET NX` 即首次成功，皆為正常初始行為，**無 migration 資料或
+  預建 key 需求**。
+
+### 回滾路徑（附加式變更，安全）
+
+本設計為**附加式**：新增 `YoutubeWatchGate` 模組、worker 註冊 `RedisModule`、為
+`RedisModule` 加一個預設關閉的選項，並以 gate 取代 worker 內部對 `rate-limiter.ts` 的
+呼叫——不改動 chat 收集（`mc.iterate`）與 queue 流程。若上線後觀察到 gate 導致 stats
+被跳過（`[YT GATE DEGRADED]` log），回滾 = **重新部署前一版**，即恢復原 per-process
+`rate-limiter.ts` 行為、stats 立即恢復。回滾期間與降級期間 chat 收集皆不受影響；stats
+為 best-effort，且 `maxViewers` 等 `$max` 欄位保留既有峰值，無資料破壞風險。
+
+### 監控與告警
+
+- **降級告警**：以 `<!> [YT GATE DEGRADED]` log 設 log-based alert（出現即代表該 pod
+  的 gate Redis 持續不可用）。建議閾值：單一 pod 持續出現超過數分鐘即升級為人為處置
+  （提高 `maxclients` / 修網路 / 回滾）。
+- **成因可區分**：`acquire` 回 `false` 有三種成因，僅「降級」需人為介入並可由
+  `[YT GATE DEGRADED]` 唯一辨識；「本地/全域冷卻中」與「`maxWaitMs` 預算耗盡」屬正常
+  限速行為、**不**印此 log，不會誤觸告警。
+- **恢復可見**：`[YT GATE] recovered` log 標示 gate 由降級轉回全域協調，供確認處置生
+  效。
+
+### 殘餘風險與接受理由
+
+經上述後，唯一無法被消除的殘餘風險是「`maxclients` 餘裕不足且未在部署前檢查發現」→
+全 worker 的 stats 暫停更新（**非破壞、可由 `[YT GATE DEGRADED]` 觀測、可由重新部署回
+滾**）。本設計選擇以「部署前 `maxclients` 檢查 + 可觀測降級告警 + 附加式回滾」覆蓋此
+風險，**不**引入 runtime feature flag：一個有意義的 kill switch 必須保留「停用 gate
+時的限速路徑」（即保留將被淘汰的 `rate-limiter.ts` 與一條 flag 分支），徒增長期維護
+面與兩條限速程式路徑；而殘餘風險本身已是 best-effort、可觀測、可回滾，與 flag 帶來的
+複雜度不成比例。此為刻意的取捨決定。
 
 ## 測試
 
