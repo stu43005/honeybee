@@ -107,7 +107,9 @@ key：`hb:yt:watch:gate`（值為 `nextAllowedAtMs`，epoch 毫秒字串）與
 時失敗時讓本 pod 仍退避）、`lastDegradedLogAtMs`（降級告警 rate-limit）、`wasDegraded`
 （上次是否處於降級，用於印一次恢復 log）、`lastEvalErrorLogAtMs`（**EVAL 錯誤**告警
 rate-limit，用於把「client 已連上但 `EVAL` 被拒/失敗」與「連線降級」區隔開來，避免
-ACL/scripting 被擋時靜默全停，見「降級可觀測性與操作」）。
+ACL/scripting 被擋時靜默全停）、`lastSaturatedLogAtMs`（**飽和**告警 rate-limit，用於
+讓「健康但全域速率不足、`maxWaitMs` 預算耗盡而跳過」在持續發生時可觀測，不靜默陳舊）。
+（以上告警節流見「降級可觀測性與操作」。）
 
 #### `acquire(maxWaitMs: number, signal?: AbortSignal): Promise<boolean>`
 
@@ -148,7 +150,9 @@ client 端 `acquire` 迴圈：
    - 回 `-1`（claim 成功）→ 回 `true`。
    - 否則 `nextAllowed = Number(回傳值)`，`delay = nextAllowed - Date.now()`；若
      `delay <= 0` 立即重試（競爭落空，極短）。
-6. `remaining = deadline - Date.now()`；若 `remaining <= 0` → 回 `false`（預算耗盡）。
+6. `remaining = deadline - Date.now()`；若 `remaining <= 0` → `maybeLogSaturated()`
+   後回 `false`（**預算耗盡**：健康但全域速率不足、排不到空檔；rate-limited 告警見
+   「降級可觀測性與操作」，使持續飽和不靜默）。
 7. 在 try/catch 內
    `await setTimeout(min(delay, remaining), undefined, { signal })`（`node:timers/promises`，
    可被 abort）；**捕捉到 `AbortError` → 回 `false`**（不讓 reject 外溢，守住
@@ -265,9 +269,19 @@ async function updateVideoStats() {
 }
 ```
 
-`is429(err)` 的判斷：`(isAxiosError(err) && err.response?.status === 429)` 為主要
-偵測；另防禦性地將 masterchat 的 `AccessDeniedError` 一併視為 429（涵蓋未來上游修
-正、或 embed 路徑改丟該錯誤的情況）。
+`is429(err)` 的判斷：**僅** `isAxiosError(err) && err.response?.status === 429`。
+
+**為何不把 masterchat 的 `AccessDeniedError` 視為 429（避免污染全域冷卻）：**
+`AccessDeniedError` 的 `code` 是泛用的 `"denied"`，語意比 HTTP 429 寬——雖然此版
+masterchat 在 `fetchMetadataFromWatch/Embed` 對限速丟它，但「denied」本質可涵蓋
+private / region-blocked / login-required 等非限速的存取拒絕。若把它一律當 429，一支
+壞片就會讓**共用** Redis 全域冷卻被觸發、壓抑所有 worker 的 stats 更新，且掩蓋真正原
+因。此外（已讀 `@stu43005/masterchat` 原始碼確認）masterchat 目前判斷限速用
+`err.code === "429"`，但 axios 對 429 的 `err.code` 是 `ERR_BAD_REQUEST`，該判斷永不
+成立 → 它**不會**丟 `AccessDeniedError`、而是原始 `AxiosError`（`status === 429`）上
+來；因此偵測 `AxiosError 429` 對現況已完全正確且充分。若未來 masterchat 修正其偵測，
+再以「限速專屬訊號」（明確的 message/code）擴充 `is429`，屬另一次需驗證的變更，不在本
+設計臆測。
 
 注意：penalize 失敗時印的告警**不會**像原始 429 洪水那樣氾濫——因為 penalize 已設好
 本地後備冷卻（`localCooldownUntilMs`），該 pod 在冷卻期間的 `acquire` 會直接回
@@ -348,11 +362,29 @@ RedisModule()` 不傳參數即維持 `await connect()` 行為）。
   上限。取 5 秒（= 5 個 `INTERVAL_MS`）足以吸收穩態下的併發排隊；遠小於
   `COOLDOWN_MS`（冷卻中等滿即跳過、不空耗 job），也遠小於 `SHUTDOWN_TIMEOUT`（45s）
   且等待可被 abort，確保不拖延優雅關閉。
-- `YOUTUBE_WATCH_DEGRADED_LOG_INTERVAL_MS = 60_000` — gate 處於降級（共享 client 未就
-  緒）時，降級告警 log 的最小間隔。取 1 分鐘讓「持續連不上」可被觀測/告警，又不致洗
-  版（相對於每次 `acquire` 都印）。
+- `YOUTUBE_WATCH_DEGRADED_LOG_INTERVAL_MS = 60_000` — 降級／EVAL 錯誤／飽和三類告警
+  log 共用的最小間隔。取 1 分鐘讓「持續異常」可被觀測/告警，又不致洗版（相對於每次
+  `acquire` 都印）。
 
 數值為起始值；上線後可依實測調整。
+
+### 全域速率 vs 併發的調校關係（避免高負載靜默陳舊）
+
+全域可承載的 watch-page throughput = `1000 / YOUTUBE_WATCH_INTERVAL_MS` req/s，**跨所有
+worker pod 共享**。stats 更新需求主要來自 first-replica（`replica === 1`）job 的「啟動
+＋每分鐘週期＋finally」三類呼叫；其量級隨**同時直播數**與 `JOB_CONCURRENCY × replica`
+成長。當需求**持續**超過全域 throughput，`acquire` 會以 `MAX_WAIT_MS` 為界排隊、超界即
+跳過——這是限速**按設計運作**（全域上限就是要擋住超量），但本設計用 `[YT GATE SATURATED]`
+告警讓它**可觀測**，不致變成靜默陳舊。
+
+調校準則：`INTERVAL_MS = 1000`（全域 1 req/s）刻意比變更前的「3 pod 各 1/s ≈ 3 req/s」
+更保守以根除 429；若 `[YT GATE SATURATED]` 持續出現且 429 已穩定消失，可**逐步**調降
+`INTERVAL_MS`（提高全域 throughput，但每次調整後觀察 429 是否回升），或調高
+`MAX_WAIT_MS`（容忍更深排隊、減少跳過，代價是單次 `acquire` 佔用更久——仍須遠小於
+`SHUTDOWN_TIMEOUT` 且可被 abort）。`MAX_WAIT_MS` 不必精準等於最壞併發；它是「願意為一
+次 stats 更新排多久」的上限，超界跳過由下一輪週期補上、並由告警可見。`YOUTUBE_WATCH_INTERVAL_MS`
+與 `YOUTUBE_WATCH_ACQUIRE_MAX_WAIT_MS` 設計為可由環境變數覆寫，便於不重編譯即依實測
+（含負載測試，見測試一節）調整。
 
 ## 錯誤處理與邊界情況
 
@@ -417,6 +449,13 @@ worker 的靜默 stats 陳舊：
   更新 `lastEvalErrorLogAtMs`。此告警與 `[YT GATE DEGRADED]` 區隔，使「Bee-Queue 連得
   上、但 scripting 被擋」這種**連線正常卻全 stats 跳過**的情況有專屬訊號、不被誤判成
   普通限速 miss。
+- **飽和的區隔告警（避免高負載下靜默陳舊）：** 當 Redis、YouTube 皆健康，但全域請求
+  需求超過全域速率上限、`acquire` 因 `maxWaitMs` 預算耗盡而跳過時，`maybeLogSaturated()`
+  以同樣間隔節流印一行 `<!> [YT GATE SATURATED] global rate budget exhausted; stats updates delayed`，
+  更新 `lastSaturatedLogAtMs`。**單次偶發**的預算耗盡屬正常限速、被節流吸收不洗版；但
+  **持續**飽和（每分鐘一條）即為訊號，代表全域速率對當前直播數而言過低、stats 開始延
+  遲——可據此調 `YOUTUBE_WATCH_INTERVAL_MS`／`YOUTUBE_WATCH_ACQUIRE_MAX_WAIT_MS`（見常
+  數一節的調校說明），而非靜默陳舊。
 - **恢復訊號：** 由降級轉回就緒（`wasDegraded === true` 且本次 `isReady === true`）時印
   一行 `[YT GATE] recovered; resumed global coordination`，清 `wasDegraded` 與降級 log
   節流狀態。
@@ -572,9 +611,11 @@ runbook（reviewer 建議的「以 runbook 管理回滾期間 gate 狀態與 rep
 - **不連續的上界是「回到變更前基準」，非新增風暴**：舊版 per-process（3 pod × 1/s ＝
   共用 IP 上約 3/s）正是本變更前的**生產既有行為**。回滾 = 卸下本次改善 = 回到既有基
   準速率，並非製造一個比歷史更糟的新狀態。
-- **gate key 自動過期、對舊版無害**：`hb:yt:watch:gate` 帶 TTL、其 `nextAllowedAtMs`
-  亦 ≤ `YOUTUBE_WATCH_COOLDOWN_MS`（60s）後成為過去；舊版讀不到此 key 也不受影響，
-  **無需手動刪除**——key 自然過期後，新舊版皆回到「無 backoff」基準。
+- **冷卻自動失效、對舊版無害**：要分清兩個時間尺度——gate key 的 **Redis TTL** 是
+  `GATE_KEY_TTL_MS`（= COOLDOWN × 3 = 180s），但**冷卻本身**在 `nextAllowedAtMs` 落到
+  過去、即 ≤ `YOUTUBE_WATCH_COOLDOWN_MS`（60s）後就**失效**（新版屆時即視為可 claim）。
+  關鍵時間是「冷卻失效」的 60s，**不是** key 過期的 180s。舊版本就讀不到此 key、不受
+  影響，**無需手動刪除**；key 之後自然過期。
 - **回滾安全不依賴 rollout 順序（明確 pre-rollback gate）**：本設計**不**倚賴 k8s 滾動
   替換「同時只有 1 個舊 pod」這類未由本 spec 強制、且受 `maxSurge`/`maxUnavailable`/
   readiness/手動 `kubectl rollout undo`/緊急重啟影響的隱性行為來保證安全。改以一個**明
@@ -583,10 +624,10 @@ runbook（reviewer 建議的「以 runbook 管理回滾期間 gate 狀態與 rep
   **若回滾時可能有 active 全域冷卻（即正逢 YouTube 限速事件）**，runbook 規定先讓全域
   冷卻**排空**再讓舊版承接流量，二擇一：
   - **(a) Drain-then-rollback**：回滾前先把 worker Deployment `scale --replicas=0`
-    （或暫停其 watch-page 來源），等待 ≥ `YOUTUBE_WATCH_COOLDOWN_MS`（60s）讓
-    `hb:yt:watch:gate` 自然過期，再部署舊版並 ramp replicas 回原值。舊版上線時冷卻已
-    不存在，不會「無視 active 冷卻而立即恢復」。
-  - **(b) Wait-out**：若不便 scale，至少在觸發回滾前等待 ≥60s（冷卻上界）讓 key 過期，
+    （或暫停其 watch-page 來源），等待 ≥ `YOUTUBE_WATCH_COOLDOWN_MS`（60s）讓全域冷卻
+    **失效**（`nextAllowedAtMs` 落到過去），再部署舊版並 ramp replicas 回原值。舊版上
+    線時冷卻已失效，不會「無視 active 冷卻而立即恢復」。
+  - **(b) Wait-out**：若不便 scale，至少在觸發回滾前等待 ≥60s（冷卻上界）讓冷卻失效，
     再執行回滾。
 
   非限速事件（無 active 冷卻）的常規回滾無此顧慮，直接滾動回滾即可。
@@ -604,10 +645,13 @@ runbook（reviewer 建議的「以 runbook 管理回滾期間 gate 狀態與 rep
 - **EVAL 錯誤告警**：以 `<!> [YT GATE EVAL ERROR]` log 設**另一條** alert（代表連得上
   但 scripting 被拒/失敗——通常是 ACL/policy 設定問題，需修 Redis 權限或回滾）。出現
   即表示全 stats 在跳過但連線正常，與「降級」處置不同。
+- **飽和告警**：以 `<!> [YT GATE SATURATED]` log 設 alert（持續出現代表全域速率對當前
+  直播數過低、stats 延遲）。處置為調校 `YOUTUBE_WATCH_INTERVAL_MS`（在 429 容忍範圍內
+  加快全域速率）或 `YOUTUBE_WATCH_ACQUIRE_MAX_WAIT_MS`（容忍更深排隊），見常數調校說明。
 - **成因可區分**：`acquire` 回 `false` 的成因可由 log 唯一辨識並只對需介入者告警——
   「連線降級」→ `[YT GATE DEGRADED]`；「EVAL 被拒/失敗」→ `[YT GATE EVAL ERROR]`；
-  「本地/全域冷卻中」與「`maxWaitMs` 預算耗盡」屬正常限速、**不**印任何上述 log，不會
-  誤觸告警。
+  「持續飽和」→ `[YT GATE SATURATED]`；「本地/全域冷卻中」與**偶發**預算耗盡屬正常限
+  速、被節流吸收、不誤觸告警。
 - **恢復可見**：`[YT GATE] recovered` log 標示 gate 由降級轉回全域協調，供確認處置生
   效。
 
@@ -672,10 +716,19 @@ timers）：
     `true`（含腳本回 `0` 的「已記錄過」情況也回 `true`，不被誤判為未記錄）；`eval` 丟
     例外或 `isReady===false` → 回 `false`，且本地後備仍被設定（`localCooldownUntilMs`
     已更新）。
+13. **飽和告警** — `isReady===true`、gate key 一直被推到未來（模擬全域已飽和），
+    `acquire(MAX_WAIT)` 推進 timer 至 `deadline` 後回 `false`，並印一次
+    `[YT GATE SATURATED]`；連續多次飽和的 `acquire` 在
+    `YOUTUBE_WATCH_DEGRADED_LOG_INTERVAL_MS` 內只印一次（以 spy 計次驗證節流），確認
+    「偶發跳過不洗版、持續飽和可觀測」。
 
 每個案例至少一項結構性斷言（key 實際值 / 回傳值 / 輸出次數 / 本地欄位值），不以
 `toHaveBeenCalled` 單獨充數；Redis 狀態變化以 stateful fake 觀察；涉及 timer 的案例
 以 fake timers 明確推進並 await promise 結算，不以「等事件發生」草草帶過。
+
+> 負載面向（計畫階段）：以 stateful fake 模擬「`JOB_CONCURRENCY × replica` 對全域
+> 1 req/s」的併發 `acquire`，驗證超過 `MAX_WAIT/INTERVAL` 的併發會有部分跳過並觸發
+> `[YT GATE SATURATED]`（而非靜默），作為調校 `INTERVAL_MS`/`MAX_WAIT_MS` 的依據。
 
 ### `src/modules/redis.spec.ts`（RedisModule `nonBlockingConnect` 選項）
 
@@ -700,11 +753,16 @@ timers）：
 5. **close 於從未連上/已放棄時** — fake client `isOpen===false`：`close()` 視為 no-op、
    不呼叫 `disconnect()`（避免 `ClientClosedError`）、不拋例外。
 
-### worker.ts 429 偵測
+### worker.ts 429 偵測（`is429`）
 
-`is429(err)` 判斷式（`isAxiosError && response.status === 429`，以及
-`AccessDeniedError`）若可低成本獨立單元測試則加一例；否則於計畫階段依既有 worker
-測試涵蓋方式處理。
+把 `is429` 抽成可獨立測試的純函式並覆蓋：
+
+- `isAxiosError` 且 `response.status === 429` → `true`（會觸發 `penalize`）。
+- masterchat `AccessDeniedError`（code `"denied"`，**非** 429）→ `false`——**不**呼叫
+  `penalize`，避免一支 private/region-blocked/membersOnly 影片污染全域冷卻；應走一般
+  stats error log 分支。以 mock `gate.penalize` 斷言**未被呼叫**。
+- 其他非 429 的 `AxiosError`（如 500）、一般 `Error` → `false`，走既有 error log 分
+  支、不 `penalize`。
 
 ## 第三方套件行為依據
 
@@ -730,8 +788,14 @@ timers）：
 - **axios**：HTTP 429 時 `isAxiosError(err)` 為真且 `err.response?.status === 429`；
   `err.code` 為 `ERR_BAD_REQUEST` / `ERR_BAD_RESPONSE` 而非 `"429"`（此即 masterchat
   偵測失效的原因）。
-- **@stu43005/masterchat**：`fetchMetadataFromWatch` 對偵測到的限速丟
-  `AccessDeniedError`；其 `err.code === "429"` 判斷對 axios 錯誤不成立。
+- **@stu43005/masterchat**（已讀原始碼確認）：錯誤層級中 `AccessDeniedError` 的 `code`
+  為泛用 `"denied"`（與限速無專屬區別碼）；限速、private、membersOnly、unavailable 等
+  分別由不同子類（`AccessDeniedError`/`NoPermissionError`/`MembersOnlyError`/
+  `UnavailableError`）表示。`fetchMetadataFromWatch/Embed` 內以 `err.code === "429"` 判
+  斷限速並改丟 `AccessDeniedError("Rate limit exceeded")`，但 axios 對 429 的
+  `err.code` 是 `ERR_BAD_REQUEST` → 該判斷不成立 → 實際丟出的是原始 `AxiosError`
+  （`status === 429`）。故 `is429` 僅認 `AxiosError 429`、**不**認 `AccessDeniedError`
+  （見「`updateVideoStats` 的改動」）。
 - **node:timers/promises**：`setTimeout(delay, value, { signal })` 在 `signal` abort
   時 reject（`AbortError`）；worker 既有程式已使用此模式（`src/commands/worker.ts`
   第 17、906、925 行）。
