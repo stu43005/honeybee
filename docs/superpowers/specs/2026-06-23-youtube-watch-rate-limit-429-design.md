@@ -102,10 +102,12 @@ runWorker (Application)
 
 對外只暴露兩個方法，內部封裝所有 Redis 互動與型別細節。閘門狀態存於兩個 Redis
 key：`hb:yt:watch:gate`（值為 `nextAllowedAtMs`，epoch 毫秒字串）與
-`hb:yt:watch:cooldown-log`（log-once 旗標，見 `penalize`）。模組另持有三個 process
+`hb:yt:watch:cooldown-log`（log-once 旗標，見 `penalize`）。模組另持有以下 process
 本地欄位：`localCooldownUntilMs`（429 後備退避，正常模式下 `penalize` 的 Redis 寫入瞬
 時失敗時讓本 pod 仍退避）、`lastDegradedLogAtMs`（降級告警 rate-limit）、`wasDegraded`
-（上次是否處於降級，用於印一次恢復 log）。
+（上次是否處於降級，用於印一次恢復 log）、`lastEvalErrorLogAtMs`（**EVAL 錯誤**告警
+rate-limit，用於把「client 已連上但 `EVAL` 被拒/失敗」與「連線降級」區隔開來，避免
+ACL/scripting 被擋時靜默全停，見「降級可觀測性與操作」）。
 
 #### `acquire(maxWaitMs: number, signal?: AbortSignal): Promise<boolean>`
 
@@ -138,7 +140,11 @@ client 端 `acquire` 迴圈：
 3. `deadline = Date.now() + maxWaitMs`。
 4. 迴圈：若 `signal?.aborted` → 回 `false`。
 5. 以 `now = Date.now()` 執行 claim 腳本（`EVAL`）：
-   - `EVAL` 例外（含等待中斷線）→ fail-closed 回 `false`。
+   - `EVAL` 例外 → fail-closed 回 `false`。**若此刻 `redis.isReady === true`**（即非連
+     線降級，而是 `EVAL` 本身被拒/失敗，如 Redis ACL 未授權 scripting、`EVAL` 被
+     managed policy 停用、或腳本錯誤）→ 先 `maybeLogEvalError(err)`（rate-limited 的
+     **區隔**告警，與 `[YT GATE DEGRADED]` 不同），確保此類「連得上但 EVAL 不通」的失
+     敗**不會靜默**全停。等待中斷線使 `isReady` 已轉 false 的情況則歸入降級、不誤報。
    - 回 `-1`（claim 成功）→ 回 `true`。
    - 否則 `nextAllowed = Number(回傳值)`，`delay = nextAllowed - Date.now()`；若
      `delay <= 0` 立即重試（競爭落空，極短）。
@@ -169,7 +175,8 @@ client 端 `acquire` 迴圈：
    `localCooldownUntilMs = Date.now() + YOUTUBE_WATCH_COOLDOWN_MS`（即使 Redis 寫入瞬時
    失效，本 pod 也會本地退避，不會 1 秒後立刻又打 YouTube）。
 2. 若 `redis.isReady === false` → 回 `false`（`recorded = false`，不嘗試 `EVAL`）。
-3. 否則執行 penalize 腳本；`EVAL` 例外 → catch 後回 `false`。
+3. 否則執行 penalize 腳本；`EVAL` 例外 → `maybeLogEvalError(err)`（同上區隔告警，因
+   `isReady` 為真代表 EVAL 本身被拒/失敗）後回 `false`。
 4. 腳本回傳 `1`（本 cooldown episode 首次）時，**gate 內部**印單行
    `entering YouTube watch rate-limit cooldown for 60s`；回 `0` 不印。此 log-once 副作
    用與 `recorded` 回傳值無關。
@@ -273,18 +280,26 @@ async function updateVideoStats() {
 完成後刪除整個 `src/modules/rate-limiter.ts` 並移除 worker.ts 中對應的 import，清除
 dead code。
 
-### `RedisModule` 的可選 init 容錯（`src/modules/redis.ts`）
+### `RedisModule` 的可選 `nonBlockingConnect`（非阻塞 + 非關鍵健康，`src/modules/redis.ts`）
 
-為 `RedisModule` 建構子增加一個可選選項（例如 `new RedisModule({ nonBlockingConnect:
-true })`，預設 `false`）。語意依 node-redis v4 實際行為（見「第三方套件行為依據」，已
-讀原始碼確認）設計：
+為 `RedisModule` 建構子增加一個可選選項（`new RedisModule({ nonBlockingConnect:
+true })`，預設 `false`）。此選項把該 `RedisModule` 標記為**非關鍵 best-effort 模組**，
+涵蓋兩件事——啟動非阻塞、且**不參與 `/healthz` liveness**：
 
-- `false`（預設，現狀）：`init()` **`await connect()`**。node-redis 預設策略
-  `Math.min(retries*50, 500)` 會無限重試初次連線，故 Redis 不可達時 `await` 會阻塞至
-  連上為止——維持既有服務（webhook 等）行為不變。
-- `true`（僅 worker 啟用）：`init()` **不 await `connect()`**，改以 fire-and-forget
-  發起連線並立即返回，使 worker 啟動不被 Redis 阻塞；初次連線由 node-redis 預設無限
-  重試策略在背景重連，連上後 `isReady` 轉真。要點：
+- `false`（預設，現狀）：`init()` **`await connect()`**、`healthCheck()` 維持 `ping()`。
+  node-redis 預設策略 `Math.min(retries*50, 500)` 會無限重試初次連線，故 Redis 不可達
+  時 `await` 會阻塞至連上為止——維持既有服務（webhook 等）行為不變。
+- `true`（僅 worker 啟用）：
+  - **healthCheck 不影響 liveness（關鍵修正）**：`healthCheck()` 一律回 `true`、**不**
+    `ping`。否則：`Application` 的 `/healthz`（`src/modules/application.ts` 第 16–32 行）
+    會對每個 `isInit` 模組跑 `healthCheck`，任一失敗即 `/healthz` 500；而 worker.yaml
+    用 `/healthz` 作 **startup + liveness probe**。若 gate 的 Redis 連不上（正是降級情
+    境）而 `healthCheck` 仍 `ping`，k8s 會**重啟整個 worker**、中斷 chat 收集——把
+    best-effort 的 stats 限速器變成 chat 收集的可用性依賴。gate 的 Redis 健康改由
+    `[YT GATE DEGRADED]` log 呈現（alert-only），不綁 liveness。
+  - **`init()` 不 await `connect()`**：改以 fire-and-forget 發起連線並立即返回，使
+    worker 啟動不被 Redis 阻塞；初次連線由 node-redis 預設無限重試策略在背景重連，連
+    上後 `isReady` 轉真。要點：
   - **先掛 `'error' listener`**：`this.redis.on('error', ...)` 必須在 `connect()` 之前
     註冊（node-redis 每次連線失敗會 `emit('error')`，無 listener 會讓 process 崩潰）。
   - **持有 pending connect promise**：`this.connectPromise = this.redis.connect()` 並
@@ -312,8 +327,9 @@ RedisModule()` 不傳參數即維持 `await connect()` 行為）。
   LIFO，故 QueueModule 先關、gate 次之、`RedisModule` 再關（gate 不擁有連線、不
   `disconnect`）、Mongo 最後。
 - `QueueModule` 在最後，確保 job 消費者先於其依賴（Redis/Mongo）停止。
-- worker 的 `RedisModule` 以容錯選項註冊，使「gate 的 Redis 連不上」不致命（理由見
-  「啟動期 Redis 不可用」）。
+- worker 的 `RedisModule` 以 `nonBlockingConnect` 註冊，使「gate 的 Redis 連不上」既不
+  阻塞啟動、也**不**讓 `/healthz` liveness 失敗而被 k8s 重啟（理由見「啟動期 Redis 不
+  可用」與 `RedisModule` 選項一節）。
 
 ## 常數（`src/constants.ts`）
 
@@ -394,6 +410,13 @@ worker 的靜默 stats 陳舊：
   `<!> [YT GATE DEGRADED] redis not ready; skipping stats updates`），更新
   `lastDegradedLogAtMs` 並設 `wasDegraded = true`；持續中斷時每分鐘至多一條，足以告警
   又不洗版。
+- **EVAL 錯誤的區隔告警（避免「連得上但 EVAL 不通」靜默全停）：** 當 `isReady === true`
+  但 `EVAL` 拋例外（Redis ACL 未授權 scripting、`EVAL` 被 managed policy 停用、腳本
+  錯誤等），`maybeLogEvalError(err)` 以同樣 `YOUTUBE_WATCH_DEGRADED_LOG_INTERVAL_MS`
+  節流印一行**不同**告警（如 `<!> [YT GATE EVAL ERROR] eval failed while connected: <err>`），
+  更新 `lastEvalErrorLogAtMs`。此告警與 `[YT GATE DEGRADED]` 區隔，使「Bee-Queue 連得
+  上、但 scripting 被擋」這種**連線正常卻全 stats 跳過**的情況有專屬訊號、不被誤判成
+  普通限速 miss。
 - **恢復訊號：** 由降級轉回就緒（`wasDegraded === true` 且本次 `isReady === true`）時印
   一行 `[YT GATE] recovered; resumed global coordination`，清 `wasDegraded` 與降級 log
   節流狀態。
@@ -497,14 +520,21 @@ gate 既有假設相同，不額外處理。
 與既有 worker 路徑一樣可靠」必須在上線前說清楚。本節即為該遷移/相容性計畫。本設計
 **不**引入 runtime feature flag/kill switch——理由見末段「殘餘風險與接受理由」。
 
-### gate 連線可靠性 = 既有 worker 路徑（除 +1 連線外無新變數）
+### gate 連線可靠性 = 既有 worker 路徑（除 +1 連線、EVAL 能力外無新變數）
 
 gate 透過 `RedisModule` 連線，其 `REDIS_URI` 與 worker 既有的 `QueueModule`
 （Bee-Queue）**完全相同**（同 host、認證、TLS、Redis 版本、網路政策）。因此 auth /
-TLS / 版本 / 網路政策這些可靠性因素**不可能與既有路徑不同**：若其中任一有問題，
-Bee-Queue 連線會先失敗、worker 根本無法消費 job。換言之，gate 連線**唯一新增**的失敗
-變數是「每個 worker pod 多一條 Redis 連線」是否撞到 Redis `maxclients` 上限——這是單
-一、可在部署前量化檢查的條件，而非一組未知的相容性風險。
+TLS / 版本 / 網路政策這些**連線層**可靠性因素**不可能與既有路徑不同**：若其中任一有
+問題，Bee-Queue 連線會先失敗、worker 根本無法消費 job。gate 真正**新增**的失敗變數只
+有兩項，皆可在部署前明確檢查：
+
+1. **+1 連線 vs `maxclients`**：每個 worker pod 多一條 Redis 連線。
+2. **`EVAL`（scripting）命令權限**：Bee-Queue 用的是 `SET`/`GET`/list 等命令，其連線
+   正常**不保證** Redis ACL / managed-Redis policy 允許 `EVAL`。本設計新增 `EVAL` 命令
+   面，故 scripting 權限是一個獨立於連線層的新變數。若 `EVAL` 被拒，client 仍 `isReady`
+   為真、但每次 claim/penalize 的 `EVAL` 會失敗——已由 acquire/penalize 的
+   `maybeLogEvalError`（`[YT GATE EVAL ERROR]` 區隔告警）使其**不靜默**，但仍應在部署
+   前檢查以免上線即全 stats 跳過。
 
 ### 部署前檢查清單（migration checklist）
 
@@ -513,6 +543,10 @@ Bee-Queue 連線會先失敗、worker 根本無法消費 job。換言之，gate 
   QueueModule + RedisModule 兩條連線於生產運行，可作為餘裕量級的參照。
 - **可達性**：`REDIS_URI` 對 worker 可達——此點 Bee-Queue 既有運行已證實，無需額外
   驗證；不需任何新的 auth/TLS 設定（沿用既有）。
+- **`EVAL`（scripting）權限**：在部署環境的 Redis 上驗證允許 `EVAL`——例如以 worker 用
+  的同一連線設定執行 `redis-cli ... EVAL "return 1" 0` 應回 `1`（managed Redis 須確認
+  其 ACL/policy 未停用 scripting）。上線後若仍被擋，`[YT GATE EVAL ERROR]` 會在首次
+  stats 更新時即告警（非靜默）。
 - **首次上線無既有 gate 狀態**：gate key (`hb:yt:watch:gate`) 與 log 旗標
   (`hb:yt:watch:cooldown-log`) 不存在時，claim 腳本讀到 `nextAllowed = 0` → 立即可
   claim、penalize 旗標 `SET NX` 即首次成功，皆為正常初始行為，**無 migration 資料或
@@ -556,23 +590,29 @@ runbook（reviewer 建議的「以 runbook 管理回滾期間 gate 狀態與 rep
 ### 監控與告警
 
 - **降級告警**：以 `<!> [YT GATE DEGRADED]` log 設 log-based alert（出現即代表該 pod
-  的 gate Redis 持續不可用）。建議閾值：單一 pod 持續出現超過數分鐘即升級為人為處置
+  的 gate Redis 持續連不上）。建議閾值：單一 pod 持續出現超過數分鐘即升級為人為處置
   （提高 `maxclients` / 修網路 / 回滾）。
-- **成因可區分**：`acquire` 回 `false` 有三種成因，僅「降級」需人為介入並可由
-  `[YT GATE DEGRADED]` 唯一辨識；「本地/全域冷卻中」與「`maxWaitMs` 預算耗盡」屬正常
-  限速行為、**不**印此 log，不會誤觸告警。
+- **EVAL 錯誤告警**：以 `<!> [YT GATE EVAL ERROR]` log 設**另一條** alert（代表連得上
+  但 scripting 被拒/失敗——通常是 ACL/policy 設定問題，需修 Redis 權限或回滾）。出現
+  即表示全 stats 在跳過但連線正常，與「降級」處置不同。
+- **成因可區分**：`acquire` 回 `false` 的成因可由 log 唯一辨識並只對需介入者告警——
+  「連線降級」→ `[YT GATE DEGRADED]`；「EVAL 被拒/失敗」→ `[YT GATE EVAL ERROR]`；
+  「本地/全域冷卻中」與「`maxWaitMs` 預算耗盡」屬正常限速、**不**印任何上述 log，不會
+  誤觸告警。
 - **恢復可見**：`[YT GATE] recovered` log 標示 gate 由降級轉回全域協調，供確認處置生
   效。
 
 ### 殘餘風險與接受理由
 
-經上述後，唯一無法被消除的殘餘風險是「`maxclients` 餘裕不足且未在部署前檢查發現」→
-全 worker 的 stats 暫停更新（**非破壞、可由 `[YT GATE DEGRADED]` 觀測、可由重新部署回
-滾**）。本設計選擇以「部署前 `maxclients` 檢查 + 可觀測降級告警 + 附加式回滾」覆蓋此
-風險，**不**引入 runtime feature flag：一個有意義的 kill switch 必須保留「停用 gate
-時的限速路徑」（即保留將被淘汰的 `rate-limiter.ts` 與一條 flag 分支），徒增長期維護
-面與兩條限速程式路徑；而殘餘風險本身已是 best-effort、可觀測、可回滾，與 flag 帶來的
-複雜度不成比例。此為刻意的取捨決定。
+經上述後，殘餘風險為「`maxclients` 餘裕不足」或「`EVAL`/scripting 權限被擋」且未在部
+署前檢查發現 → 全 worker 的 stats 暫停更新。兩者皆**非破壞**、且**可觀測**（分別由
+`[YT GATE DEGRADED]` 與 `[YT GATE EVAL ERROR]` 告警）、**可由重新部署回滾**，且因
+`healthCheck` 非關鍵而**不會**誤觸 k8s 重啟 worker（chat 收集不中斷）。本設計選擇以
+「部署前 `maxclients` + `EVAL` 權限檢查 + 兩條區隔的可觀測告警 + 附加式回滾」覆蓋此風
+險，**不**引入 runtime feature flag：一個有意義的 kill switch 必須保留「停用 gate 時的
+限速路徑」（即保留將被淘汰的 `rate-limiter.ts` 與一條 flag 分支），徒增長期維護面與兩
+條限速程式路徑；而殘餘風險本身已是 best-effort、可觀測、可回滾，與 flag 帶來的複雜度
+不成比例。此為刻意的取捨決定。
 
 ## 測試
 
@@ -598,8 +638,11 @@ timers）：
    冷卻內 `acquire` 預算耗盡回 `false`；時間前進過冷卻後再 `acquire` 回 `true`。
 6. **penalize 的 max 語意** — 先 `penalize` 設較長冷卻，再以較早時間 `penalize`
    不縮短既有 key 值（由 stateful fake 觀察 key 未被改小）。
-7. **全域後端瞬時 EVAL 例外** — `isReady === true` 但單次 `eval` 丟例外：該次
-   `acquire` 回 `false`（fail-closed）、`penalize` 回 `false` 不拋（best-effort）。
+7. **全域後端瞬時 EVAL 例外 → 區隔告警** — `isReady === true` 但單次 `eval` 丟例外：
+   該次 `acquire` 回 `false`（fail-closed）、`penalize` 回 `false` 不拋（best-effort）；
+   且印 `[YT GATE EVAL ERROR]`（**非** `[YT GATE DEGRADED]`，以 spy 驗證是這條、且受
+   `lastEvalErrorLogAtMs` 節流——連續多次 `eval` 失敗在間隔內只印一次）。對照測：
+   `isReady === false` 時不印 `[YT GATE EVAL ERROR]`（歸降級、不誤報）。
 8. **log-once 旗標** — 同一冷卻 episode 內重複 `penalize`：首次旗標 `SET NX` 成功、
    腳本回 `1`（gate 內部 log 一次）；其後旗標已存在、回 `0`（不 log）。並驗證「剛
    claim 後 `nextAllowedAtMs = now + INTERVAL`」的情況下首次 `penalize` 的腳本仍回
@@ -633,6 +676,11 @@ timers）：
    resolve（pending），`init()` 仍立即 resolve（以 fake timers / 未結算的 connect
    promise 驗證 init 不等待）；且 `init()` 前已掛上 `'error'` listener（避免 connect
    背景失敗的 `error` 事件讓 process 崩潰）。
+   2b. **healthCheck 非關鍵（liveness 保護）** — `nonBlockingConnect: true` 且 fake client
+   未連上（`isReady === false`、`ping` 會丟例外）時，`healthCheck()` 仍回 `true` 且
+   **不呼叫 `ping`**（以 spy 驗證），確保 `/healthz` 不因 gate Redis 連不上而失敗、
+   worker 不被 k8s 重啟。對照：預設（不傳選項）時 `healthCheck()` 仍走 `ping`（既有
+   行為不變）。
 3. **close 於 connect pending 時** — `nonBlockingConnect`、`connect()` 仍 pending
    （fake client `isOpen===true`）時呼叫 `close()`：`close()` resolve 不拋；以 spy 驗證
    走 `disconnect()`（`isOpen` 為真路徑）並 await 已存的 connectPromise（不留未結算
