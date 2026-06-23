@@ -94,17 +94,18 @@ runWorker (Application)
 - **正常狀態**（共享 client `redis.isReady === true`）：`acquire`/`penalize` 走全域
   Redis 協調（跨所有 pod）。
 - **降級狀態**（共享 client 未就緒：Redis 啟動連不上仍在背景重連、或執行期斷線）：
-  `acquire` **退回 process 本地限速**（per-process 1 req/s，等同變更前的
-  `rate-limiter.ts` 行為），使 stats 更新持續進行、**不會靜默陳舊**；同時發 rate-limited
-  的降級告警 log（見「降級可觀測性與操作」）。`penalize` 仍設本地後備冷卻並回
-  `false`（Redis 未記錄）。兩者皆不向呼叫端拋例外。降級模式≈變更前的生產基準（stats
-  新鮮、3 pod 各自 1/s + 本地 429 退避，對 YouTube 風險不高於現況）。
+  `acquire` 一律回 `false`（**fail-closed：跳過 stats 更新、不呼叫 watch page**），並發
+  rate-limited 降級告警 log（見「降級可觀測性與操作」）。**不**退回 per-process 限速——
+  失去跨 pod 協調時若各 pod 自行探測，3 pod 共用 IP 會重燃原本要消滅的 429 風暴；寧可
+  暫時跳過 stats（chat 收集不受影響、且有告警可被處置）也不冒風暴風險。`penalize` 仍
+  設本地後備冷卻並回 `false`（Redis 未記錄）。兩者皆不向呼叫端拋例外。
 
 對外只暴露兩個方法，內部封裝所有 Redis 互動與型別細節。閘門狀態存於兩個 Redis
 key：`hb:yt:watch:gate`（值為 `nextAllowedAtMs`，epoch 毫秒字串）與
 `hb:yt:watch:cooldown-log`（log-once 旗標，見 `penalize`）。模組另持有三個 process
-本地欄位：`localNextAllowedMs`（降級時 per-process 限速的 next-allowed 時間戳）、
-`localCooldownUntilMs`（429 後備退避）、`lastDegradedLogAtMs`（降級告警 rate-limit）。
+本地欄位：`localCooldownUntilMs`（429 後備退避，正常模式下 `penalize` 的 Redis 寫入瞬
+時失敗時讓本 pod 仍退避）、`lastDegradedLogAtMs`（降級告警 rate-limit）、`wasDegraded`
+（上次是否處於降級，用於印一次恢復 log）。
 
 #### `acquire(maxWaitMs: number, signal?: AbortSignal): Promise<boolean>`
 
@@ -112,15 +113,11 @@ key：`hb:yt:watch:gate`（值為 `nextAllowedAtMs`，epoch 毫秒字串）與
 回傳 `true`（可送請求）；預算耗盡（例如正處於冷卻）或 `signal` 被 abort（優雅關閉）
 → 回傳 `false`（本輪跳過）。
 
-`acquire` 用**單一有界等待迴圈**，依共享 client 是否就緒切換 claim 後端：
+`acquire` 用一段原子的 Lua **claim 腳本**（`EVAL`）配合 client 端有界等待迴圈，對
+`hb:yt:watch:gate` 做跨 pod 的「讀-比較-寫」。**Redis 未就緒（降級）時一律回 `false`、
+不打 watch page**（不退回 per-process 限速，理由見上）。
 
-- **全域後端（`redis.isReady === true`）**：以原子 Lua **claim 腳本**（`EVAL`）對
-  `hb:yt:watch:gate` 做「讀-比較-寫」，跨所有 pod 協調。
-- **降級後端（`redis.isReady === false`）**：對 process 本地欄位 `localNextAllowedMs`
-  做同一套「讀-比較-寫」（純記憶體、per-process），達成等同變更前 `rate-limiter.ts`
-  的 1 req/s；並呼叫 rate-limited 的降級告警（見「降級可觀測性與操作」）。
-
-claim 腳本（全域後端，`KEYS[1]=gate key`，`ARGV=[now, INTERVAL_MS, GATE_KEY_TTL_MS]`）：
+claim 腳本（`KEYS[1]=gate key`，`ARGV=[now, INTERVAL_MS, GATE_KEY_TTL_MS]`）：
 
 ```lua
 local nextAllowed = tonumber(redis.call('GET', KEYS[1])) or 0
@@ -133,27 +130,27 @@ else
 end
 ```
 
-降級後端的本地 claim 等價邏輯（同語意，無 Redis）：`if now >= localNextAllowedMs then
-localNextAllowedMs = now + INTERVAL_MS; claimed else 回傳 localNextAllowedMs`。
-
 client 端 `acquire` 迴圈：
 
-1. 若 `Date.now() < localCooldownUntilMs`（本地後備冷卻中，**兩種後端皆適用**）→ 立即
-   回 `false`。
-2. `deadline = Date.now() + maxWaitMs`。
-3. 迴圈：若 `signal?.aborted` → 回 `false`。
-4. 以 `now = Date.now()` 依當下 `redis.isReady` 選後端執行一次 claim：
-   - 全域後端 `EVAL` 例外 → fail-closed 回 `false`。
-   - 降級後端：先 `maybeLogDegraded()`，再做本地 claim（不會丟例外）。
-   - claim 成功（全域回 `-1` / 本地命中）→ 回 `true`。
-5. 否則取得未命中時的 `nextAllowed`（全域為腳本回傳值、降級為 `localNextAllowedMs`），
-   `delay = nextAllowed - Date.now()`；若 `delay <= 0` 立即重試（競爭落空，極短）。
+1. 若 `Date.now() < localCooldownUntilMs`（本地後備冷卻中）→ 立即回 `false`。
+2. 若 `redis.isReady === false`（降級）→ `maybeLogDegraded()` 後立即回 `false`
+   （不打 watch page）。
+3. `deadline = Date.now() + maxWaitMs`。
+4. 迴圈：若 `signal?.aborted` → 回 `false`。
+5. 以 `now = Date.now()` 執行 claim 腳本（`EVAL`）：
+   - `EVAL` 例外（含等待中斷線）→ fail-closed 回 `false`。
+   - 回 `-1`（claim 成功）→ 回 `true`。
+   - 否則 `nextAllowed = Number(回傳值)`，`delay = nextAllowed - Date.now()`；若
+     `delay <= 0` 立即重試（競爭落空，極短）。
 6. `remaining = deadline - Date.now()`；若 `remaining <= 0` → 回 `false`（預算耗盡）。
-7. `await setTimeout(min(delay, remaining), undefined, { signal })`（`node:timers/promises`，
-   可被 abort），喚醒後回到步驟 3。
+7. 在 try/catch 內
+   `await setTimeout(min(delay, remaining), undefined, { signal })`（`node:timers/promises`，
+   可被 abort）；**捕捉到 `AbortError` → 回 `false`**（不讓 reject 外溢，守住
+   `Promise<boolean>` 契約）；正常喚醒則回到步驟 4。
 
-> 後端在「每次迴圈迭代」依當下 `redis.isReady` 決定，故連線在等待中恢復/斷線時，下一
-> 次迭代會自動切換到對應後端，不會卡在錯誤後端。
+> `acquire` 的所有路徑（降級、abort、`EVAL` 例外、預算耗盡）一律 **resolve `false`，
+> 從不 reject**。若連線在等待**中**斷線，下一次 `EVAL` 會 reject → 步驟 5 fail-closed
+> 回 `false`（該次跳過），與「呼叫進入時就降級」效果一致。
 
 多個 waiter 在閘門開啟時各自重試 claim，腳本原子性保證只有一個搶到、其餘讀到被推
 進的 `nextAllowed` 後再排到下一個 `INTERVAL`——形成分散式版「排隊直到釋放」。`now`
@@ -169,14 +166,18 @@ client 端 `acquire` 迴圈：
 行為：
 
 1. **無條件**設定 process 本地後備冷卻
-   `localCooldownUntilMs = Date.now() + YOUTUBE_WATCH_COOLDOWN_MS`（即使 Redis 失效，
-   本 pod 也會本地退避，不會 1 秒後立刻又打 YouTube）。
-2. 若 `redis.isReady === false` → 直接回 `false`（`recorded = false`，不嘗試 `EVAL`）。
+   `localCooldownUntilMs = Date.now() + YOUTUBE_WATCH_COOLDOWN_MS`（即使 Redis 寫入瞬時
+   失效，本 pod 也會本地退避，不會 1 秒後立刻又打 YouTube）。
+2. 若 `redis.isReady === false` → 回 `false`（`recorded = false`，不嘗試 `EVAL`）。
 3. 否則執行 penalize 腳本；`EVAL` 例外 → catch 後回 `false`。
 4. 腳本回傳 `1`（本 cooldown episode 首次）時，**gate 內部**印單行
    `entering YouTube watch rate-limit cooldown for 60s`；回 `0` 不印。此 log-once 副作
    用與 `recorded` 回傳值無關。
-5. 步驟 2–4 正常完成（`EVAL` 有跑）→ 回 `true`。
+5. 步驟 2–4 正常完成（`EVAL` 有跑）→ 回 `true`（`recorded = true`）。
+
+> 註：正常運作時 `penalize` 必由「`acquire` 成功（`isReady` 為真）→ 打 watch page → 收
+> 到 429」這條路觸發，故進到步驟 3 的全域寫入是常態；步驟 2（`isReady === false`）僅為
+> 防禦——降級時 `acquire` 本就不打 watch page、不會收到 429，正常不會走到。
 
 penalize 腳本（`KEYS[1]=gate key`、`KEYS[2]=cooldown-log 旗標 key`，
 `ARGV=[now, COOLDOWN_MS, GATE_KEY_TTL_MS]`）邏輯：
@@ -267,10 +268,10 @@ async function updateVideoStats() {
 
 ### 移除既有 per-process limiter
 
-`src/modules/rate-limiter.ts` 僅被 `src/commands/worker.ts` 匯入使用。其「per-process
-1 req/s」行為已被 `YoutubeWatchGate` 的**降級後端**（`localNextAllowedMs` 的本地
-claim）以等價語意吸收，故替換完成後刪除整個 `src/modules/rate-limiter.ts` 並移除
-worker.ts 中對應的 import，避免留下功能重複的孤兒類別。
+`src/modules/rate-limiter.ts` 僅被 `src/commands/worker.ts` 匯入使用，其角色由
+`YoutubeWatchGate` 的全域 Redis 限速完全取代（降級時為跳過、不退回 per-process）。替換
+完成後刪除整個 `src/modules/rate-limiter.ts` 並移除 worker.ts 中對應的 import，清除
+dead code。
 
 ### `RedisModule` 的可選 init 容錯（`src/modules/redis.ts`）
 
@@ -282,11 +283,22 @@ true })`，預設 `false`）。語意依 node-redis v4 實際行為（見「第�
   `Math.min(retries*50, 500)` 會無限重試初次連線，故 Redis 不可達時 `await` 會阻塞至
   連上為止——維持既有服務（webhook 等）行為不變。
 - `true`（僅 worker 啟用）：`init()` **不 await `connect()`**，改以 fire-and-forget
-  發起連線（`this.redis.connect().catch(...)`）並立即返回，使 worker 啟動不被 Redis
-  阻塞；初次連線由 node-redis 預設無限重試策略在背景重連，連上後 `isReady` 轉真。
-  **必須**先掛 `this.redis.on('error', ...)`（node-redis 每次連線失敗會 `emit('error')`，
-  無 listener 會讓 process 崩潰）。`close()` 比照既有 `disconnect()`，並確保未連上時
-  呼叫不致拋出未處理錯誤。
+  發起連線並立即返回，使 worker 啟動不被 Redis 阻塞；初次連線由 node-redis 預設無限
+  重試策略在背景重連，連上後 `isReady` 轉真。要點：
+  - **先掛 `'error' listener`**：`this.redis.on('error', ...)` 必須在 `connect()` 之前
+    註冊（node-redis 每次連線失敗會 `emit('error')`，無 listener 會讓 process 崩潰）。
+  - **持有 pending connect promise**：`this.connectPromise = this.redis.connect()` 並
+    對它掛 terminal `.catch(...)`（吞掉「最終放棄」或被 `close()` 中斷時的 reject，避免
+    shutdown 後才冒出 unhandled rejection）。
+  - **`close()` 在所有狀態都明確收尾、停止背景重連**：依 `@redis/client` socket.js，
+    `connect()` 一進入就把 `isOpen = true`（L50），且初次連線的重試迴圈條件為
+    `isOpen && !isReady`（L170）——故「連線中/反覆重試中」時 `isOpen` 仍為真。`close()`
+    因此：`isOpen` 為真（已連上或仍在重試）→ `disconnect()`，這會把 `isOpen` 設為
+    `false`、令重試迴圈於下次醒來即退出、並關閉 socket；`isOpen` 為假（從未啟動，或
+    `reconnectStrategy` 已回 `false`/`Error` 放棄）→ 視為已關閉、no-op（不可呼叫
+    `disconnect()`，否則丟 `ClientClosedError`，見 socket.js L61–64）。最後
+    `await this.connectPromise`（已掛 terminal catch、不會 reject）確保該 async 工作在
+    `close()` 返回前確實終止，不殘留於 Application 生命週期之外。
 
 此選項是本設計對 `src/modules/redis.ts` 的唯一改動，且向後相容（既有呼叫 `new
 RedisModule()` 不傳參數即維持 `await connect()` 行為）。
@@ -333,11 +345,11 @@ RedisModule()` 不傳參數即維持 `await connect()` 行為）。
 `acquire()` 與 `penalize()` 內部的 `EVAL` 操作以 try/catch 包覆，吞掉非預期例外
 （連線斷、`EVAL` 失敗）：
 
-- `acquire()` 全域後端的單次 `EVAL` 例外（`isReady` 仍 true 時的瞬時抖動）→ 該次回
-  `false`（**fail-closed**，本輪跳過）。若是**持續**不就緒（`isReady === false`），
-  則由降級後端（per-process 本地限速）接手，stats 更新照常進行、不會無限跳過（見
-  「降級可觀測性與操作」）。
-- `penalize()` 例外或 `isReady === false` → 回 `false`（`recorded = false`，
+- `acquire()`：`isReady === false`（降級）或單次 `EVAL` 例外 → 回 `false`
+  （**fail-closed**，本輪跳過、不打 watch page）。降級期間持續跳過（不退回 per-process
+  限速，避免重燃跨 pod 風暴），但發 rate-limited 告警使其可觀測（見「降級可觀測性與操
+  作」）。
+- `penalize()` 例外或 `isReady === false` → 回 `false`（`recorded = false`,
   **best-effort**：已先設好本地後備冷卻，呼叫端印一次告警；不影響 chat 收集）。
 
 注意：上述「跳過」只作用在「stats 更新這一次是否進行」，**不**影響 chat 收集主流程——
@@ -364,39 +376,46 @@ node-redis 預設無限重試策略在背景完成，連上後 `isReady` 轉真�
 不變。
 
 降級狀態下（`redis.isReady === false`，啟動仍在背景連線、或執行期斷線）gate 的
-`acquire` 退回 **per-process 本地限速**（見「降級可觀測性與操作」），stats 更新照常以
-1 req/s 進行、**不會無限跳過**；Redis 連上後 gate 自動回到全域限速。
+`acquire` 一律回 `false`（跳過 stats 更新、不打 watch page），並發 rate-limited 降級告
+警（見「降級可觀測性與操作」）；Redis 連上後 gate 自動回到全域限速。chat 收集全程不
+受影響。
 
 ### 降級可觀測性與操作
 
-降級（共享 client 持續未就緒）必須**可被觀測**，不可變成全 worker 的靜默資料陳舊：
+降級（共享 client 持續未就緒）下 `acquire` 一律跳過。這必須**可被觀測**，不可變成全
+worker 的靜默 stats 陳舊：
 
-- **行為（非靜默陳舊）：** 降級時 `acquire` 用 per-process 本地限速（≈變更前基準），
-  stats 仍持續更新，只是退回單 pod 1 req/s、失去跨 pod 協調；本地 429 後備冷卻仍生
-  效。對 YouTube 的風險不高於變更前現況。
+- **行為（fail-closed 跳過）：** 降級時 `acquire` 回 `false`、不打 watch page，故失去
+  全域協調期間 stats 暫不更新。刻意**不**退回 per-process 限速——3 pod 共用 IP，各自探
+  測會重燃原本要消滅的跨 pod 429 風暴；寧可暫停 stats（chat 不受影響、且可告警處置）
+  也不冒風暴風險。stats 陳舊只發生在 Redis 對該 pod 持續不可用期間，恢復即回補。
 - **可觀測（rate-limited log）：** `maybeLogDegraded()` 在降級且距上次降級 log
   ≥ `YOUTUBE_WATCH_DEGRADED_LOG_INTERVAL_MS`（60s）時印一行告警（如
-  `<!> [YT GATE DEGRADED] redis not ready; using per-process rate limit`），更新
-  `lastDegradedLogAtMs`；持續中斷時每分鐘至多一條，足以告警又不洗版。
-- **恢復訊號：** 由降級轉回就緒（上次處於降級、本次 `isReady === true`）時印一行
-  `[YT GATE] recovered; resumed global coordination` 並清掉降級 log 節流狀態。
+  `<!> [YT GATE DEGRADED] redis not ready; skipping stats updates`），更新
+  `lastDegradedLogAtMs` 並設 `wasDegraded = true`；持續中斷時每分鐘至多一條，足以告警
+  又不洗版。
+- **恢復訊號：** 由降級轉回就緒（`wasDegraded === true` 且本次 `isReady === true`）時印
+  一行 `[YT GATE] recovered; resumed global coordination`，清 `wasDegraded` 與降級 log
+  節流狀態。
 - **操作恢復路徑：** 看到 `[YT GATE DEGRADED]` 表示該 worker 的 Redis 連線長時間建不
   起來——處置為提高 Redis `maxclients` / 修復網路；或回滾本次部署（變更為附加式，回
-  滾即恢復原 per-process limiter，且降級模式本就≈該基準，回滾無資料風險）。
+  滾即恢復原 per-process limiter，且回滾無資料風險）。
 
 > 連線數與部署前置：每個 worker pod 因 `RedisModule` 多一條 Redis 連線（3 pod = +3）。
 > 部署前應確認 Redis `maxclients` 有對應餘裕（webhook 服務早已同時持有 QueueModule +
 > RedisModule 兩條連線於生產運行，量級可參照）。即便餘裕不足導致 gate 連不上，worker
-> 也只會降級（per-process 限速 + 上述告警），不會中斷 chat 收集。
+> 也只會降級（跳過 stats + 上述告警），不會中斷 chat 收集。
 
 ### 等待迴圈終止與原子性
 
 `acquire` 的等待迴圈以 `deadline = now + maxWaitMs` 為硬上限：每次重試前重新計算
 `remaining`，`remaining <= 0` 即回 `false`，保證迴圈在 `maxWaitMs` 內必定結束、不
-busy-loop（每次未命中都 `setTimeout` 至少到下一個 `nextAllowed`）。`signal` 被 abort
-時等待立即解除並回 `false`。claim/penalize 的「讀-比較-寫」由 Lua `EVAL` 原子完成，
-無 `WATCH`/`WatchError` 重試需求；並發 `acquire` 只是各自重跑 `EVAL`，由 Redis 序列
-化保證互斥。
+busy-loop（每次未命中都 `setTimeout` 至少到下一個 `nextAllowed`）。`signal` 在等待前
+已 aborted → 步驟 3 回 `false`；等待**中**才 abort → `setTimeout` reject `AbortError`，
+由步驟 7 的 try/catch 捕捉並回 `false`。兩條 abort 路徑都 resolve `false`、不 reject，
+故呼叫端無需自行 catch `AbortError`（契約自洽）。claim/penalize 的「讀-比較-寫」由 Lua
+`EVAL` 原子完成，無 `WATCH`/`WatchError` 重試需求；並發 `acquire` 只是各自重跑
+`EVAL`，由 Redis 序列化保證互斥。
 
 ### 有界阻塞對既有呼叫點的影響
 
@@ -486,8 +505,10 @@ timers）：
 3. **預算耗盡跳過** — 先 `penalize` 進入冷卻（`nextAllowed = now + COOLDOWN`，遠大於
    `MAX_WAIT`）；`acquire(MAX_WAIT)` 在推進 timer 至 `deadline` 後 resolve 為
    `false`，且未對 key 再寫入（未 claim）。
-4. **abort 立即解除** — `acquire` 等待中將 `signal` abort，promise 立即 resolve 為
-   `false`（以 fake timer 確認未等到 `deadline`）。
+4. **abort 立即解除（resolve，不 reject）** — `acquire` 等待**中**將 `signal` abort：
+   以 `await expect(p).resolves.toBe(false)` 驗證 promise **resolve `false`、不 reject**
+   （確認 `setTimeout` 丟的 `AbortError` 被 `acquire` 內部 try/catch 吞掉），且以 fake
+   timer 確認未等到 `deadline`。另測「呼叫前 `signal` 已 aborted」也 resolve `false`。
 5. **penalize 後全體退避** — `penalize()` 後 key = `now + YOUTUBE_WATCH_COOLDOWN_MS`；
    冷卻內 `acquire` 預算耗盡回 `false`；時間前進過冷卻後再 `acquire` 回 `true`。
 6. **penalize 的 max 語意** — 先 `penalize` 設較長冷卻，再以較早時間 `penalize`
@@ -499,18 +520,17 @@ timers）：
    claim 後 `nextAllowedAtMs = now + INTERVAL`」的情況下首次 `penalize` 的腳本仍回
    `1`（旗標機制不受時間戳干擾，避免吞掉首條 log）；此測試同時確認 `penalize` 的回傳
    值（`recorded`）為 `true`（`eval` 有成功跑），與 log-once 解耦。
-9. **降級後端：本地限速接手** — 注入 `redis.isReady === false` 的 fake client：
-   `acquire` **不呼叫 `eval`**、改走本地 claim：首次回 `true` 且 `localNextAllowedMs`
-   被設為 `now + INTERVAL`；同一視窗第二次有界等待，推進 timer 過 `INTERVAL` 後回
-   `true`（驗證 stats 仍以 1 req/s 持續，而非無限跳過）。
+9. **降級即跳過** — 注入 `redis.isReady === false` 的 fake client：`acquire`
+   **不呼叫 `eval`**、立即回 `false`（驗證未對任何 key 寫入、未打 watch page）。
 10. **降級告警節流 + 恢復 log** — 降級下連續多次 `acquire`：降級告警 log 僅在距上次
     ≥ `YOUTUBE_WATCH_DEGRADED_LOG_INTERVAL_MS` 時印（以 spy 計次，推進 timer 驗證節
-    流）；隨後將 fake `isReady` 切回 `true` 再 `acquire`，印一次「recovered」log（轉
-    換偵測），且後端切回全域 `eval`（結構性斷言 gate key 被寫入）。
-11. **penalize 本地後備** — `penalize` 後（不論 Redis 成功與否）`localCooldownUntilMs`
-    被設為 `now + COOLDOWN`；在該本地冷卻內呼叫 `acquire` 立即回 `false`（即使全域 gate
-    key 或本地 `localNextAllowedMs` 顯示可 claim，也因本地後備而跳過）；時間前進過本地
-    冷卻後 `acquire` 恢復。
+    流）、且 `wasDegraded` 被設真；隨後將 fake `isReady` 切回 `true` 再 `acquire`，印
+    一次「recovered」log（`wasDegraded` 轉換偵測後清除），且該次走全域 `eval`（結構性
+    斷言 gate key 被寫入、回 `true`）。
+11. **penalize 本地後備** — `isReady===true` 下 `penalize`（即使 `eval` 成功）後
+    `localCooldownUntilMs` 被設為 `now + COOLDOWN`；在該本地冷卻內呼叫 `acquire` 立即回
+    `false`（即使全域 gate key 顯示可 claim，也因本地後備而跳過）；時間前進過本地冷卻
+    後 `acquire` 恢復。此後備保險針對「正常模式撞 429 但 `eval` 寫入瞬時失敗」。
 12. **penalize 回傳 recorded** — `isReady===true` 且 `eval` 成功 → `penalize` 回
     `true`（含腳本回 `0` 的「已記錄過」情況也回 `true`，不被誤判為未記錄）；`eval` 丟
     例外或 `isReady===false` → 回 `false`，且本地後備仍被設定（`localCooldownUntilMs`
@@ -527,7 +547,16 @@ timers）：
 2. **non-blocking 啟用** — `nonBlockingConnect: true` 時，即使 fake `connect()` 尚未
    resolve（pending），`init()` 仍立即 resolve（以 fake timers / 未結算的 connect
    promise 驗證 init 不等待）；且 `init()` 前已掛上 `'error'` listener（避免 connect
-   背景失敗的 `error` 事件讓 process 崩潰）；`close()` 不因未連線而拋例外。
+   背景失敗的 `error` 事件讓 process 崩潰）。
+3. **close 於 connect pending 時** — `nonBlockingConnect`、`connect()` 仍 pending
+   （fake client `isOpen===true`）時呼叫 `close()`：`close()` resolve 不拋；以 spy 驗證
+   走 `disconnect()`（`isOpen` 為真路徑）並 await 已存的 connectPromise（不留未結算
+   async）。
+4. **close 於反覆連線失敗時** — fake `connect()` 持續 reject/emit `'error'`（背景重試
+   中，`isOpen===true`）：`close()` 仍能 resolve、停止重試、且不產生 shutdown 後的
+   unhandled rejection（connectPromise 已掛 terminal catch）。
+5. **close 於從未連上/已放棄時** — fake client `isOpen===false`：`close()` 視為 no-op、
+   不呼叫 `disconnect()`（避免 `ClientClosedError`）、不拋例外。
 
 ### worker.ts 429 偵測
 
