@@ -12,6 +12,36 @@
 
 ---
 
+## Third-party behavior (confirmed during planning — do not re-guess)
+
+Read directly from `node_modules/` at the project's installed versions; the concrete
+code below relies on these:
+
+- **node-redis `eval`** — `client.eval(script, options)` where
+  `EvalOptions = { keys?: string[]; arguments?: string[] }` (all strings)
+  (`@redis/client/dist/lib/commands/EVAL.d.ts` → `generic-transformers.d.ts:97`). The
+  Lua reply (a number here) comes back as a JS value; wrap in `Number(...)`.
+- **`SET ... NX` inside Lua** — `redis.call('SET', k, v, 'NX', 'PX', ms)` returns `OK`
+  (truthy in Lua) when newly set, `nil`/`false` when the key already exists — the
+  log-once flag relies on this.
+- **`client.isReady`** — `boolean` getter (`@redis/client/dist/lib/client/index.d.ts:100`).
+- **node-redis connect/reconnect** (`@redis/client/dist/lib/client/socket.js`): default
+  `reconnectStrategy` is `Math.min(retries*50, 500)` (L129) — always a number → retries
+  the initial connect forever; `await connect()` therefore blocks (does not reject) when
+  Redis is unreachable. Every failed attempt `emit('error')` (L166), so a background
+  connect MUST have an `'error'` listener or the process crashes. `connect()` sets
+  `isOpen=true` (L50); `disconnect()` throws `ClientClosedError` when `!isOpen`
+  (L61–64). These drive Task 2's `nonBlockingConnect` semantics.
+- **`node:timers/promises` `setTimeout(ms, value, { signal })`** — rejects `AbortError`
+  when `signal` aborts; used (abortable) for the bounded wait.
+- **`@stu43005/masterchat`** — `AccessDeniedError` has the generic `code === "denied"`
+  (shared base; private/membersOnly/etc. use distinct subclasses). Its rate-limit wrap
+  guards on `err.code === "429"`, which never matches an AxiosError (whose `code` is
+  `ERR_BAD_REQUEST`), so a 429 surfaces as a raw `AxiosError` with `response.status === 429`.
+  `AbortError` and `AccessDeniedError` are exported from the package root.
+
+---
+
 ## File Structure
 
 **Create:**
@@ -114,14 +144,7 @@ A best-effort consumer (the gate) must not let a Redis outage block worker start
 Create `src/modules/redis.spec.ts`:
 
 ```ts
-import {
-  describe,
-  expect,
-  it,
-  jest,
-  beforeAll,
-  beforeEach,
-} from "@jest/globals";
+import { describe, expect, it, jest, beforeEach } from "@jest/globals";
 
 // constants.ts asserts REDIS_URI at construct time; define it before importing.
 process.env.REDIS_URI = "redis://localhost:6379";
@@ -413,7 +436,14 @@ The gate owns no Redis connection (the client is injected). `acquire(maxWaitMs, 
 Create `src/modules/youtube-watch-gate.spec.ts`:
 
 ```ts
-import { describe, expect, it, jest, beforeEach } from "@jest/globals";
+import {
+  describe,
+  expect,
+  it,
+  jest,
+  beforeEach,
+  afterEach,
+} from "@jest/globals";
 import { YoutubeWatchGate } from "./youtube-watch-gate.js";
 import {
   YOUTUBE_WATCH_INTERVAL_MS,
@@ -515,14 +545,17 @@ describe("YoutubeWatchGate.acquire", () => {
     expect(store[GATE_KEY]).toBe(String(t0 + 2 * YOUTUBE_WATCH_INTERVAL_MS));
   });
 
-  it("3. budget exhausted during cooldown → false + SATURATED, key unchanged", async () => {
+  it("3. budget exhausted (global key future, no local cooldown) → false + SATURATED, key unchanged", async () => {
     const { gate, store, state } = makeHarness();
-    await gate.penalize(); // key -> now + COOLDOWN (>> MAX_WAIT)
-    const cooldownValue = store[GATE_KEY];
+    // Future-date the GLOBAL key directly (NOT via penalize, which would also set
+    // localCooldownUntilMs and make acquire return false before the wait loop).
+    const t0 = state.time;
+    const futureValue = String(t0 + YOUTUBE_WATCH_COOLDOWN_MS); // >> MAX_WAIT
+    store[GATE_KEY] = futureValue;
     await expect(gate.acquire(YOUTUBE_WATCH_ACQUIRE_MAX_WAIT_MS)).resolves.toBe(
       false
     );
-    expect(store[GATE_KEY]).toBe(cooldownValue); // never claimed
+    expect(store[GATE_KEY]).toBe(futureValue); // never claimed
     expect(warnCount("[YT GATE SATURATED]")).toBe(1);
   });
 
@@ -615,14 +648,63 @@ describe("YoutubeWatchGate.acquire", () => {
   });
 
   it("13. sustained saturation logs once per interval", async () => {
-    const { gate, state } = makeHarness();
-    await gate.penalize(); // force long cooldown
+    const { gate, store, state } = makeHarness();
+    // Future-date the global key far enough that it stays unclaimable across all
+    // the clock advances in this test (no local cooldown involved).
+    store[GATE_KEY] = String(state.time + 10 * YOUTUBE_WATCH_COOLDOWN_MS);
     await gate.acquire(YOUTUBE_WATCH_ACQUIRE_MAX_WAIT_MS); // SATURATED #1
-    await gate.acquire(YOUTUBE_WATCH_ACQUIRE_MAX_WAIT_MS); // throttled
+    await gate.acquire(YOUTUBE_WATCH_ACQUIRE_MAX_WAIT_MS); // throttled (same window)
     expect(warnCount("[YT GATE SATURATED]")).toBe(1);
     state.time += YOUTUBE_WATCH_DEGRADED_LOG_INTERVAL_MS;
     await gate.acquire(YOUTUBE_WATCH_ACQUIRE_MAX_WAIT_MS); // SATURATED #2
     expect(warnCount("[YT GATE SATURATED]")).toBe(2);
+  });
+
+  it("14. concurrent demand exceeding budget → all skip, saturation observable", async () => {
+    // Simulate JOB_CONCURRENCY × replica concurrent first-replica updates hitting
+    // a globally-saturated gate: every acquire must skip (false), and the skips
+    // must be observable via [YT GATE SATURATED] (rate-limited, not silent).
+    const { gate, store, state } = makeHarness();
+    store[GATE_KEY] = String(state.time + 10 * YOUTUBE_WATCH_COOLDOWN_MS);
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () =>
+        gate.acquire(YOUTUBE_WATCH_ACQUIRE_MAX_WAIT_MS)
+      )
+    );
+    expect(results.every((r) => r === false)).toBe(true);
+    expect(warnCount("[YT GATE SATURATED]")).toBeGreaterThanOrEqual(1);
+  });
+
+  it("15. mid-wait disconnect (eval rejects while not ready) is classified degraded", async () => {
+    // acquire starts ready, blocks on a future key, then the connection drops
+    // DURING the wait and the next eval rejects. Spec: classify as degraded, not
+    // EVAL ERROR (which is reserved for "rejected while still connected").
+    let time = 1_000_000;
+    let isReady = true;
+    let evalCalls = 0;
+    const fakeRedis = {
+      get isReady() {
+        return isReady;
+      },
+      eval: jest.fn(async () => {
+        evalCalls += 1;
+        if (evalCalls === 1) return time + YOUTUBE_WATCH_COOLDOWN_MS; // block (future)
+        throw new Error("connection lost"); // eval after the disconnect
+      }),
+    };
+    const sleep = jest.fn(async (ms: number) => {
+      isReady = false; // connection dropped mid-wait
+      time += ms;
+    });
+    const gate = new YoutubeWatchGate(fakeRedis as never, {
+      now: () => time,
+      sleep,
+    });
+    await expect(gate.acquire(YOUTUBE_WATCH_ACQUIRE_MAX_WAIT_MS)).resolves.toBe(
+      false
+    );
+    expect(warnCount("[YT GATE DEGRADED]")).toBe(1);
+    expect(warnCount("[YT GATE EVAL ERROR]")).toBe(0);
   });
 });
 
@@ -811,8 +893,10 @@ export class YoutubeWatchGate implements Module {
       } catch (err) {
         // EVAL failed while connected (ACL/scripting disabled, script error):
         // distinct alert so this never silently disables all stats. A drop in
-        // connection mid-wait flips isReady false and is classified as degraded.
+        // connection mid-wait flips isReady false → classify as degraded instead
+        // (not an EVAL ERROR), so the cause is reported and recovery is tracked.
         if (this.redis.isReady) this.maybeLogEvalError(err);
+        else this.maybeLogDegraded();
         return false;
       }
       if (result === -1) return true;
@@ -904,7 +988,7 @@ export class YoutubeWatchGate implements Module {
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `NODE_OPTIONS='--experimental-vm-modules' npx jest src/modules/youtube-watch-gate.spec.ts`
-Expected: PASS (13 tests).
+Expected: PASS (15 tests).
 
 - [ ] **Step 5: Type-check and lint**
 
@@ -933,26 +1017,40 @@ Register `RedisModule` (non-blocking) + `YoutubeWatchGate` in `runWorker`, threa
 - Test: `src/commands/worker.spec.ts` (create)
 - Delete: `src/modules/rate-limiter.ts`
 
-- [ ] **Step 1: Write the failing test for `is429`**
+- [ ] **Step 1: Write the failing tests for `is429` and `reportStatsUpdateError`**
 
-Create `src/commands/worker.spec.ts`:
+Create `src/commands/worker.spec.ts`. This covers both the `is429` predicate and the
+catch-path classifier (`reportStatsUpdateError`), so the spec requirement "a masterchat
+`AccessDeniedError` must NOT call `gate.penalize()` and goes through the normal stats
+error branch" is verified with a mocked gate:
 
 ```ts
-import { describe, expect, it } from "@jest/globals";
+import { describe, expect, it, jest } from "@jest/globals";
 import { AxiosError } from "axios";
-import { AccessDeniedError } from "@stu43005/masterchat";
-import { is429 } from "./worker.js";
+import { AbortError, AccessDeniedError } from "@stu43005/masterchat";
+import type { YoutubeWatchGate } from "../modules/youtube-watch-gate.js";
+import { is429, reportStatsUpdateError } from "./worker.js";
+
+function make429(): AxiosError {
+  return new AxiosError(
+    "Request failed with status code 429",
+    "ERR_BAD_REQUEST",
+    undefined,
+    undefined,
+    { status: 429 } as never
+  );
+}
+
+function makeGate(recorded: boolean) {
+  const penalize = jest
+    .fn<() => Promise<boolean>>()
+    .mockResolvedValue(recorded);
+  return { gate: { penalize } as unknown as YoutubeWatchGate, penalize };
+}
 
 describe("is429", () => {
   it("true only for an AxiosError with response.status === 429", () => {
-    const e = new AxiosError(
-      "Request failed with status code 429",
-      "ERR_BAD_REQUEST",
-      undefined,
-      undefined,
-      { status: 429 } as never
-    );
-    expect(is429(e)).toBe(true);
+    expect(is429(make429())).toBe(true);
   });
 
   it("false for masterchat AccessDeniedError (avoids cooldown poisoning)", () => {
@@ -976,12 +1074,68 @@ describe("is429", () => {
     expect(is429(new Error("nope"))).toBe(false);
   });
 });
+
+describe("reportStatsUpdateError", () => {
+  it("429 → calls gate.penalize(); no warning when recorded", async () => {
+    const { gate, penalize } = makeGate(true);
+    const log = jest.fn();
+    await reportStatsUpdateError(make429(), gate, log);
+    expect(penalize).toHaveBeenCalledTimes(1);
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it("429 → warns once when global cooldown was not recorded", async () => {
+    const { gate, penalize } = makeGate(false);
+    const log = jest.fn();
+    await reportStatsUpdateError(make429(), gate, log);
+    expect(penalize).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(String(log.mock.calls[0][0])).toContain(
+      "global cooldown not recorded"
+    );
+  });
+
+  it("AccessDeniedError → does NOT penalize; logs the general stats error", async () => {
+    const { gate, penalize } = makeGate(true);
+    const log = jest.fn();
+    await reportStatsUpdateError(
+      new AccessDeniedError("Rate limit exceeded: abc"),
+      gate,
+      log
+    );
+    expect(penalize).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledTimes(1);
+  });
+
+  it("AbortError → ignored: no penalize, no log", async () => {
+    const { gate, penalize } = makeGate(true);
+    const log = jest.fn();
+    await reportStatsUpdateError(new AbortError(), gate, log);
+    expect(penalize).not.toHaveBeenCalled();
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it("non-429 AxiosError → does NOT penalize; logs", async () => {
+    const { gate, penalize } = makeGate(true);
+    const log = jest.fn();
+    const e = new AxiosError(
+      "Request failed with status code 500",
+      "ERR_BAD_RESPONSE",
+      undefined,
+      undefined,
+      { status: 500 } as never
+    );
+    await reportStatsUpdateError(e, gate, log);
+    expect(penalize).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledTimes(1);
+  });
+});
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `NODE_OPTIONS='--experimental-vm-modules' npx jest src/commands/worker.spec.ts`
-Expected: FAIL — `is429` is not exported from `./worker.js`.
+Expected: FAIL — `is429` / `reportStatsUpdateError` are not exported from `./worker.js`.
 
 - [ ] **Step 3: Update worker imports**
 
@@ -1009,9 +1163,9 @@ import {
 
 (`isAxiosError` is already imported on line 10; `AbortError` is already imported from `@stu43005/masterchat` on line 2.)
 
-- [ ] **Step 4: Add the exported `is429` helper**
+- [ ] **Step 4: Add the exported `is429` and `reportStatsUpdateError` helpers**
 
-Add this near the top of `src/commands/worker.ts`, after the imports and before `emojiHandler` (around line 65):
+Add these near the top of `src/commands/worker.ts`, after the imports and before `emojiHandler` (around line 65). `reportStatsUpdateError` holds the stats-update catch-branch logic as a testable seam (so a mocked gate can prove `AccessDeniedError` does not call `penalize`):
 
 ```ts
 /**
@@ -1023,6 +1177,37 @@ Add this near the top of `src/commands/worker.ts`, after the imports and before 
  */
 export function is429(err: unknown): boolean {
   return isAxiosError(err) && err.response?.status === 429;
+}
+
+/**
+ * Classify a stats-update failure and react. A 429 records the global cooldown
+ * via the gate (every pod backs off); the gate has already set this pod's local
+ * backoff, so on a failed Redis record we surface one warning instead of going
+ * silent. Aborts/cancels are ignored; everything else is logged.
+ */
+export async function reportStatsUpdateError(
+  err: unknown,
+  gate: YoutubeWatchGate,
+  log: (...args: unknown[]) => void
+): Promise<void> {
+  if (err instanceof AbortError || axios.isCancel(err)) {
+    return; // ignore
+  }
+  if (is429(err)) {
+    const recorded = await gate.penalize();
+    if (!recorded) {
+      log(
+        "<!> [STATS UPDATE ERROR] 429 detected; global cooldown not recorded (local backoff active)"
+      );
+    }
+    return;
+  }
+  if (isAxiosError(err)) {
+    // only log the error message instead of the whole error object to avoid logging sensitive info like API key
+    log(`<!> [STATS UPDATE ERROR] ${err}`);
+    return;
+  }
+  log("<!> [STATS UPDATE ERROR]", err);
 }
 ```
 
@@ -1091,24 +1276,7 @@ async function updateVideoStats() {
     }
     await VideoModel.updateFromMasterchat(mc);
   } catch (err) {
-    if (err instanceof AbortError || axios.isCancel(err)) {
-      // ignore
-    } else if (is429(err)) {
-      // Record the global cooldown so every pod backs off. penalize() has
-      // already set this pod's local backoff; if Redis did not record it,
-      // surface a single warning so the degraded state is not silent.
-      const recorded = await gate.penalize();
-      if (!recorded) {
-        videoLog(
-          "<!> [STATS UPDATE ERROR] 429 detected; global cooldown not recorded (local backoff active)"
-        );
-      }
-    } else if (isAxiosError(err)) {
-      // only log the error message instead of the whole error object to avoid logging sensitive info like API key
-      videoLog(`<!> [STATS UPDATE ERROR] ${err}`);
-    } else {
-      videoLog("<!> [STATS UPDATE ERROR]", err);
-    }
+    await reportStatsUpdateError(err, gate, videoLog);
   }
 }
 ```
@@ -1171,10 +1339,10 @@ queue.process<HoneybeeResult>(JOB_CONCURRENCY, (job) =>
 );
 ```
 
-- [ ] **Step 8: Run the `is429` test to verify it passes**
+- [ ] **Step 8: Run the worker tests to verify they pass**
 
 Run: `NODE_OPTIONS='--experimental-vm-modules' npx jest src/commands/worker.spec.ts`
-Expected: PASS (4 tests).
+Expected: PASS (9 tests — 4 `is429` + 5 `reportStatsUpdateError`).
 
 - [ ] **Step 9: Delete the now-unused per-process limiter**
 
