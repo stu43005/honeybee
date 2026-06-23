@@ -53,6 +53,9 @@ masterchat 的 `fetchMetadataFromWatch` 以 `err.code === "429"` 判斷限速並
 - 不改動 chat 收集主流程（`mc.iterate`）、不改動 masterchat 套件本身。
 - 不處理 `resolveRaidName` → `updateChannelByHandle` 這條另一個呼叫 YouTube 的路徑；
   本次 429 來自 stats 更新的 watch-page 抓取。
+- **不處理上線遷移／回滾／混版部署**（範圍外）。滾動更新過程最多只是短暫多打幾個請求
+  （頂多偶發 429，可接受）；回滾即還原程式碼（自然回到原 per-process limiter），無需額
+  外狀態處理或 runbook。本設計只負責穩態的限速行為與其執行期可觀測性。
 
 ## 設計總覽
 
@@ -465,14 +468,11 @@ worker 的靜默 stats 陳舊：
 - **恢復訊號：** 由降級轉回就緒（`wasDegraded === true` 且本次 `isReady === true`）時印
   一行 `[YT GATE] recovered; resumed global coordination`，清 `wasDegraded` 與降級 log
   節流狀態。
-- **操作恢復路徑：** 看到 `[YT GATE DEGRADED]` 表示該 worker 的 Redis 連線長時間建不
-  起來——處置為提高 Redis `maxclients` / 修復網路；或回滾本次部署（變更為附加式，回
-  滾即恢復原 per-process limiter，且回滾無資料風險）。
 
-> 連線數與部署前置：每個 worker pod 因 `RedisModule` 多一條 Redis 連線（3 pod = +3）。
-> 部署前應確認 Redis `maxclients` 有對應餘裕（webhook 服務早已同時持有 QueueModule +
-> RedisModule 兩條連線於生產運行，量級可參照）。即便餘裕不足導致 gate 連不上，worker
-> 也只會降級（跳過 stats + 上述告警），不會中斷 chat 收集。
+三類告警（`[YT GATE DEGRADED]`／`[YT GATE EVAL ERROR]`／`[YT GATE SATURATED]`）彼此區
+隔，使「連線降級」「scripting 被擋」「全域飽和」三種會讓 stats 跳過的成因可被分別辨
+識，而非靜默陳舊；「本地/全域冷卻中」與**偶發**預算耗盡屬正常限速、被節流吸收、不印
+告警。
 
 ### 等待迴圈終止與原子性
 
@@ -558,139 +558,6 @@ gate 既有假設相同，不額外處理。
   pod 的全域 `EVAL` 通常成功、照常吃到全域冷卻。本地後備是全域協調的下位保險，不取代
   它。（注意：完全降級時 `acquire` 本就不打 watch page、不會收到 429，故此後備只在
   「正常模式 + 寫入瞬時失敗」這條窄路生效。）
-
-## 上線安全：遷移、回滾與監控
-
-降級採 fail-closed（Redis 不可用時跳過所有 stats 更新），故「gate 的 Redis 連線是否
-與既有 worker 路徑一樣可靠」必須在上線前說清楚。本節即為該遷移/相容性計畫。本設計
-**不**引入 runtime feature flag/kill switch——理由見末段「殘餘風險與接受理由」。
-
-### gate 連線可靠性 = 既有 worker 路徑（除 +1 連線、EVAL 能力外無新變數）
-
-gate 透過 `RedisModule` 連線，其 `REDIS_URI` 與 worker 既有的 `QueueModule`
-（Bee-Queue）**完全相同**（同 host、認證、TLS、Redis 版本、網路政策）。因此 auth /
-TLS / 版本 / 網路政策這些**連線層**可靠性因素**不可能與既有路徑不同**：若其中任一有
-問題，Bee-Queue 連線會先失敗、worker 根本無法消費 job。gate 真正**新增**的失敗變數只
-有兩項，皆可在部署前明確檢查：
-
-1. **+1 連線 vs `maxclients`**：每個 worker pod 多一條 Redis 連線。
-2. **`EVAL`（scripting）命令權限**：Bee-Queue 用的是 `SET`/`GET`/list 等命令，其連線
-   正常**不保證** Redis ACL / managed-Redis policy 允許 `EVAL`。本設計新增 `EVAL` 命令
-   面，故 scripting 權限是一個獨立於連線層的新變數。若 `EVAL` 被拒，client 仍 `isReady`
-   為真、但每次 claim/penalize 的 `EVAL` 會失敗——已由 acquire/penalize 的
-   `maybeLogEvalError`（`[YT GATE EVAL ERROR]` 區隔告警）使其**不靜默**，但仍應在部署
-   前檢查以免上線即全 stats 跳過。
-
-### 部署前檢查清單（migration checklist）
-
-- **maxclients 餘裕**：確認 Redis `maxclients` ≥（現有每 pod 連線數 + 1）× 各服務
-  replica 總和，含 worker 的 `+3`（3 pod 各 +1）。webhook 服務早已每 pod 持有
-  QueueModule + RedisModule 兩條連線於生產運行，可作為餘裕量級的參照。
-- **可達性**：`REDIS_URI` 對 worker 可達——此點 Bee-Queue 既有運行已證實，無需額外
-  驗證；不需任何新的 auth/TLS 設定（沿用既有）。
-- **`EVAL`（scripting）權限**：在部署環境的 Redis 上驗證允許 `EVAL`——例如以 worker 用
-  的同一連線設定執行 `redis-cli ... EVAL "return 1" 0` 應回 `1`（managed Redis 須確認
-  其 ACL/policy 未停用 scripting）。上線後若仍被擋，`[YT GATE EVAL ERROR]` 會在首次
-  stats 更新時即告警（非靜默）。
-- **首次上線無既有 gate 狀態**：gate key (`hb:yt:watch:gate`) 與 log 旗標
-  (`hb:yt:watch:cooldown-log`) 不存在時，claim 腳本讀到 `nextAllowed = 0` → 立即可
-  claim、penalize 旗標 `SET NX` 即首次成功，皆為正常初始行為，**無 migration 資料或
-  預建 key 需求**。
-
-### 回滾路徑（附加式變更，安全）
-
-本設計為**附加式**：新增 `YoutubeWatchGate` 模組、worker 註冊 `RedisModule`、為
-`RedisModule` 加一個預設關閉的選項，並以 gate 取代 worker 內部對 `rate-limiter.ts` 的
-呼叫——不改動 chat 收集（`mc.iterate`）與 queue 流程。若上線後觀察到 gate 導致 stats
-被跳過（`[YT GATE DEGRADED]` log），回滾 = **重新部署前一版**，即恢復原 per-process
-`rate-limiter.ts` 行為、stats 恢復。回滾期間與降級期間 chat 收集皆不受影響；stats
-為 best-effort，且 `maxViewers` 等 `$max` 欄位保留既有峰值，無資料破壞風險。
-
-#### 回滾遇上「全域冷卻仍生效」的狀態相容性
-
-需明確一個狀態不連續：舊版 per-process limiter **不認識** gate key
-`hb:yt:watch:gate`，故若在「gate 已因 429 寫入全域冷卻、且冷卻尚未到期」時回滾，舊版
-各 pod 不會遵守該全域冷卻，而是各自以 per-process 速率恢復 watch-page 流量。要點與
-runbook（reviewer 建議的「以 runbook 管理回滾期間 gate 狀態與 replica 速率」路徑，無
-需 runtime flag）：
-
-- **不連續的上界是「回到變更前基準」，非新增風暴**：舊版 per-process（3 pod × 1/s ＝
-  共用 IP 上約 3/s）正是本變更前的**生產既有行為**。回滾 = 卸下本次改善 = 回到既有基
-  準速率，並非製造一個比歷史更糟的新狀態。
-- **冷卻自動失效、對舊版無害**：要分清兩個時間尺度——gate key 的 **Redis TTL** 是
-  `GATE_KEY_TTL_MS`（= COOLDOWN × 3 = 180s），但**冷卻本身**在 `nextAllowedAtMs` 落到
-  過去、即 ≤ `YOUTUBE_WATCH_COOLDOWN_MS`（60s）後就**失效**（新版屆時即視為可 claim）。
-  關鍵時間是「冷卻失效」的 60s，**不是** key 過期的 180s。舊版本就讀不到此 key、不受
-  影響，**無需手動刪除**；key 之後自然過期。
-- **回滾安全不依賴 rollout 順序（明確 pre-rollback gate）**：本設計**不**倚賴 k8s 滾動
-  替換「同時只有 1 個舊 pod」這類未由本 spec 強制、且受 `maxSurge`/`maxUnavailable`/
-  readiness/手動 `kubectl rollout undo`/緊急重啟影響的隱性行為來保證安全。改以一個**明
-  確的操作步驟**使安全與 rollout 形狀無關：
-
-  **若回滾時可能有 active 全域冷卻（即正逢 YouTube 限速事件）**，runbook 規定以
-  **drain（scale-to-zero）+ 狀態驗證**回滾，而**非**固定 sleep：
-  1. **Drain**：先把 worker Deployment `scale --replicas=0`。這是關鍵——沒有任何 worker
-     在跑，就**沒有人能再呼叫 `penalize` 把 `nextAllowedAtMs` 往後推**。（單純 sleep 而
-     不 drain 不可靠：等待期間仍在跑的 new pod 一旦再撞 429 就把冷卻再延 60s，sleep 無
-     法保證冷卻已排空。）
-  2. **狀態驗證**：drain 後讀 `hb:yt:watch:gate`，確認 `nextAllowedAtMs <= now`（冷卻
-     已失效；key 不存在亦同義）。因已 drain，此值不會再被推遲，是穩定可驗證的條件，取
-     代「等夠久」的時間猜測。
-  3. **Rollback**：條件滿足後再部署舊版並 ramp replicas 回原值。舊版上線時冷卻已失效，
-     不會「無視 active 冷卻而立即恢復」。
-
-  非限速事件（無 active 冷卻）的常規回滾無此顧慮，直接滾動回滾即可。
-
-#### 前進部署（混版窗口）
-
-同理，正常 k8s 滾動更新會短暫讓**舊 pod（per-process 限速、不讀 gate）與新 pod（全域
-gate）並存**：此窗口的對外速率 ≈ 仍在跑的舊 pod 的 per-process 量 + 新 pod 的全域
-≤1/s。要點：
-
-- **上界是「≈ 變更前基準」、且為過渡**：混版窗口最壞約等於變更前舊基準（3 pod × 1/s
-  ≈ 3/s）再加新 pod 的 ≤1/s，**非**製造比歷史更糟的新穩態；滾動更新完成（全部新版）後
-  即降到安全的全域 1/s。窗口長度 = 一次滾動更新時間（數分鐘級）。
-- **新 pod 仍遵守全域 backoff**：混版期間若撞 429，新 pod 會寫全域冷卻、彼此退避；僅舊
-  pod 不認 gate。
-- **若部署恰逢已知 YouTube 限速事件**：採與回滾相同的保守作法——先 drain（scale-to-zero）
-  再 ramp 新版，避免新舊疊加；平時（無 active 限速）的常規滾動部署接受該過渡上界即可。
-
-> 上述 deploy/rollback 的狀態不連續，本質是「以跨 pod 協調（需 Redis）取代 per-process
-> 限速」在**版本切換瞬間**無法跨版本協調的固有結果：其速率上界被「變更前既有基準」
-> （≈3/s）所夾、且僅為過渡（穩態收斂為安全的全域 1/s）。據此本設計維持「不引入 runtime
-> flag / 不保留雙限速路徑」的取捨，改以 **drain（scale-to-zero）+ 狀態驗證的 ops
-> runbook** 覆蓋「限速事件期間的 deploy/rollback」這個低頻情境（見「殘餘風險與接受理
-> 由」）。此為已與需求方確認的刻意取捨。
-
-### 監控與告警
-
-- **降級告警**：以 `<!> [YT GATE DEGRADED]` log 設 log-based alert（出現即代表該 pod
-  的 gate Redis 持續連不上）。建議閾值：單一 pod 持續出現超過數分鐘即升級為人為處置
-  （提高 `maxclients` / 修網路 / 回滾）。
-- **EVAL 錯誤告警**：以 `<!> [YT GATE EVAL ERROR]` log 設**另一條** alert（代表連得上
-  但 scripting 被拒/失敗——通常是 ACL/policy 設定問題，需修 Redis 權限或回滾）。出現
-  即表示全 stats 在跳過但連線正常，與「降級」處置不同。
-- **飽和告警**：以 `<!> [YT GATE SATURATED]` log 設 alert（持續出現代表全域速率對當前
-  直播數過低、stats 延遲）。處置為調校 `YOUTUBE_WATCH_INTERVAL_MS`（在 429 容忍範圍內
-  加快全域速率）或 `YOUTUBE_WATCH_ACQUIRE_MAX_WAIT_MS`（容忍更深排隊），見常數調校說明。
-- **成因可區分**：`acquire` 回 `false` 的成因可由 log 唯一辨識並只對需介入者告警——
-  「連線降級」→ `[YT GATE DEGRADED]`；「EVAL 被拒/失敗」→ `[YT GATE EVAL ERROR]`；
-  「持續飽和」→ `[YT GATE SATURATED]`；「本地/全域冷卻中」與**偶發**預算耗盡屬正常限
-  速、被節流吸收、不誤觸告警。
-- **恢復可見**：`[YT GATE] recovered` log 標示 gate 由降級轉回全域協調，供確認處置生
-  效。
-
-### 殘餘風險與接受理由
-
-經上述後，殘餘風險為「`maxclients` 餘裕不足」或「`EVAL`/scripting 權限被擋」且未在部
-署前檢查發現 → 全 worker 的 stats 暫停更新。兩者皆**非破壞**、且**可觀測**（分別由
-`[YT GATE DEGRADED]` 與 `[YT GATE EVAL ERROR]` 告警）、**可由重新部署回滾**，且因
-`healthCheck` 非關鍵而**不會**誤觸 k8s 重啟 worker（chat 收集不中斷）。本設計選擇以
-「部署前 `maxclients` + `EVAL` 權限檢查 + 兩條區隔的可觀測告警 + 附加式回滾」覆蓋此風
-險，**不**引入 runtime feature flag：一個有意義的 kill switch 必須保留「停用 gate 時的
-限速路徑」（即保留將被淘汰的 `rate-limiter.ts` 與一條 flag 分支），徒增長期維護面與兩
-條限速程式路徑；而殘餘風險本身已是 best-effort、可觀測、可回滾，與 flag 帶來的複雜度
-不成比例。此為刻意的取捨決定。
 
 ## 測試
 
