@@ -97,3 +97,35 @@ export const WEBHOOK_RESULT_NON_FOLLOW_TTL_MS = 60 * 60 * 1000; // 1 hour
 // src/components/cleanup.ts 的 cleanWebhookResults 排程依原始來源文件狀態
 // （poll 結束、raid 過期、video 非直播、來源文件已刪除等）移除。
 export const WEBHOOK_RESULT_FOLLOW_TTL_MS: number | null = null;
+
+// --- YouTube watch-page rate gate (src/modules/youtube-watch-gate.ts) ---
+
+// Global (across ALL worker pods) minimum interval between watch-page requests.
+// Pre-change was per-pod 1/s; 3 pods sharing one egress IP ≈ 3 req/s to YouTube.
+// A global 1 req/s removes that 3x amplification. Env-overridable for tuning.
+export const YOUTUBE_WATCH_INTERVAL_MS = Number(
+  process.env.YOUTUBE_WATCH_INTERVAL_MS ?? 1000
+);
+
+// After a 429 every pod pauses watch-page requests for this long so YouTube's
+// rate-limit window can cool down. 1 minute aligns with the stats-update period
+// (skipping one cycle suffices to recover).
+export const YOUTUBE_WATCH_COOLDOWN_MS = 60 * 1000;
+
+// Redis TTL for the gate key. Clearly larger than the cooldown so the cooldown
+// never lapses mid-window because the key expired (mirrors the `* 3` convention
+// of WEBHOOK_FOLLOW_UPDATE_COOLDOWN_KEY_TTL_MS).
+export const YOUTUBE_WATCH_GATE_KEY_TTL_MS = YOUTUBE_WATCH_COOLDOWN_MS * 3;
+
+// Upper bound on how long a single acquire() queues for a free slot. 5s (= 5
+// intervals) absorbs steady-state concurrent queueing; far below COOLDOWN_MS
+// (skip rather than burn the job during a cooldown) and far below
+// SHUTDOWN_TIMEOUT (45s), and the wait is abortable. Env-overridable for tuning.
+export const YOUTUBE_WATCH_ACQUIRE_MAX_WAIT_MS = Number(
+  process.env.YOUTUBE_WATCH_ACQUIRE_MAX_WAIT_MS ?? 5000
+);
+
+// Minimum interval shared by the gate's three rate-limited alert logs (degraded
+// / eval-error / saturated). 1 minute keeps a sustained anomaly observable
+// without flooding (versus logging on every acquire).
+export const YOUTUBE_WATCH_DEGRADED_LOG_INTERVAL_MS = 60 * 1000;
