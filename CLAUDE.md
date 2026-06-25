@@ -18,15 +18,12 @@ PubSubHubbub crawler, and a Prometheus metrics endpoint.
 - `npm run dev` — `tsc -w` watch build
 - `npm run lint` / `npm run lint:fix` — ESLint over `src/`
 - `npm run format` / `npm run format:check` — Prettier
-- `npm test` — Jest (requires `NODE_OPTIONS=--experimental-vm-modules`, ESM)
-- Single test:
-  `NODE_OPTIONS='--experimental-vm-modules' npx jest src/models/Channel.spec.ts`
-  (or a `-t "<name>"` filter)
+- `npm test` — Jest (ESM)
+- Single test: `npm run test -- src/models/Channel.spec.ts`
+  (or add `-t "<name>"` to filter). The `--` passes args through to jest.
 - Run a service locally after build:
   `node dist/index.js <scheduler|worker|discord-bot|webhook|crawler|manager|metrics>`
   (or `honeybee` / `hb` once installed)
-- Local stack: `docker-compose up` (see `CONTRIBUTING.md`); production manifests
-  in `k8s/` driven by `Makefile` (`make build`, `make deploy`, `make logs`).
 
 Node ≥ 24 required. ESM-only project (`"type": "module"`); always import with
 `.js` extensions in source even though files are `.ts` (NodeNext resolution).
