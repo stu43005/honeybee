@@ -15,7 +15,10 @@ import { FetchError } from "node-fetch";
 import assert from "node:assert";
 import https from "node:https";
 import { setInterval, setTimeout } from "node:timers/promises";
-import { JOB_CONCURRENCY } from "../constants.js";
+import {
+  JOB_CONCURRENCY,
+  YOUTUBE_WATCH_ACQUIRE_MAX_WAIT_MS,
+} from "../constants.js";
 import {
   ErrorCode,
   HoneybeeResult,
@@ -56,12 +59,55 @@ import {
 } from "../modules/currency-convert.js";
 import { MongodbModule } from "../modules/db.js";
 import { QueueModule } from "../modules/queue.js";
-import { youtubeRateLimiter } from "../modules/rate-limiter.js";
+import { YoutubeWatchGate } from "../modules/youtube-watch-gate.js";
+import { RedisModule } from "../modules/redis.js";
 import ChannelModel from "../models/Channel.js";
 import { updateChannelByHandle } from "../modules/youtube.js";
 import { groupBy, pipeSignal, setIfDefine } from "../util.js";
 
 const { MongoError, MongoBulkWriteError } = mongoose.mongo;
+
+/**
+ * A YouTube 429 reaches us as a raw AxiosError: masterchat's own rate-limit
+ * detection (err.code === "429") never matches an AxiosError (whose code is
+ * ERR_BAD_REQUEST), so it does not wrap it. We deliberately do NOT treat
+ * masterchat's AccessDeniedError (generic "denied") as 429 — a private /
+ * region-blocked video must not poison the shared global cooldown.
+ */
+export function is429(err: unknown): boolean {
+  return isAxiosError(err) && err.response?.status === 429;
+}
+
+/**
+ * Classify a stats-update failure and react. A 429 records the global cooldown
+ * via the gate (every pod backs off); the gate has already set this pod's local
+ * backoff, so on a failed Redis record we surface one warning instead of going
+ * silent. Aborts/cancels are ignored; everything else is logged.
+ */
+export async function reportStatsUpdateError(
+  err: unknown,
+  gate: YoutubeWatchGate,
+  log: (...args: unknown[]) => void
+): Promise<void> {
+  if (err instanceof AbortError || axios.isCancel(err)) {
+    return; // ignore
+  }
+  if (is429(err)) {
+    const recorded = await gate.penalize();
+    if (!recorded) {
+      log(
+        "<!> [STATS UPDATE ERROR] 429 detected; global cooldown not recorded (local backoff active)"
+      );
+    }
+    return;
+  }
+  if (isAxiosError(err)) {
+    // only log the error message instead of the whole error object to avoid logging sensitive info like API key
+    log(`<!> [STATS UPDATE ERROR] ${err}`);
+    return;
+  }
+  log("<!> [STATS UPDATE ERROR]", err);
+}
 
 function emojiHandler(run: YTEmojiRun) {
   const { emoji } = run;
@@ -137,7 +183,8 @@ async function resolveRaidName(name: string): Promise<string> {
 
 async function handleJob(
   job: BeeQueue.Job<HoneybeeJob>,
-  globalSignal: AbortSignal
+  globalSignal: AbortSignal,
+  gate: YoutubeWatchGate
 ): Promise<HoneybeeResult> {
   const { videoId, replica, mode = "live" } = job.data;
   assert(replica, "No specified replica.");
@@ -886,17 +933,20 @@ async function handleJob(
     try {
       if (isReplay) return; // do not update stats for replay mode
       if (replica > 1) return; // only update stats in the first replica
-      await youtubeRateLimiter.acquire();
+      // Bounded-blocking global gate; cancelController.signal lets graceful
+      // shutdown release the wait immediately. false → cooldown / degraded /
+      // abort / budget exhausted: skip this update (next cycle retries).
+      if (
+        !(await gate.acquire(
+          YOUTUBE_WATCH_ACQUIRE_MAX_WAIT_MS,
+          cancelController.signal
+        ))
+      ) {
+        return;
+      }
       await VideoModel.updateFromMasterchat(mc);
     } catch (err) {
-      if (err instanceof AbortError || axios.isCancel(err)) {
-        // ignore
-      } else if (isAxiosError(err)) {
-        // only log the error message instead of the whole error object to avoid logging sensitive info like API key
-        videoLog(`<!> [STATS UPDATE ERROR] ${err}`);
-      } else {
-        videoLog("<!> [STATS UPDATE ERROR]", err);
-      }
+      await reportStatsUpdateError(err, gate, videoLog);
     }
   }
 
@@ -1045,6 +1095,8 @@ export async function runWorker() {
   const exitController = new AbortController();
   const app = new Application();
   app.use(new MongodbModule());
+  const redisModule = app.use(new RedisModule({ nonBlockingConnect: true }));
+  const gate = app.use(new YoutubeWatchGate(redisModule.redis));
   const { queue } = app.use(
     new QueueModule("honeybee", { activateDelayedJobs: true })
   );
@@ -1069,7 +1121,7 @@ export async function runWorker() {
   });
 
   queue.process<HoneybeeResult>(JOB_CONCURRENCY, (job) =>
-    handleJob(job, exitController.signal)
+    handleJob(job, exitController.signal, gate)
   );
 
   await app.init();
