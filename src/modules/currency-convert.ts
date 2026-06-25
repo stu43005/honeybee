@@ -5,11 +5,21 @@ import { currencyMap } from "../data/currency.js";
 import CurrencyExchange from "../models/CurrencyExchange.js";
 import { getCacheInstance } from "./cache.js";
 
-const exchangeToJpyCache = getCacheInstance({
-  ttl: moment.duration(1, "day").asMilliseconds(),
-  refreshThreshold: moment.duration(1, "hour").asMilliseconds(),
-  useClone: true,
-});
+// Created on first conversion instead of at module load, so merely importing
+// this module (e.g. transitively via the worker) does not eagerly build the
+// cache (which would open a Redis connection and start a background timer).
+// checkInterval: 0 disables CacheableMemory's sweep setInterval — it is never
+// unref'd and would otherwise keep the process alive forever; expired entries
+// are still evicted lazily on read.
+let exchangeToJpyCache: ReturnType<typeof getCacheInstance> | undefined;
+function getExchangeToJpyCache(): ReturnType<typeof getCacheInstance> {
+  return (exchangeToJpyCache ??= getCacheInstance({
+    ttl: moment.duration(1, "day").asMilliseconds(),
+    refreshThreshold: moment.duration(1, "hour").asMilliseconds(),
+    useClone: true,
+    checkInterval: 0,
+  }));
+}
 
 // https://github.com/fawazahmed0/exchange-api
 const exchangeApiUrls = Object.freeze([
@@ -136,7 +146,7 @@ export async function currencyToJpyAmount(amount: number, currency: string) {
   }
 
   try {
-    const jpyExchange = await exchangeToJpyCache.wrap(
+    const jpyExchange = await getExchangeToJpyCache().wrap(
       currencymapEntry.code,
       () => getExchange(currencymapEntry.code, "JPY")
     );
