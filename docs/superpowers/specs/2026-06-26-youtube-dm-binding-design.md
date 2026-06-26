@@ -130,16 +130,20 @@ transformYoutubeDmBinding(doc)`**。**不使用交易**；source 與衍生 Webho
   `await transformYoutubeDmBinding(doc)`（刪除該 Webhook）。
 
 **綁定上限**：在呼叫 `bindChannels` 前（指令端與 helper 開頭）讀目前 `channelIds`，
-若 `現有 + 本次新增 > YOUTUBE_DM_MAX_CHANNELS_PER_USER` 則整批拒絕並提示。此上限為
-**軟性濫用防線**、非正確性不變量：同一使用者的 OAuth 流程本質序列（一次完成一個
-授權），並行重複綁定極罕見，即使偶發競爭略為超量也僅讓單份 webhook 的 `$in` 稍大、
-無功能性危害，故不以交易強制。
+計算「本次**真正新增**的頻道數」= 請求的 channelIds 扣除已存在於 `channelIds`
+者（重複綁同一頻道不計入，避免無謂拒絕），若 `現有數 + 真正新增數 >
+YOUTUBE_DM_MAX_CHANNELS_PER_USER` 則整批拒絕並提示。此上限為**軟性濫用防線**、非
+正確性不變量：同一使用者的 OAuth 流程本質序列（一次完成一個授權），並行重複綁定
+極罕見，即使偶發競爭略為超量也僅讓單份 webhook 的 `$in` 稍大、無功能性危害，故不
+以交易強制。
 
 > 失敗模型（明確接受的取捨）：transform 為 `findOneAndUpdate` 後的同步 await，正常
 > 情況即時生效。若 transform 拋例外（罕見 DB 錯誤），指令 / callback 仍回報失敗、
-> 不宣稱成功；source 與 webhook 的暫時不一致由 1 小時 sweep（+ 孤兒清理）收斂。最壞
-> 情況：unbind 後若該次 transform 失敗，存在**最多約 1 小時**仍可能發 DM 的視窗，
-> sweep 後停止——此為不使用交易換取簡單性的已接受代價。
+> 不宣稱成功；source 與 webhook 的暫時不一致由 1 小時 sweep（+ 孤兒清理）收斂。
+> **unbind 的 consent 不靠 sweep 時效**：即使 stale webhook 暫存，webhook process
+> 的**投遞時 consent 檢查**（見下）會比對當前綁定，已 unbind 的頻道事件一律不送
+> DM，故不存在「opt-out 後仍收到通知」的視窗。sweep 僅負責最終清掉 stale webhook
+> 文件本身（停止無謂的事件匹配）。
 
 bind 時 channel 文件處理（對每個 channelId，與 Track 同做法）：
 `ChannelModel.findByChannelId(id) ?? ChannelModel.create({ id, name })`。
@@ -318,7 +322,13 @@ OAuth client（Google `OAuth2`、Discord token 交換）一律包成 helper，to
 if (checkIsDiscordWebhookUrl(url)) {
   /* 既有 */
 } else if (checkIsDiscordDmUrl(url)) {
-  await sendDiscordDm(url, body, webhook, resultIdentifier);
+  await sendDiscordDm(
+    url,
+    data.fullDocument.authorChannelId,
+    body,
+    webhook,
+    resultIdentifier
+  );
 } else {
   /* 既有 sendWebhook */
 }
@@ -329,20 +339,28 @@ if (checkIsDiscordWebhookUrl(url)) {
 - 既有「embed footer `fixLongText`」分支條件擴成
   `checkIsDiscordWebhookUrl(url) || checkIsDiscordDmUrl(url)` 都套用。
 
-`sendDiscordDm(url, body, webhook, resultIdentifier)`：
+`sendDiscordDm(url, authorChannelId, body, webhook, resultIdentifier)`
+（`authorChannelId` 取自 `data.fullDocument.authorChannelId`，由 DM 分派處傳入）：
 
 1. 從 `url` 解析出 `discordUserId`（`discord-dm://<id>`，以字串前綴移除取得）。
-2. 取投遞 payload `{ content: body.content, embeds: body.embeds }`。
-3. 用 bot token REST（`runWebhook` 啟動時 `discordRest.setToken(DISCORD_TOKEN)`）：
+2. **投遞時 consent 檢查（fail-closed，關閉 unbind 視窗）**：直接讀
+   `YoutubeDmBinding.findOne({ discordUserId })`（**不經 app 層快取**，使用
+   `readPreference: "primary"` 避免複本延遲；DM 事件量低，每事件多一次 indexed
+   讀取可接受）。若綁定不存在、或 `authorChannelId` 不在 `binding.channelIds`
+   內 → **直接 return、不送 DM**（`documentLog` 記一筆 consent-skip）。此檢查使
+   「使用者已 unbind 但 stale webhook 因 transform 罕見失敗尚未移除」期間的事件
+   一律不投遞，與 sweep 何時收斂無關。
+3. 取投遞 payload `{ content: body.content, embeds: body.embeds }`。
+4. 用 bot token REST（`runWebhook` 啟動時 `discordRest.setToken(DISCORD_TOKEN)`）：
    - DM channel id 以既有 `cache` 快取，key `dm-channel-<discordUserId>`；未命中時
      `Routes.userChannels()` + body `{ recipient_id }` + `auth: true` 建立並快取
      回應 `id`。
    - `Routes.channelMessages(dmChannelId)` + body `{ content, embeds }` +
      `auth: true` 發送。
-4. 記錄 `WebhookResult`（成功寫 method/url/body/response/statusCode 200；失敗寫
+5. 記錄 `WebhookResult`（成功寫 method/url/body/response/statusCode 200；失敗寫
    statusCode/error），與 `sendDiscordWebhook` 一致；走既有 `claimWebhookResult`
    冪等層。
-5. 錯誤策略（投遞失敗視為該事件終結、綁定保持啟用）：
+6. 錯誤策略（投遞失敗視為該事件終結、綁定保持啟用）：
    - `403`（DM 關閉 / 封鎖 / 無共同伺服器）、`404`：記錄 error、**不 throw** →
      bee-queue 視為完成、不重試；綁定保留，使用者重開 DM 後自動恢復。
    - 已快取的 DM channel 發送遇 `404`（channel 失效）：清 `dm-channel-<id>` 快取後
@@ -408,7 +426,7 @@ HTTP URL，若不特殊處理，探測必然丟例外 → 約 24 小時後 DM �
 
 - DM 送不出（403/404）：視為該事件終結，綁定保留（見上）。
 - 使用者解除所有綁定：`channelIds` 清空 → transform 刪除其 Webhook → meta-stream
-  移出監視。
+  移出監視；即使 webhook 暫存，投遞時 consent 檢查也不會再送 DM。
 - 同一頻道被不同使用者綁定：允許（頻道僅作所有權驗證，非全域唯一）；各自收到 DM。
 - OAuth `state` 過期 / 不存在 / 重複使用：callback 回錯誤頁、不建立綁定。
 - Discord 授權者身分不符 state（`/users/@me` id ≠ `discordUserId`）：拒絕、不綁定。
@@ -418,8 +436,9 @@ HTTP URL，若不特殊處理，探測必然丟例外 → 約 24 小時後 DM �
   防線，不以交易強制；同一使用者 OAuth 序列進行，偶發競爭即使略超量亦無功能危害。
 - 部分失敗（不使用交易的已接受取捨）：transform 為更新後的同步 await，正常即時
   生效；若 transform 拋例外，指令 / callback 回報失敗、不宣稱成功，source 與
-  webhook 的暫時不一致由 1 小時 sweep（+ 孤兒清理）收斂。unbind 後若該次 transform
-  失敗，最壞存在約 1 小時仍可能發 DM 的視窗，sweep 後停止。
+  webhook 的暫時不一致由 1 小時 sweep（+ 孤兒清理）收斂。**consent 不靠 sweep
+  時效**：投遞時 consent 檢查確保已 unbind 的頻道事件一律不送 DM，無 opt-out 後仍
+  收到通知的視窗（stale webhook 僅造成無謂的事件匹配，sweep 後消失）。
 
 ## 測試重點
 
@@ -439,6 +458,10 @@ HTTP URL，若不特殊處理，探測必然丟例外 → 約 24 小時後 DM �
 - **webhook-prepare 跳過 `discord-dm://`**：DM webhook 完全不被觸碰——無
   `axios.get`，`failedAttempts` / `enabled` / `lastChecked` / `lastSuccess` 皆不變、
   不 `save`；HTTP webhook 的既有探測行為不變。
+- **投遞時 consent 檢查**：綁定不存在 / `authorChannelId` 不在 `channelIds` →
+  `sendDiscordDm` 直接 return、**不建 DM channel、不發訊息**（stateful fake REST
+  斷言零呼叫）；綁定含該頻道 → 正常發送。模擬「webhook 仍在但綁定已移除該頻道」→
+  不送 DM。
 - `sendDiscordDm`：stateful fake REST（建 DM channel → 回 id → 快取；發訊息）；
   403/404 終結（不 throw、寫 error）vs 5xx throw；快取 DM channel 遇 404 清快取重建。
 - OAuth callback：`state` 驗證 / 過期 / 單次使用（重放被拒）；Discord 授權者 id 與
