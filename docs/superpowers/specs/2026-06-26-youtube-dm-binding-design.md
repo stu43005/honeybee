@@ -119,15 +119,21 @@ static helpers 仿 Track：對綁定文件做一次更新後，**在最後 `awai
 transformYoutubeDmBinding(doc)`**。**不使用交易**；source 與衍生 Webhook 的短暫
 不一致由 1 小時 sweep 收斂（明確設計決定）。
 
+所有 helper **null-safe / idempotent**：`findOneAndUpdate` 回傳 `null`（首次使用、
+已無綁定、過期指令）時直接視為 no-op 回傳，不呼叫 `transformYoutubeDmBinding`（它
+需要 `_id`）。unbind 對不存在的綁定即「本就無事可做」。
+
 - `bindChannels(discordUserId, channelIds: string[])`：
-  `findOneAndUpdate({ discordUserId }, { $addToSet: { channelIds: { $each: channelIds } } }, { upsert: true, new: true })`
+  `findOneAndUpdate({ discordUserId }, { $addToSet: { channelIds: { $each: channelIds } } }, { upsert: true, new: true })`（`upsert` 必有 doc）
   後 `await transformYoutubeDmBinding(doc)`。
 - `unbindChannel(discordUserId, channelId)`：
-  `findOneAndUpdate({ discordUserId }, { $pull: { channelIds: channelId } }, { new: true })`
-  後 `await transformYoutubeDmBinding(doc)`（重算 match；channelIds 變空則刪除
-  webhook）。
-- `unbindAll(discordUserId)`：`$set: { channelIds: [] }` 後
-  `await transformYoutubeDmBinding(doc)`（刪除該 Webhook）。
+  `findOneAndUpdate({ discordUserId }, { $pull: { channelIds: channelId } }, { new: true })`；
+  `doc` 為 `null` → no-op 回傳；否則 `await transformYoutubeDmBinding(doc)`（重算
+  match；channelIds 變空則刪除 webhook）。
+- `unbindAll(discordUserId)`：
+  `findOneAndUpdate({ discordUserId }, { $set: { channelIds: [] } }, { new: true })`；
+  `doc` 為 `null` → no-op 回傳；否則 `await transformYoutubeDmBinding(doc)`（刪除該
+  Webhook）。
 
 **綁定上限**：在呼叫 `bindChannels` 前（指令端與 helper 開頭）讀目前 `channelIds`，
 計算「本次**真正新增**的頻道數」= 請求的 channelIds 扣除已存在於 `channelIds`
@@ -298,12 +304,14 @@ async function transformYoutubeDmBindings() {
      `redirect_uri = <OAUTH_PUBLIC_BASE_URL>/oauth/youtube-dm/discord/callback`。
 3. Callback HTTP endpoint（discord-bot 在 `app.init()` 前以 `app.http.server`
    註冊 Fastify 路由）：
-   - 共同：先做**廉價驗證**——`state` 存在且未過期、`code` 參數存在、callback 的
-     `method` 與 state 記錄一致；任一不符回錯誤頁但**不刪除 state**（避免 prefetch /
-     重複轉址 / 缺參數的雜訊 callback 燒掉使用者尚未完成的合法 bind）。通過廉價驗證
-     後才**刪除 `state`（單次使用、防重放）**，再進行 token 交換。token 交換本身
-     失敗（provider 端錯誤）視為該次嘗試失敗、回錯誤頁並提示重試（此時 state 已
-     消耗，屬正常的「重新發起」流程，與 replay 無關）。
+   - 共同：先做**不需 state 的廉價驗證**——`code` 參數存在（缺 code = prefetch /
+     雜訊 callback）→ 缺則回錯誤頁、**不碰 state**（不燒掉尚未完成的合法 bind）。
+     通過後讀取 `state` 取得 `{ discordUserId, method }`，驗證 `method` 與 callback
+     路徑一致（不符則拒絕、不刪 state），再**刪除 `state`**（單次使用、盡力防重放），
+     最後進行 token 交換；交換失敗（provider 端錯誤）回錯誤頁並提示重試（state 已
+     消耗，屬正常的「重新發起」）。state 單次使用採非原子的「讀後刪」——與綁定上限
+     相同理由：同一使用者 OAuth 流程本質序列、同一 state 併發兌換極罕見，不值得為此
+     引入原子 `GETDEL` / Lua 的實作複雜度；此併發殘餘風險為已接受的取捨。
    - Google：`GET /oauth/youtube-dm/google/callback?code&state` → 用 code 換 token
      → `youtube.channels.list({ mine: true, part: ["snippet"] })`。一個 Google
      帳號可擁有**多個**頻道（品牌帳號），故取回傳清單中**所有** channelId + title
@@ -466,6 +474,8 @@ HTTP URL，若不特殊處理，探測必然丟例外 → 約 24 小時後 DM �
 
 - `YoutubeDmBinding` statics：`$addToSet` 去重、`$pull`、清空（stateful fake，
   `$addToSet` 後 `find` 可觀察去重結果）。
+- **unbind 冪等 / null-safe**：對不存在綁定的 `unbindChannel` / `unbindAll` →
+  `findOneAndUpdate` 回 `null` → no-op 回傳、**不呼叫 transform**（不丟例外）。
 - **綁定上限（軟性）**：`現有 + 新增 > 上限` 的批次被拒、不寫入；上限內正常綁定。
 - **bind transform 失敗 → saved-pending**：source 已寫入但 transform 拋例外時，
   callback 回 saved-pending 訊息（非純失敗、非謊稱已生效）；模擬後續 sweep 補上
@@ -490,12 +500,11 @@ HTTP URL，若不特殊處理，探測必然丟例外 → 約 24 小時後 DM �
   不送 DM。
 - `sendDiscordDm`：stateful fake REST（建 DM channel → 回 id → 快取；發訊息）；
   403/404 終結（不 throw、寫 error）vs 5xx throw；快取 DM channel 遇 404 清快取重建。
-- OAuth callback：`state` 驗證 / 過期 / 單次使用（重放被拒）；**廉價驗證先於 state
-  消耗**——缺 `code` / method 不符 / prefetch 雜訊 callback **不刪除 state**，隨後
-  合法 callback 仍可成功（不被誤燒）；token 交換失敗回錯誤頁（state 已消耗，需重新
-  發起）。Discord 授權者 id 與 state 不符時拒絕；Discord connections 過濾
-  `verified === true`；Google 多頻道一次全綁；token 不被寫入任何儲存（驗證後即離開
-  作用域）。
+- OAuth callback：缺 `code` 的 prefetch / 雜訊 callback **不碰 state**，隨後合法
+  callback 仍可成功（不被誤燒）；通過後讀 state → 驗 method → 刪 state（讀後刪、
+  單次使用）；token 交換失敗回錯誤頁（state 已消耗）。Discord 授權者 id 與 state
+  不符時拒絕；Discord connections 過濾 `verified === true`；Google 多頻道一次全綁；
+  token 不被寫入任何儲存（驗證後即離開作用域）。
 
 ## 計畫階段待確認（不臆測）
 
