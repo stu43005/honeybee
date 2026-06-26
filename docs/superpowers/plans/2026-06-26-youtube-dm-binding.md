@@ -533,16 +533,45 @@ describe("transformYoutubeDmBinding", () => {
 
     expect(deleteMany).toHaveBeenCalledWith({ youtubeDmBinding: id });
   });
+
+  it("converges on the latest binding even when invoked with a stale snapshot", async () => {
+    const id = new mongo.BSON.ObjectId();
+    // Current DB state already had channel "UCa" removed by a concurrent unbind.
+    jest.spyOn(YoutubeDmBindingModel, "findById").mockResolvedValue({
+      _id: id,
+      discordUserId: "discord-1",
+      channelIds: ["UCb"],
+    } as any);
+    const updateOne = jest
+      .spyOn(WebhookModel, "updateOne")
+      .mockResolvedValue({} as any);
+
+    // Invoke transform with a STALE snapshot that still lists "UCa".
+    await transformYoutubeDmBinding({
+      _id: id,
+      discordUserId: "discord-1",
+      channelIds: ["UCa", "UCb"],
+    } as any);
+
+    // The webhook match reflects the re-read current binding (UCb only), not the
+    // stale snapshot — the older transform cannot resurrect the removed channel.
+    const [, update] = updateOne.mock.calls[0] as any[];
+    expect(update.$set.match).toEqual({ authorChannelId: "UCb" });
+  });
 });
 
 describe("transformYoutubeDmBindings sweep", () => {
   afterEach(() => jest.restoreAllMocks());
 
-  it("orphan cleanup uses the $type:objectId discriminator (never $ne:null)", async () => {
+  it("orphan cleanup pipeline only selects ObjectId-ref DM webhooks with no binding", async () => {
+    // The aggregate runs server-side in real Mongo, so unit tests assert the FULL
+    // pipeline shape — this is the regression guard that track/general webhooks
+    // (which lack `youtubeDmBinding`) are never selected for deletion. The
+    // discriminator MUST stay `$type: "objectId"`; `$ne: null` would be wrong.
+    // (End-to-end survival of missing-field docs is a Mongo semantic exercised by
+    // the partial index + this pipeline; the repo has no integration-DB harness.)
     const orphanId = new mongo.BSON.ObjectId();
-    // No bindings to transform.
     jest.spyOn(YoutubeDmBindingModel, "find").mockReturnValue([] as any);
-    // aggregate returns one orphan webhook.
     const aggregate = jest
       .spyOn(WebhookModel, "aggregate")
       .mockReturnValue([{ _id: orphanId }] as any);
@@ -552,13 +581,20 @@ describe("transformYoutubeDmBindings sweep", () => {
 
     await transformYoutubeDmBindings();
 
-    // The discriminator is the protection: { $ne: null } would also match
-    // track/generic webhooks lacking the field and delete them. Locking the
-    // pipeline shape down structurally guards that regression.
-    const pipeline = aggregate.mock.calls[0][0] as any[];
-    expect(pipeline[0]).toEqual({
-      $match: { youtubeDmBinding: { $type: "objectId" } },
-    });
+    expect(aggregate.mock.calls[0][0]).toEqual([
+      { $match: { youtubeDmBinding: { $type: "objectId" } } },
+      {
+        $lookup: {
+          from: "youtubeDmBindings",
+          localField: "youtubeDmBinding",
+          foreignField: "_id",
+          as: "bindingDoc",
+        },
+      },
+      { $match: { bindingDoc: { $size: 0 } } },
+    ]);
+    // only the orphan the pipeline returned is deleted
+    expect(deleteOne).toHaveBeenCalledTimes(1);
     expect(deleteOne).toHaveBeenCalledWith({ _id: orphanId });
   });
 
@@ -750,6 +786,28 @@ describe("YoutubeDmBinding statics", () => {
     expect(deleteMany).toHaveBeenCalledTimes(1); // empty channelIds -> webhook deleted
   });
 
+  it("unbindAll clears channelIds and deletes the webhook", async () => {
+    const updated = { _id: "x", discordUserId: "d1", channelIds: [] };
+    const fou = jest
+      .spyOn(YoutubeDmBindingModel, "findOneAndUpdate")
+      .mockResolvedValue(updated as any);
+    jest
+      .spyOn(YoutubeDmBindingModel, "findById")
+      .mockResolvedValue(updated as any);
+    const deleteMany = jest
+      .spyOn(WebhookModel, "deleteMany")
+      .mockResolvedValue({} as any);
+
+    await YoutubeDmBindingModel.unbindAll("d1");
+
+    expect(fou).toHaveBeenCalledWith(
+      { discordUserId: "d1" },
+      { $set: { channelIds: [] } },
+      { new: true }
+    );
+    expect(deleteMany).toHaveBeenCalledTimes(1); // empty channelIds -> webhook deleted
+  });
+
   it("unbindAll is a no-op when no binding exists", async () => {
     jest
       .spyOn(YoutubeDmBindingModel, "findOneAndUpdate")
@@ -759,6 +817,41 @@ describe("YoutubeDmBinding statics", () => {
     await YoutubeDmBindingModel.unbindAll("d1");
 
     expect(findById).not.toHaveBeenCalled();
+  });
+
+  it("de-dupes channels via $addToSet (stateful fake)", async () => {
+    // Stateful fake: findOneAndUpdate applies $addToSet to an in-memory array so
+    // the de-dupe is observable across two binds with overlapping ids.
+    const channelIds: string[] = ["UCa"];
+    jest
+      .spyOn(YoutubeDmBindingModel, "findOne")
+      .mockImplementation((() =>
+        Promise.resolve({ channelIds: [...channelIds] })) as any);
+    jest.spyOn(YoutubeDmBindingModel, "findOneAndUpdate").mockImplementation(((
+      _filter: any,
+      update: any
+    ) => {
+      const each = update.$addToSet.channelIds.$each as string[];
+      for (const id of each) {
+        if (!channelIds.includes(id)) channelIds.push(id);
+      }
+      return Promise.resolve({
+        _id: "x",
+        discordUserId: "d1",
+        channelIds: [...channelIds],
+      });
+    }) as any);
+    jest.spyOn(YoutubeDmBindingModel, "findById").mockImplementation((() =>
+      Promise.resolve({
+        _id: "x",
+        discordUserId: "d1",
+        channelIds: [...channelIds],
+      })) as any);
+    jest.spyOn(WebhookModel, "updateOne").mockResolvedValue({} as any);
+
+    await YoutubeDmBindingModel.bindChannels("d1", ["UCa", "UCb"]); // UCa dup, UCb new
+
+    expect(channelIds).toEqual(["UCa", "UCb"]); // no duplicate UCa
   });
 });
 ```
