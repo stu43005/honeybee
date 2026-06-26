@@ -353,6 +353,20 @@ if (checkIsDiscordWebhookUrl(url)) {
 webhook process 不加 gateway `Client`，沿用 REST-only（與既有發 Discord webhook
 同源）。
 
+## webhook-prepare 相容性（`discord-dm://` scheme）
+
+`src/components/webhook-prepare.ts`（manager 每 1 小時）會對**每個 enabled
+webhook** 做 `axiosInstance.get(webhook.insertUrl)` 的可達性探測；連續失敗累積到
+`failedAttempts >= 24` 會將 `enabled` 設為 `false`。`discord-dm://<userId>` 不是
+HTTP URL，若不特殊處理，探測必然丟例外 → 約 24 小時後 DM 訂閱被自動停用。
+
+處理方式：在迴圈本體開頭，對 `checkIsDiscordDmUrl(webhook.insertUrl)` 為真者直接
+`continue`，**整個 iteration 跳過**——不執行 `axios.get`、不動 `failedAttempts` /
+`enabled`、不更新 `lastChecked` / `lastSuccess`、不 `save`（既然沒做任何檢查，就不
+更新檢查時間戳）。DM 的實際可投遞性改由**每事件**的 `WebhookResult`
+（`sendDiscordDm` 的 403/404/5xx 記錄）反映，而非 URL 探測。DM webhook 不設
+`matchPreset`，本來就無需 matchPreset 準備。
+
 ## 設定（`src/constants.ts`）
 
 新增 env（命名與既有風格一致；時間常數以 `_MS` 命名、毫秒、配 Redis `SET PX`）：
@@ -422,6 +436,9 @@ webhook process 不加 gateway `Client`，沿用 REST-only（與既有發 Discor
   文件）；指向已刪除綁定的 DM webhook 被移除（stateful fake）。
 - `getChannelIdFilter` 改為吃 `string[]` 後，track.ts 既有行為不變（單/多/反向）。
 - `checkIsDiscordDmUrl`：scheme 判斷正負例。
+- **webhook-prepare 跳過 `discord-dm://`**：DM webhook 完全不被觸碰——無
+  `axios.get`，`failedAttempts` / `enabled` / `lastChecked` / `lastSuccess` 皆不變、
+  不 `save`；HTTP webhook 的既有探測行為不變。
 - `sendDiscordDm`：stateful fake REST（建 DM channel → 回 id → 快取；發訊息）；
   403/404 終結（不 throw、寫 error）vs 5xx throw；快取 DM channel 遇 404 清快取重建。
 - OAuth callback：`state` 驗證 / 過期 / 單次使用（重放被拒）；Discord 授權者 id 與
