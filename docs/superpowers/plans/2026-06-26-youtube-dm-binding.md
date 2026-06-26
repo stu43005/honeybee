@@ -1074,7 +1074,9 @@ export async function sendDiscordDm(
   url: string,
   authorChannelId: string,
   body: any,
-  webhook: Webhook,
+  // DocumentType<Webhook> (not the plain Webhook class) so documentLog accepts it
+  // and to match what processWebhookEvent passes.
+  webhook: DocumentType<Webhook>,
   resultIdentifier: WebhookResultIdentifier
 ) {
   const discordUserId = url.slice("discord-dm://".length);
@@ -1625,15 +1627,20 @@ export async function listOwnedChannels(
   const { tokens } = await client.getToken(code);
   client.setCredentials(tokens);
   const youtube = googleapis.youtube({ version: "v3", auth: client });
-  // maxResults: 50 (the API max) is intentionally a single page — no nextPageToken
-  // loop. A Google account owning >50 YouTube channels is implausible, and the soft
-  // cap (YOUTUBE_DM_MAX_CHANNELS_PER_USER, default 10) bounds what we'd keep anyway.
-  const res = await youtube.channels.list({
-    mine: true,
-    part: ["snippet"],
-    maxResults: 50,
-  });
-  return res.data.items ?? [];
+  // Page through all owned channels (mine: true) so we never silently omit any.
+  const items: youtube_v3.Schema$Channel[] = [];
+  let pageToken: string | undefined;
+  do {
+    const res = await youtube.channels.list({
+      mine: true,
+      part: ["snippet"],
+      maxResults: 50,
+      pageToken,
+    });
+    items.push(...(res.data.items ?? []));
+    pageToken = res.data.nextPageToken ?? undefined;
+  } while (pageToken);
+  return items;
 }
 
 export async function fetchGoogleChannels(
