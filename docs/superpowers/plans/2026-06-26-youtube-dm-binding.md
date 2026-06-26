@@ -552,11 +552,46 @@ describe("transformYoutubeDmBindings sweep", () => {
 
     await transformYoutubeDmBindings();
 
+    // The discriminator is the protection: { $ne: null } would also match
+    // track/generic webhooks lacking the field and delete them. Locking the
+    // pipeline shape down structurally guards that regression.
     const pipeline = aggregate.mock.calls[0][0] as any[];
     expect(pipeline[0]).toEqual({
       $match: { youtubeDmBinding: { $type: "objectId" } },
     });
     expect(deleteOne).toHaveBeenCalledWith({ _id: orphanId });
+  });
+
+  it("does not delete anything when there are no orphans", async () => {
+    jest.spyOn(YoutubeDmBindingModel, "find").mockReturnValue([] as any);
+    jest.spyOn(WebhookModel, "aggregate").mockReturnValue([] as any);
+    const deleteOne = jest.spyOn(WebhookModel, "deleteOne");
+
+    await transformYoutubeDmBindings();
+
+    expect(deleteOne).not.toHaveBeenCalled();
+  });
+
+  it("sweep re-derives the webhook for an existing binding (pending recovery)", async () => {
+    const id = new mongo.BSON.ObjectId();
+    const binding = { _id: id, discordUserId: "d1", channelIds: ["UCa"] };
+    // one binding to (re)transform; no orphans
+    jest.spyOn(YoutubeDmBindingModel, "find").mockReturnValue([binding] as any);
+    jest
+      .spyOn(YoutubeDmBindingModel, "findById")
+      .mockResolvedValue(binding as any);
+    jest.spyOn(WebhookModel, "aggregate").mockReturnValue([] as any);
+    const updateOne = jest
+      .spyOn(WebhookModel, "updateOne")
+      .mockResolvedValue({} as any);
+
+    await transformYoutubeDmBindings();
+
+    // proves a binding whose webhook was missing (e.g. saved-pending) gets re-derived
+    expect(updateOne).toHaveBeenCalledTimes(1);
+    expect((updateOne.mock.calls[0] as any[])[0]).toEqual({
+      youtubeDmBinding: id,
+    });
   });
 });
 ```
@@ -565,12 +600,14 @@ describe("transformYoutubeDmBindings sweep", () => {
 
 - [ ] **Step 5: Write the model statics tests**
 
-Create `src/models/YoutubeDmBinding.spec.ts`:
+Create `src/models/YoutubeDmBinding.spec.ts`.
+
+> **ESM-mocking note:** do NOT `jest.spyOn` the operator's namespace export (`import * as operator`) — under this repo's native-ESM Jest the module namespace is read-only and the model's lexical import would not be intercepted. Instead let the real `transformYoutubeDmBinding` run and mock the **model/object methods it uses** (`YoutubeDmBindingModel.findById`, `WebhookModel.updateOne`, `WebhookModel.deleteMany`) — spying object properties works (this is how `Channel.spec.ts` already mocks model statics). Assert on those effects to prove transform ran or was skipped.
 
 ```typescript
 /// <reference types="jest" />
 import { afterEach, describe, expect, it, jest } from "@jest/globals";
-import * as operator from "../components/youtube-dm-operator.js";
+import WebhookModel from "./Webhook.js";
 import YoutubeDmBindingModel, {
   BindingLimitError,
   BindingTransformPendingError,
@@ -579,7 +616,7 @@ import YoutubeDmBindingModel, {
 describe("YoutubeDmBinding statics", () => {
   afterEach(() => jest.restoreAllMocks());
 
-  it("bindChannels adds genuinely-new ids and transforms", async () => {
+  it("bindChannels adds genuinely-new ids and runs transform (webhook upserted)", async () => {
     jest
       .spyOn(YoutubeDmBindingModel, "findOne")
       .mockResolvedValue({ channelIds: ["UCa"] } as any);
@@ -591,9 +628,13 @@ describe("YoutubeDmBinding statics", () => {
     const fou = jest
       .spyOn(YoutubeDmBindingModel, "findOneAndUpdate")
       .mockResolvedValue(updated as any);
-    const transform = jest
-      .spyOn(operator, "transformYoutubeDmBinding")
-      .mockResolvedValue();
+    // transform re-reads the binding by _id then upserts the webhook
+    jest
+      .spyOn(YoutubeDmBindingModel, "findById")
+      .mockResolvedValue(updated as any);
+    const updateOne = jest
+      .spyOn(WebhookModel, "updateOne")
+      .mockResolvedValue({} as any);
 
     const result = await YoutubeDmBindingModel.bindChannels("d1", ["UCb"]);
 
@@ -602,7 +643,7 @@ describe("YoutubeDmBinding statics", () => {
       { $addToSet: { channelIds: { $each: ["UCb"] } } },
       { upsert: true, new: true }
     );
-    expect(transform).toHaveBeenCalledWith(updated);
+    expect(updateOne).toHaveBeenCalledTimes(1); // transform ran
     expect(result).toBe(updated);
   });
 
@@ -611,41 +652,48 @@ describe("YoutubeDmBinding statics", () => {
       channelIds: Array.from({ length: 10 }, (_, i) => `UC${i}`),
     } as any);
     const fou = jest.spyOn(YoutubeDmBindingModel, "findOneAndUpdate");
+    const updateOne = jest.spyOn(WebhookModel, "updateOne");
 
     await expect(
       YoutubeDmBindingModel.bindChannels("d1", ["UCnew"])
     ).rejects.toBeInstanceOf(BindingLimitError);
     expect(fou).not.toHaveBeenCalled();
+    expect(updateOne).not.toHaveBeenCalled();
   });
 
   it("bindChannels ignores already-bound ids against the cap", async () => {
     jest.spyOn(YoutubeDmBindingModel, "findOne").mockResolvedValue({
       channelIds: Array.from({ length: 10 }, (_, i) => `UC${i}`),
     } as any);
-    const updated = { _id: "x", discordUserId: "d1", channelIds: [] };
+    const updated = { _id: "x", discordUserId: "d1", channelIds: ["UC0"] };
     jest
       .spyOn(YoutubeDmBindingModel, "findOneAndUpdate")
       .mockResolvedValue(updated as any);
-    jest.spyOn(operator, "transformYoutubeDmBinding").mockResolvedValue();
+    jest
+      .spyOn(YoutubeDmBindingModel, "findById")
+      .mockResolvedValue(updated as any);
+    jest.spyOn(WebhookModel, "updateOne").mockResolvedValue({} as any);
 
+    // "UC0" already bound -> 0 genuinely-new -> within cap
     await expect(
       YoutubeDmBindingModel.bindChannels("d1", ["UC0"])
     ).resolves.toBe(updated);
   });
 
-  it("bindChannels reclassifies a post-write transform failure as BindingTransformPendingError", async () => {
+  it("reclassifies a post-write transform failure as BindingTransformPendingError", async () => {
     jest
       .spyOn(YoutubeDmBindingModel, "findOne")
       .mockResolvedValue({ channelIds: [] } as any);
+    const updated = { _id: "x", discordUserId: "d1", channelIds: ["UCa"] };
     jest
       .spyOn(YoutubeDmBindingModel, "findOneAndUpdate")
-      .mockResolvedValue({
-        _id: "x",
-        discordUserId: "d1",
-        channelIds: ["UCa"],
-      } as any);
+      .mockResolvedValue(updated as any);
     jest
-      .spyOn(operator, "transformYoutubeDmBinding")
+      .spyOn(YoutubeDmBindingModel, "findById")
+      .mockResolvedValue(updated as any);
+    // transform's webhook write fails AFTER the source was written
+    jest
+      .spyOn(WebhookModel, "updateOne")
       .mockRejectedValue(new Error("db down"));
 
     await expect(
@@ -653,44 +701,44 @@ describe("YoutubeDmBinding statics", () => {
     ).rejects.toBeInstanceOf(BindingTransformPendingError);
   });
 
-  it("bindChannels lets a pre-write failure propagate as a generic error", async () => {
+  it("lets a pre-write failure propagate as a generic error (transform never runs)", async () => {
     jest
       .spyOn(YoutubeDmBindingModel, "findOne")
       .mockResolvedValue({ channelIds: [] } as any);
     jest
       .spyOn(YoutubeDmBindingModel, "findOneAndUpdate")
       .mockRejectedValue(new Error("write failed"));
-    const transform = jest.spyOn(operator, "transformYoutubeDmBinding");
+    const updateOne = jest.spyOn(WebhookModel, "updateOne");
 
     await expect(
       YoutubeDmBindingModel.bindChannels("d1", ["UCa"])
     ).rejects.toThrow("write failed");
-    // not reclassified, and transform never ran
-    expect(transform).not.toHaveBeenCalled();
+    expect(updateOne).not.toHaveBeenCalled();
   });
 
   it("unbindChannel is a no-op when no binding exists", async () => {
     jest
       .spyOn(YoutubeDmBindingModel, "findOneAndUpdate")
       .mockResolvedValue(null as any);
-    const transform = jest
-      .spyOn(operator, "transformYoutubeDmBinding")
-      .mockResolvedValue();
+    const findById = jest.spyOn(YoutubeDmBindingModel, "findById");
 
     const result = await YoutubeDmBindingModel.unbindChannel("d1", "UCa");
 
     expect(result).toBeNull();
-    expect(transform).not.toHaveBeenCalled();
+    expect(findById).not.toHaveBeenCalled(); // transform not invoked
   });
 
-  it("unbindChannel pulls the id and transforms when binding exists", async () => {
+  it("unbindChannel pulls the id and runs transform (empty -> webhook deleted)", async () => {
     const updated = { _id: "x", discordUserId: "d1", channelIds: [] };
     const fou = jest
       .spyOn(YoutubeDmBindingModel, "findOneAndUpdate")
       .mockResolvedValue(updated as any);
-    const transform = jest
-      .spyOn(operator, "transformYoutubeDmBinding")
-      .mockResolvedValue();
+    jest
+      .spyOn(YoutubeDmBindingModel, "findById")
+      .mockResolvedValue(updated as any);
+    const deleteMany = jest
+      .spyOn(WebhookModel, "deleteMany")
+      .mockResolvedValue({} as any);
 
     await YoutubeDmBindingModel.unbindChannel("d1", "UCa");
 
@@ -699,20 +747,18 @@ describe("YoutubeDmBinding statics", () => {
       { $pull: { channelIds: "UCa" } },
       { new: true }
     );
-    expect(transform).toHaveBeenCalledWith(updated);
+    expect(deleteMany).toHaveBeenCalledTimes(1); // empty channelIds -> webhook deleted
   });
 
   it("unbindAll is a no-op when no binding exists", async () => {
     jest
       .spyOn(YoutubeDmBindingModel, "findOneAndUpdate")
       .mockResolvedValue(null as any);
-    const transform = jest
-      .spyOn(operator, "transformYoutubeDmBinding")
-      .mockResolvedValue();
+    const findById = jest.spyOn(YoutubeDmBindingModel, "findById");
 
     await YoutubeDmBindingModel.unbindAll("d1");
 
-    expect(transform).not.toHaveBeenCalled();
+    expect(findById).not.toHaveBeenCalled();
   });
 });
 ```
@@ -1144,17 +1190,35 @@ Extend the existing embed `fixLongText` footer block condition from `if (checkIs
   if (checkIsDiscordWebhookUrl(url) || checkIsDiscordDmUrl(url)) {
 ```
 
-- [ ] **Step 5: Set the bot token on startup**
+- [ ] **Step 5: Set the bot token on startup (fail-fast) and drain `dmRest` on shutdown**
 
-In `runWebhook()`, before `app.init()`:
+Add the import at the top of `src/commands/webhook.ts` (next to the other `node:assert` usages if present, else add it):
 
 ```typescript
-if (process.env.DISCORD_TOKEN) {
-  dmRest.setToken(process.env.DISCORD_TOKEN);
-}
+import assert from "node:assert";
 ```
 
-(Use the same `DISCORD_TOKEN` source found in Task 1 Step 1 if it is exported from a module; otherwise `process.env.DISCORD_TOKEN` as shown.)
+In `runWebhook()`, before `app.init()`, require the token and set it unconditionally so a missing token fails fast (rather than every DM silently failing at runtime):
+
+```typescript
+assert(process.env.DISCORD_TOKEN, "DISCORD_TOKEN is required for DM delivery");
+dmRest.setToken(process.env.DISCORD_TOKEN);
+```
+
+Update the existing `discord-rest-client` module's `close()` so it also drains `dmRest`'s in-flight handlers (the current loop only waits on `discordRest.handlers`). Change the close body to drain both clients:
+
+```typescript
+    async close() {
+      // wait for all pending Discord REST handlers (webhook + DM) to flush
+      for (const rest of [discordRest, dmRest]) {
+        for (const [, handler] of rest.handlers) {
+          while (!handler.inactive) {
+            await setTimeout(100);
+          }
+        }
+      }
+    },
+```
 
 - [ ] **Step 6: Run the test + build + lint**
 
@@ -1561,7 +1625,14 @@ export async function listOwnedChannels(
   const { tokens } = await client.getToken(code);
   client.setCredentials(tokens);
   const youtube = googleapis.youtube({ version: "v3", auth: client });
-  const res = await youtube.channels.list({ mine: true, part: ["snippet"] });
+  // maxResults: 50 (the API max) is intentionally a single page — no nextPageToken
+  // loop. A Google account owning >50 YouTube channels is implausible, and the soft
+  // cap (YOUTUBE_DM_MAX_CHANNELS_PER_USER, default 10) bounds what we'd keep anyway.
+  const res = await youtube.channels.list({
+    mine: true,
+    part: ["snippet"],
+    maxResults: 50,
+  });
   return res.data.items ?? [];
 }
 
@@ -1763,7 +1834,9 @@ git commit -m "feat(oauth): add discord connections oauth helper"
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `src/discord/oauth/callback.spec.ts`:
+Create `src/discord/oauth/callback.spec.ts`.
+
+> **ESM-mocking note:** the handlers take an injectable `deps` object (default = the real OAuth/state functions) so tests supply mocks directly — no `jest.spyOn` on module namespace exports. `applyBinding`'s dependencies are model object methods (`ChannelModel`, `YoutubeDmBindingModel.bindChannels`), which spy reliably.
 
 ```typescript
 /// <reference types="jest" />
@@ -1773,13 +1846,11 @@ import YoutubeDmBindingModel, {
   BindingLimitError,
   BindingTransformPendingError,
 } from "../../models/YoutubeDmBinding.js";
-import * as discord from "./discord.js";
-import * as google from "./google.js";
-import * as state from "./state.js";
 import {
   applyBinding,
   handleDiscordCallback,
   handleGoogleCallback,
+  type CallbackDeps,
 } from "./callback.js";
 
 function fakeReply() {
@@ -1790,25 +1861,39 @@ function fakeReply() {
   } as any;
 }
 
+function deps(overrides: Partial<CallbackDeps> = {}): CallbackDeps {
+  return {
+    getOAuthState: jest.fn(async () => null),
+    delOAuthState: jest.fn(async () => undefined),
+    fetchGoogleChannels: jest.fn(async () => []),
+    exchangeDiscordCode: jest.fn(async () => "tok"),
+    fetchDiscordUserId: jest.fn(async () => "d1"),
+    fetchVerifiedYoutubeChannels: jest.fn(async () => []),
+    ...overrides,
+  };
+}
+
 describe("oauth callback", () => {
   afterEach(() => jest.restoreAllMocks());
 
   it("google callback rejects when code is missing without consuming state", async () => {
-    const del = jest.spyOn(state, "delOAuthState").mockResolvedValue();
+    const d = deps();
     const reply = fakeReply();
-    await handleGoogleCallback({ query: { state: "st1" } } as any, reply);
-    expect(del).not.toHaveBeenCalled();
+    await handleGoogleCallback({ query: { state: "st1" } } as any, reply, d);
+    expect(d.delOAuthState).not.toHaveBeenCalled();
     expect(reply.code).toHaveBeenCalledWith(400);
   });
 
   it("google callback binds all returned channels", async () => {
-    jest
-      .spyOn(state, "getOAuthState")
-      .mockResolvedValue({ discordUserId: "d1", method: "google" });
-    jest.spyOn(state, "delOAuthState").mockResolvedValue();
-    jest
-      .spyOn(google, "fetchGoogleChannels")
-      .mockResolvedValue([{ channelId: "UCa", title: "A" }]);
+    const d = deps({
+      getOAuthState: jest.fn(async () => ({
+        discordUserId: "d1",
+        method: "google",
+      })),
+      fetchGoogleChannels: jest.fn(async () => [
+        { channelId: "UCa", title: "A" },
+      ]),
+    });
     jest.spyOn(ChannelModel, "findByChannelId").mockResolvedValue(null as any);
     jest.spyOn(ChannelModel, "create").mockResolvedValue({} as any);
     const bind = jest
@@ -1818,26 +1903,31 @@ describe("oauth callback", () => {
 
     await handleGoogleCallback(
       { query: { code: "c1", state: "st1" } } as any,
-      reply
+      reply,
+      d
     );
 
+    expect(d.delOAuthState).toHaveBeenCalledWith("st1");
     expect(bind).toHaveBeenCalledWith("d1", ["UCa"]);
     expect(reply.code).toHaveBeenCalledWith(200);
   });
 
   it("discord callback rejects when authorizer identity != state user", async () => {
-    jest
-      .spyOn(state, "getOAuthState")
-      .mockResolvedValue({ discordUserId: "d1", method: "discord" });
-    jest.spyOn(state, "delOAuthState").mockResolvedValue();
-    jest.spyOn(discord, "exchangeDiscordCode").mockResolvedValue("tok");
-    jest.spyOn(discord, "fetchDiscordUserId").mockResolvedValue("OTHER");
+    const d = deps({
+      getOAuthState: jest.fn(async () => ({
+        discordUserId: "d1",
+        method: "discord",
+      })),
+      exchangeDiscordCode: jest.fn(async () => "tok"),
+      fetchDiscordUserId: jest.fn(async () => "OTHER"),
+    });
     const bind = jest.spyOn(YoutubeDmBindingModel, "bindChannels");
     const reply = fakeReply();
 
     await handleDiscordCallback(
       { query: { code: "c1", state: "st1" } } as any,
-      reply
+      reply,
+      d
     );
 
     expect(bind).not.toHaveBeenCalled();
@@ -1926,10 +2016,35 @@ import {
   fetchVerifiedYoutubeChannels,
 } from "./discord.js";
 import { fetchGoogleChannels } from "./google.js";
-import { delOAuthState, getOAuthState, type OAuthMethod } from "./state.js";
+import {
+  delOAuthState,
+  getOAuthState,
+  type OAuthMethod,
+  type OAuthState,
+} from "./state.js";
 
 type Channel = { channelId: string; title: string };
 type Query = { code?: string; state?: string };
+
+// Injectable seam: cross-module functions are passed in (default = the real ones)
+// so tests supply mocks without spying on ESM namespace exports.
+export interface CallbackDeps {
+  getOAuthState: (state: string) => Promise<OAuthState | null>;
+  delOAuthState: (state: string) => Promise<void>;
+  fetchGoogleChannels: (code: string) => Promise<Channel[]>;
+  exchangeDiscordCode: (code: string) => Promise<string>;
+  fetchDiscordUserId: (token: string) => Promise<string>;
+  fetchVerifiedYoutubeChannels: (token: string) => Promise<Channel[]>;
+}
+
+const realDeps: CallbackDeps = {
+  getOAuthState,
+  delOAuthState,
+  fetchGoogleChannels,
+  exchangeDiscordCode,
+  fetchDiscordUserId,
+  fetchVerifiedYoutubeChannels,
+};
 
 function page(reply: FastifyReply, status: number, message: string) {
   reply
@@ -1972,29 +2087,31 @@ export async function applyBinding(
 async function consumeState(
   query: Query,
   expected: OAuthMethod,
-  reply: FastifyReply
+  reply: FastifyReply,
+  deps: CallbackDeps
 ): Promise<{ discordUserId: string } | null> {
   if (!query.code || !query.state) {
     page(reply, 400, "缺少授權參數。");
     return null;
   }
-  const data = await getOAuthState(query.state);
+  const data = await deps.getOAuthState(query.state);
   if (!data || data.method !== expected) {
     page(reply, 400, "授權連結已失效或不正確，請重新發起。");
     return null;
   }
-  await delOAuthState(query.state);
+  await deps.delOAuthState(query.state);
   return { discordUserId: data.discordUserId };
 }
 
 export async function handleGoogleCallback(
   request: FastifyRequest<{ Querystring: Query }>,
-  reply: FastifyReply
+  reply: FastifyReply,
+  deps: CallbackDeps = realDeps
 ): Promise<void> {
-  const ctx = await consumeState(request.query, "google", reply);
+  const ctx = await consumeState(request.query, "google", reply, deps);
   if (!ctx) return;
   try {
-    const channels = await fetchGoogleChannels(request.query.code!);
+    const channels = await deps.fetchGoogleChannels(request.query.code!);
     if (channels.length === 0) {
       page(reply, 400, "找不到可綁定的 YouTube 頻道。");
       return;
@@ -2007,18 +2124,19 @@ export async function handleGoogleCallback(
 
 export async function handleDiscordCallback(
   request: FastifyRequest<{ Querystring: Query }>,
-  reply: FastifyReply
+  reply: FastifyReply,
+  deps: CallbackDeps = realDeps
 ): Promise<void> {
-  const ctx = await consumeState(request.query, "discord", reply);
+  const ctx = await consumeState(request.query, "discord", reply, deps);
   if (!ctx) return;
   try {
-    const token = await exchangeDiscordCode(request.query.code!);
-    const authorizerId = await fetchDiscordUserId(token);
+    const token = await deps.exchangeDiscordCode(request.query.code!);
+    const authorizerId = await deps.fetchDiscordUserId(token);
     if (authorizerId !== ctx.discordUserId) {
       page(reply, 403, "授權者身分與發起者不符，已拒絕綁定。");
       return;
     }
-    const channels = await fetchVerifiedYoutubeChannels(token);
+    const channels = await deps.fetchVerifiedYoutubeChannels(token);
     if (channels.length === 0) {
       page(reply, 400, "你的 Discord 沒有已驗證的 YouTube 連結。");
       return;
@@ -2029,6 +2147,8 @@ export async function handleDiscordCallback(
   }
 }
 ```
+
+Fastify calls handlers as `(request, reply)`, so `deps` defaults to `realDeps` in production; Task 13 registers them unchanged.
 
 - [ ] **Step 4: Run the test + build + lint**
 
@@ -2056,43 +2176,62 @@ git commit -m "feat(oauth): add youtube-dm oauth callback handlers"
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `src/discord/commands/youtube-dm/youtube-dm.spec.ts`:
+Create `src/discord/commands/youtube-dm/youtube-dm.spec.ts`.
+
+> **ESM-mocking note:** instead of spying on the `state` module's namespace exports, the test initializes the real state store with a fake Redis (`initOAuthStateStore`) and asserts on the fake's `set` calls. Model statics (`YoutubeDmBindingModel`, `ChannelModel`) spy normally as object methods. The `intr` helper builds a fully-formed mock interaction (no `...overrides` spread that would clobber `options`).
 
 ```typescript
 /// <reference types="jest" />
 import { afterEach, describe, expect, it, jest } from "@jest/globals";
 import ChannelModel from "../../../models/Channel.js";
 import YoutubeDmBindingModel from "../../../models/YoutubeDmBinding.js";
-import * as state from "../../oauth/state.js";
+import { initOAuthStateStore } from "../../oauth/state.js";
 import { YoutubeDmCommand } from "./youtube-dm.js";
 
-function intr(overrides: any) {
+function fakeRedis() {
+  const store = new Map<string, string>();
+  return {
+    set: jest.fn(async (k: string, v: string) => {
+      store.set(k, v);
+      return "OK";
+    }),
+    get: jest.fn(async (k: string) => store.get(k) ?? null),
+    del: jest.fn(async (k: string) => (store.delete(k) ? 1 : 0)),
+  };
+}
+
+function intr(opts: {
+  subcommand: string;
+  optionValues?: Record<string, string>;
+}) {
   return {
     user: { id: "d1" },
     options: {
-      getSubcommand: () => overrides.subcommand,
-      getString: (name: string) => overrides.options?.[name] ?? null,
+      getSubcommand: () => opts.subcommand,
+      getString: (name: string) => opts.optionValues?.[name] ?? null,
     },
     reply: jest.fn(async () => undefined),
-    ...overrides,
   } as any;
 }
 
 describe("YoutubeDmCommand", () => {
   afterEach(() => jest.restoreAllMocks());
 
-  it("bind stores state and replies with an auth link", async () => {
+  it("bind stores state (via the real store) and replies with an auth link", async () => {
+    const redis = fakeRedis();
+    initOAuthStateStore(redis as any);
     jest
       .spyOn(YoutubeDmBindingModel, "findOne")
       .mockResolvedValue({ channelIds: [] } as any);
-    jest.spyOn(state, "randomState").mockReturnValue("st1");
-    const put = jest.spyOn(state, "putOAuthState").mockResolvedValue();
     const cmd = new YoutubeDmCommand();
-    const i = intr({ subcommand: "bind", options: { method: "google" } });
+    const i = intr({ subcommand: "bind", optionValues: { method: "google" } });
 
     await cmd.execute(i);
 
-    expect(put).toHaveBeenCalledWith("st1", {
+    expect(redis.set).toHaveBeenCalledTimes(1);
+    const [key, value] = redis.set.mock.calls[0] as [string, string];
+    expect(key).toMatch(/^youtube-dm-oauth:/);
+    expect(JSON.parse(value)).toEqual({
       discordUserId: "d1",
       method: "google",
     });
@@ -2101,16 +2240,17 @@ describe("YoutubeDmCommand", () => {
   });
 
   it("bind at the cap rejects without creating state", async () => {
+    const redis = fakeRedis();
+    initOAuthStateStore(redis as any);
     jest.spyOn(YoutubeDmBindingModel, "findOne").mockResolvedValue({
       channelIds: Array.from({ length: 10 }, (_, n) => `UC${n}`),
     } as any);
-    const put = jest.spyOn(state, "putOAuthState");
     const cmd = new YoutubeDmCommand();
-    const i = intr({ subcommand: "bind", options: { method: "google" } });
+    const i = intr({ subcommand: "bind", optionValues: { method: "google" } });
 
     await cmd.execute(i);
 
-    expect(put).not.toHaveBeenCalled();
+    expect(redis.set).not.toHaveBeenCalled();
     const arg = (i.reply.mock.calls[0] as any)[0];
     expect(arg.content).toContain("上限");
   });
@@ -2121,7 +2261,7 @@ describe("YoutubeDmCommand", () => {
       .mockResolvedValue({} as any);
     const cmd = new YoutubeDmCommand();
     await cmd.execute(
-      intr({ subcommand: "unbind", options: { channel: "all" } })
+      intr({ subcommand: "unbind", optionValues: { channel: "all" } })
     );
     expect(unbindAll).toHaveBeenCalledWith("d1");
   });
@@ -2132,7 +2272,7 @@ describe("YoutubeDmCommand", () => {
       .mockResolvedValue({} as any);
     const cmd = new YoutubeDmCommand();
     await cmd.execute(
-      intr({ subcommand: "unbind", options: { channel: "UCa" } })
+      intr({ subcommand: "unbind", optionValues: { channel: "UCa" } })
     );
     expect(unbind).toHaveBeenCalledWith("d1", "UCa");
   });
@@ -2449,6 +2589,8 @@ spec:
 ```
 
 - [ ] **Step 2: Add OAuth + Redis env to the discord-bot Deployment**
+
+> Note: the spec wrote `REDIS_URL`, but this codebase reads `REDIS_URI` (see `src/constants.ts` + the `honeybee-redis` secret key used by `webhook.yaml`). We use `REDIS_URI` deliberately to match the actual env name; this is an intentional alignment, not an omission.
 
 In `k8s/base/discord-bot.yaml`, append to the container `env:` list (after `GOOGLE_API_KEY`):
 
