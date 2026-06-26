@@ -150,9 +150,10 @@ YOUTUBE_DM_MAX_CHANNELS_PER_USER` 則整批拒絕並提示。此上限為**軟�
 >   狀態（誠實狀態，非純失敗、非謊稱已生效；訊息字串見「Discord bot」OAuth 第 4
 >   步）；內部由 1 小時 sweep 補上 webhook，但此實作細節不向使用者揭露。
 > - **unbind 端**：consent 不靠 sweep 時效——即使 stale webhook 暫存，webhook
->   process 的**投遞時 consent 檢查**（見下）會比對當前綁定，已 unbind 的頻道事件
->   一律不送 DM，故不存在「opt-out 後仍收到通知」的視窗。sweep 僅負責最終清掉
->   stale webhook 文件本身（停止無謂的事件匹配）。
+>   process 的**投遞時 consent 檢查**（見下）在送出前最後一刻比對當前綁定，把
+>   opt-out 投遞窗從「直到 sweep（最長約 1 小時）」收斂到 consent 讀取與 REST 送出
+>   之間的數毫秒（不宣稱零窗口；該毫秒級殘餘競態以不引入 per-user 鎖為原則接受）。
+>   sweep 僅負責最終清掉 stale webhook 文件本身（停止無謂的事件匹配）。
 
 bind 時 channel 文件處理（對每個 channelId，與 Track 同做法）：
 `ChannelModel.findByChannelId(id) ?? ChannelModel.create({ id, name })`。
@@ -374,13 +375,16 @@ if (checkIsDiscordWebhookUrl(url)) {
 （`authorChannelId` 取自 `data.fullDocument.authorChannelId`，由 DM 分派處傳入）：
 
 1. 從 `url` 解析出 `discordUserId`（`discord-dm://<id>`，以字串前綴移除取得）。
-2. **投遞時 consent 檢查（fail-closed，關閉 unbind 視窗）**：直接讀
+2. **投遞時 consent 檢查（送出前最後一刻）**：直接讀
    `YoutubeDmBinding.findOne({ discordUserId })`（**不經 app 層快取**，使用
    `readPreference: "primary"` 避免複本延遲；DM 事件量低，每事件多一次 indexed
    讀取可接受）。若綁定不存在、或 `authorChannelId` 不在 `binding.channelIds`
-   內 → **直接 return、不送 DM**（`documentLog` 記一筆 consent-skip）。此檢查使
-   「使用者已 unbind 但 stale webhook 因 transform 罕見失敗尚未移除」期間的事件
-   一律不投遞，與 sweep 何時收斂無關。
+   內 → **直接 return、不送 DM**（`documentLog` 記一筆 consent-skip）。此檢查把
+   「使用者已 unbind 但 stale webhook 尚未移除（transform 罕見失敗 / sweep 未到）」
+   的投遞窗從「直到 sweep 收斂（最長約 1 小時）」收斂到**此 consent 讀取到實際
+   REST 送出之間的數毫秒**。殘餘競態：若事件已通過 consent 讀取、緊接著使用者
+   unbind，該事件仍可能送出——此毫秒級窗以**不引入 per-user 鎖**為原則接受（與
+   綁定上限 / state 同理由，避免不成比例的複雜度），不宣稱零窗口。
 3. 取投遞 payload `{ content: body.content, embeds: body.embeds }`。
 4. 用 bot token REST（`runWebhook` 啟動時 `discordRest.setToken(DISCORD_TOKEN)`）：
    - DM channel id 以既有 `cache` 快取，key `dm-channel-<discordUserId>`；未命中時
