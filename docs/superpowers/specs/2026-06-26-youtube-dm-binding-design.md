@@ -54,7 +54,7 @@
 
 四個既有 process 各自擴充，職責分離：
 
-```
+```text
 使用者(Discord) ──/youtube-dm bind──▶ discord-bot
                                        · 綁定指令 (bind/list/unbind)
                                        · OAuth callback (HTTP, 兩條路徑)
@@ -115,15 +115,31 @@ export default getModelForClass(YoutubeDmBinding);
 - YouTube 頻道僅用於**驗證所有權**，不是綁定主鍵，因此 `channelIds` 不設全域
   unique（允許不同使用者各自綁定；實務上只有真正擁有者能通過 OAuth）。
 
-static helpers（仿 Track，每個在最後 `await transformYoutubeDmBinding(doc)`）：
+static helpers 仿 Track：對綁定文件做一次更新後，**在最後 `await
+transformYoutubeDmBinding(doc)`**。**不使用交易**；source 與衍生 Webhook 的短暫
+不一致由 1 小時 sweep 收斂（明確設計決定）。
 
 - `bindChannels(discordUserId, channelIds: string[])`：
-  `findOneAndUpdate({ discordUserId }, { $addToSet: { channelIds: { $each: channelIds } } }, { upsert: true, new: true })`。
-  呼叫前由指令端先檢查 `YOUTUBE_DM_MAX_CHANNELS_PER_USER` 上限。
+  `findOneAndUpdate({ discordUserId }, { $addToSet: { channelIds: { $each: channelIds } } }, { upsert: true, new: true })`
+  後 `await transformYoutubeDmBinding(doc)`。
 - `unbindChannel(discordUserId, channelId)`：
-  `findOneAndUpdate({ discordUserId }, { $pull: { channelIds: channelId } }, { new: true })`。
-- `unbindAll(discordUserId)`：`findOneAndUpdate({ discordUserId }, { $set: { channelIds: [] } }, { new: true })`
-  後 transform（channelIds 為空 → 刪除其 Webhook）。
+  `findOneAndUpdate({ discordUserId }, { $pull: { channelIds: channelId } }, { new: true })`
+  後 `await transformYoutubeDmBinding(doc)`（重算 match；channelIds 變空則刪除
+  webhook）。
+- `unbindAll(discordUserId)`：`$set: { channelIds: [] }` 後
+  `await transformYoutubeDmBinding(doc)`（刪除該 Webhook）。
+
+**綁定上限**：在呼叫 `bindChannels` 前（指令端與 helper 開頭）讀目前 `channelIds`，
+若 `現有 + 本次新增 > YOUTUBE_DM_MAX_CHANNELS_PER_USER` 則整批拒絕並提示。此上限為
+**軟性濫用防線**、非正確性不變量：同一使用者的 OAuth 流程本質序列（一次完成一個
+授權），並行重複綁定極罕見，即使偶發競爭略為超量也僅讓單份 webhook 的 `$in` 稍大、
+無功能性危害，故不以交易強制。
+
+> 失敗模型（明確接受的取捨）：transform 為 `findOneAndUpdate` 後的同步 await，正常
+> 情況即時生效。若 transform 拋例外（罕見 DB 錯誤），指令 / callback 仍回報失敗、
+> 不宣稱成功；source 與 webhook 的暫時不一致由 1 小時 sweep（+ 孤兒清理）收斂。最壞
+> 情況：unbind 後若該次 transform 失敗，存在**最多約 1 小時**仍可能發 DM 的視窗，
+> sweep 後停止——此為不使用交易換取簡單性的已接受代價。
 
 bind 時 channel 文件處理（對每個 channelId，與 Track 同做法）：
 `ChannelModel.findByChannelId(id) ?? ChannelModel.create({ id, name })`。
@@ -217,9 +233,12 @@ async function transformYoutubeDmBindings() {
   for await (const binding of YoutubeDmBindingModel.find()) {
     await transformYoutubeDmBinding(binding);
   }
-  // 孤兒清理：youtubeDmBinding 指向已刪除綁定文件的 webhook
+  // 孤兒清理：youtubeDmBinding 指向已刪除綁定文件的 webhook。
+  // 必須用 { $type: "objectId" }（與 partial index 同 discriminator），不可用
+  // { $ne: null }——後者在 MongoDB 會連「欄位不存在」的 track / 一般 webhook 也
+  // 一併命中，$lookup 無對應綁定 → 被誤判為孤兒刪除，造成既有監視大規模損毀。
   for await (const webhook of WebhookModel.aggregate([
-    { $match: { youtubeDmBinding: { $ne: null } } },
+    { $match: { youtubeDmBinding: { $type: "objectId" } } },
     {
       $lookup: {
         from: "youtubeDmBindings",
@@ -260,25 +279,36 @@ async function transformYoutubeDmBindings() {
    - Google：`https://accounts.google.com/o/oauth2/v2/auth`，scope
      `https://www.googleapis.com/auth/youtube.readonly`，帶 `state` 與
      `redirect_uri = <OAUTH_PUBLIC_BASE_URL>/oauth/youtube-dm/google/callback`。
-   - Discord：`https://discord.com/oauth2/authorize`，scope `connections`，帶
-     `state` 與 `redirect_uri = <OAUTH_PUBLIC_BASE_URL>/oauth/youtube-dm/discord/callback`。
+   - Discord：`https://discord.com/oauth2/authorize`，scope
+     `identify connections`（`identify` 用於下方身分核對），帶 `state` 與
+     `redirect_uri = <OAUTH_PUBLIC_BASE_URL>/oauth/youtube-dm/discord/callback`。
 3. Callback HTTP endpoint（discord-bot 在 `app.init()` 前以 `app.http.server`
    註冊 Fastify 路由）：
    - 共同：以 `state` 從 Redis 取回 `{ discordUserId, method }`；缺失 / 過期 →
-     回錯誤頁。用後刪除 `state`（防重放）。
+     回錯誤頁。**用後立即刪除 `state`（單次使用、防重放）**，並驗證 callback 的
+     `method` 與 state 記錄一致。
    - Google：`GET /oauth/youtube-dm/google/callback?code&state` → 用 code 換 token
-     → `youtube.channels.list({ mine: true, part: ["snippet"] })` 取
-     channelId + title → `bindChannels(discordUserId, [channelId])` 並 seed Channel
-     → **丟棄 token** → 回成功頁。
+     → `youtube.channels.list({ mine: true, part: ["snippet"] })`。一個 Google
+     帳號可擁有**多個**頻道（品牌帳號），故取回傳清單中**所有** channelId + title
+     → `bindChannels(discordUserId, ids)` 並 seed 各 Channel（受寫入路徑上限約束，
+     超量則整批拒絕並回提示頁）→ **丟棄 token** → 回成功頁。
    - Discord：`GET /oauth/youtube-dm/discord/callback?code&state` → 用 code 換 token
-     （`POST https://discord.com/api/oauth2/token`）→
+     （`POST https://discord.com/api/oauth2/token`）→ **先** `GET /users/@me` 取得
+     完成授權的 Discord user id，**要求其等於 state 內的 `discordUserId`，不符即
+     拒絕並回錯誤頁**（防止外洩的授權連結把他人頻道綁到本使用者 DM）→
      `GET /users/@me/connections` → 取 `type === "youtube" && verified === true`
      的 `id`/`name`（可多個）→ `bindChannels(discordUserId, ids)` 並 seed 各 Channel
      → **丟棄 token** → 回成功頁。
-4. `bindChannels` 內已立即 transform → Webhook 立即生效。
+4. `bindChannels` 內最後立即 transform → Webhook 立即生效；transform / 上限失敗
+   會丟例外，callback 須回報失敗頁、不得宣稱綁定成功（衍生若失敗由 sweep 補）。
 
 OAuth client（Google `OAuth2`、Discord token 交換）一律包成 helper，token 僅存在
 於 callback 處理函式的區域變數，處理完即離開作用域，不寫入任何儲存。
+
+> 信任邊界：`state` 由初始指令產生、僅以 ephemeral 回覆給發起者，且單次使用 +
+> `OAUTH_STATE_TTL_MS` 短時效。Discord 路徑另以 `/users/@me` 強制核對授權者身分。
+> Google 回應不含 Discord 身分，故 Google 路徑的收件人正確性依賴 state 的機密性 +
+> 單次使用 + 短時效（state 綁定發起的 `discordUserId`）。
 
 ## webhook process：`sendDiscordDm`
 
@@ -367,25 +397,36 @@ webhook process 不加 gateway `Client`，沿用 REST-only（與既有發 Discor
   移出監視。
 - 同一頻道被不同使用者綁定：允許（頻道僅作所有權驗證，非全域唯一）；各自收到 DM。
 - OAuth `state` 過期 / 不存在 / 重複使用：callback 回錯誤頁、不建立綁定。
+- Discord 授權者身分不符 state（`/users/@me` id ≠ `discordUserId`）：拒絕、不綁定。
 - channel metadata 未即時齊全：`/list` 退回顯示 `name`（可能為 seed 值或 "Unknown
   channel"），embed 依既有 `getChannel` join 行為，後續 crawl 補齊。
-- 綁定上限：bind 指令在呼叫 `bindChannels` 前檢查
-  `YOUTUBE_DM_MAX_CHANNELS_PER_USER`；Discord 路徑一次多個時，以「加入後總數不超過
-  上限」為準，超出則拒絕並提示。
+- 綁定上限：`bindChannels` 前以 `現有 + 新增 > 上限` 判斷整批拒絕。屬軟性濫用
+  防線，不以交易強制；同一使用者 OAuth 序列進行，偶發競爭即使略超量亦無功能危害。
+- 部分失敗（不使用交易的已接受取捨）：transform 為更新後的同步 await，正常即時
+  生效；若 transform 拋例外，指令 / callback 回報失敗、不宣稱成功，source 與
+  webhook 的暫時不一致由 1 小時 sweep（+ 孤兒清理）收斂。unbind 後若該次 transform
+  失敗，最壞存在約 1 小時仍可能發 DM 的視窗，sweep 後停止。
 
 ## 測試重點
 
-- `YoutubeDmBinding` statics：`$addToSet` 去重、`$pull`、清空；上限檢查（stateful
-  fake，`$addToSet` 後 `find` 可觀察到去重結果）。
+- `YoutubeDmBinding` statics：`$addToSet` 去重、`$pull`、清空（stateful fake，
+  `$addToSet` 後 `find` 可觀察去重結果）。
+- **綁定上限（軟性）**：`現有 + 新增 > 上限` 的批次被拒、不寫入；上限內正常綁定。
+- **transform 失敗 → 即時回報**：transform 拋例外時，指令 / callback 回報失敗、
+  不宣稱成功（source 可能已異動，由 sweep 收斂——這是已接受的設計取捨）。
 - `transformYoutubeDmBinding`：channelIds 非空 → upsert 出正確 `colls` / `match`
   形狀（含單一 vs 多頻道的 filter 差異）/ `insertUrl` / Ref；channelIds 空 →
-  刪除；孤兒清理用 stateful fake（綁定刪除後對應 webhook 被移除）。
+  刪除。
+- **孤兒清理 discriminator 回歸測試**：sweep 後，**無 `youtubeDmBinding` 欄位的
+  track / 一般 webhook 必須存活**（驗證 `$type: "objectId"` 不誤刪 missing-field
+  文件）；指向已刪除綁定的 DM webhook 被移除（stateful fake）。
 - `getChannelIdFilter` 改為吃 `string[]` 後，track.ts 既有行為不變（單/多/反向）。
 - `checkIsDiscordDmUrl`：scheme 判斷正負例。
 - `sendDiscordDm`：stateful fake REST（建 DM channel → 回 id → 快取；發訊息）；
   403/404 終結（不 throw、寫 error）vs 5xx throw；快取 DM channel 遇 404 清快取重建。
-- OAuth callback：`state` 驗證 / 過期 / 重放；Discord connections 過濾
-  `verified === true`；token 不被寫入任何儲存（驗證後即離開作用域）。
+- OAuth callback：`state` 驗證 / 過期 / 單次使用（重放被拒）；Discord 授權者 id 與
+  state 不符時拒絕；Discord connections 過濾 `verified === true`；Google 多頻道一次
+  全綁；token 不被寫入任何儲存（驗證後即離開作用域）。
 
 ## 計畫階段待確認（不臆測）
 
