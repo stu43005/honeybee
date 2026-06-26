@@ -138,12 +138,14 @@ YOUTUBE_DM_MAX_CHANNELS_PER_USER` 則整批拒絕並提示。此上限為**軟�
 以交易強制。
 
 > 失敗模型（明確接受的取捨）：transform 為 `findOneAndUpdate` 後的同步 await，正常
-> 情況即時生效。若 transform 拋例外（罕見 DB 錯誤），指令 / callback 仍回報失敗、
-> 不宣稱成功；source 與 webhook 的暫時不一致由 1 小時 sweep（+ 孤兒清理）收斂。
-> **unbind 的 consent 不靠 sweep 時效**：即使 stale webhook 暫存，webhook process
-> 的**投遞時 consent 檢查**（見下）會比對當前綁定，已 unbind 的頻道事件一律不送
-> DM，故不存在「opt-out 後仍收到通知」的視窗。sweep 僅負責最終清掉 stale webhook
-> 文件本身（停止無謂的事件匹配）。
+> 情況即時生效。若 transform 拋例外（罕見 DB 錯誤）：
+>
+> - **bind 端**：source 已寫入、webhook 尚未建立 → callback 回「已儲存，稍後由
+>   排程生效」（誠實狀態，非純失敗、非謊稱已生效），1 小時 sweep 會補上 webhook。
+> - **unbind 端**：consent 不靠 sweep 時效——即使 stale webhook 暫存，webhook
+>   process 的**投遞時 consent 檢查**（見下）會比對當前綁定，已 unbind 的頻道事件
+>   一律不送 DM，故不存在「opt-out 後仍收到通知」的視窗。sweep 僅負責最終清掉
+>   stale webhook 文件本身（停止無謂的事件匹配）。
 
 bind 時 channel 文件處理（對每個 channelId，與 Track 同做法）：
 `ChannelModel.findByChannelId(id) ?? ChannelModel.create({ id, name })`。
@@ -303,16 +305,28 @@ async function transformYoutubeDmBindings() {
      `GET /users/@me/connections` → 取 `type === "youtube" && verified === true`
      的 `id`/`name`（可多個）→ `bindChannels(discordUserId, ids)` 並 seed 各 Channel
      → **丟棄 token** → 回成功頁。
-4. `bindChannels` 內最後立即 transform → Webhook 立即生效；transform / 上限失敗
-   會丟例外，callback 須回報失敗頁、不得宣稱綁定成功（衍生若失敗由 sweep 補）。
+4. `bindChannels` 內最後立即 transform → Webhook 立即生效。callback 依結果**誠實
+   回報**，三種狀態分明：
+   - **上限被拒**：未寫入任何綁定 → 回「超過上限、未綁定」。
+   - **transform 成功**：回「綁定成功、已生效」。
+   - **source 已寫入但 transform 罕見拋例外**：source 已存在、稍後由 1 小時 sweep
+     建立 webhook → 回「**已儲存，稍後由排程自動生效**」（不謊稱已生效，也**不**回
+     純失敗——因為事實上綁定已存在且終將生效，回純失敗會與後續實際收到 DM 矛盾）。
 
 OAuth client（Google `OAuth2`、Discord token 交換）一律包成 helper，token 僅存在
 於 callback 處理函式的區域變數，處理完即離開作用域，不寫入任何儲存。
 
 > 信任邊界：`state` 由初始指令產生、僅以 ephemeral 回覆給發起者，且單次使用 +
-> `OAUTH_STATE_TTL_MS` 短時效。Discord 路徑另以 `/users/@me` 強制核對授權者身分。
-> Google 回應不含 Discord 身分，故 Google 路徑的收件人正確性依賴 state 的機密性 +
-> 單次使用 + 短時效（state 綁定發起的 `discordUserId`）。
+> `OAUTH_STATE_TTL_MS` 短時效（作為 CSRF / replay 保護）。Discord 路徑另以
+> `/users/@me` 強制核對授權者身分 = state 內 `discordUserId`。
+>
+> **Google 路徑的收件人信任模型（明確接受的設計決定）**：Google 回應不含 Discord
+> 身分，無法在伺服器端證明「完成授權者 = 收件人」。本設計**刻意接受 bearer-link
+> 信任模型**：以 state 的單次使用 + 短 TTL + 僅 ephemeral 遞送給發起者作為收件人
+> 綁定依據，不額外加 Discord 確認步驟。已知殘餘風險：若發起者於 TTL 內外洩自己的
+> ephemeral 授權連結，他人可用自己的 Google 帳號完成授權，把其頻道綁到發起者的
+> DM（後果為發起者收到非自選頻道的 DM 騷擾，可自行 `/youtube-dm unbind` 解除；
+> 非資料外洩）。此為功能可用性與流程簡單性的取捨，已由產品決策接受。
 
 ## webhook process：`sendDiscordDm`
 
