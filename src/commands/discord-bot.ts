@@ -13,8 +13,14 @@ import {
 } from "discord.js";
 import { commands } from "../discord/commands/index.js";
 import type { AppCommand } from "../discord/commands/command.js";
+import {
+  handleDiscordCallback,
+  handleGoogleCallback,
+} from "../discord/oauth/callback.js";
+import { initOAuthStateStore } from "../discord/oauth/state.js";
 import { Application } from "../modules/application.js";
 import { MongodbModule } from "../modules/db.js";
+import { RedisModule } from "../modules/redis.js";
 
 const DISCORD_ID = process.env.DISCORD_ID!;
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN!;
@@ -58,6 +64,13 @@ export async function runDiscordBot() {
 
   const app = new Application();
   app.use(new MongodbModule());
+  const redisModule = app.use(new RedisModule());
+  initOAuthStateStore(redisModule.redis);
+
+  const { server: fastify } = app.http;
+  fastify.get("/oauth/youtube-dm/google/callback", handleGoogleCallback);
+  fastify.get("/oauth/youtube-dm/discord/callback", handleDiscordCallback);
+
   const client = new Client({
     intents: [GatewayIntentBits.Guilds],
   });
