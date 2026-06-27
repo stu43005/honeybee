@@ -118,15 +118,16 @@ mod 三個命令（`crawl`、`set-channel`、`set-video`）在各自 class 上�
 1. 用純函式把傳入的命令依 `registration` 欄位分成 `globalCommands` 與
    `devGuildCommands` 兩組（預設歸 global）。此分組函式（例如
    `partitionCommandsByScope`）獨立可測，回傳兩組命令的 metadata 陣列。
-2. 一律對 global 組執行
-   `rest.put(Routes.applicationCommands(DISCORD_ID), { body: globalBody })`。
-   因為 PUT 是全量覆寫，把 mod 命令移出 global body 後，下次部署 Discord 會自動把
-   mod 從 global 命令集移除。
-3. devGuild 組：
+2. **先**處理 devGuild 組（先讓 mod 在開發 guild 就位，再從 global 移除，避免空窗，
+   詳見「註冊冪等性與部署順序」）：
    - 若 `DISCORD_DEV_GUILD_ID` 有設，執行
      `rest.put(Routes.applicationGuildCommands(DISCORD_ID, DISCORD_DEV_GUILD_ID), { body: devGuildBody })`。
    - 若 `DISCORD_DEV_GUILD_ID` 未設，**跳過 devGuild 註冊並輸出 warn log**，mod
      命令在任何地方都不可見（fail-closed，比誤註冊成 global 安全）。
+3. **再**對 global 組執行
+   `rest.put(Routes.applicationCommands(DISCORD_ID), { body: globalBody })`。
+   因為 PUT 是全量覆寫，把 mod 命令移出 global body 後，下次部署 Discord 會自動把
+   mod 從 global 命令集移除。
 
 註：guild 命令 metadata 不應帶 `integration_types` / `contexts`（Discord 會忽略），
 mod 命令的 `SlashCommandBuilder` 維持不呼叫 `setContexts` / `setIntegrationTypes`
@@ -200,6 +201,25 @@ secret 實際值（`543454386873958411`）由叢集端 secret 管理，不寫入
   時：視為未 user-install，附加引導提示；不得因此拋例外。
 - 既有 youtube-dm 使用者（先前以 Guild context 註冊）：context 改為 BotDM
   後，伺服器內將不再出現該命令，僅 DM 可用 — 這是預期的行為轉移。
+
+## 註冊冪等性與部署順序
+
+Discord 的命令集是持久化的外部狀態（global 命令集、各 guild 命令集），兩次 `PUT`
+皆為全量覆寫。本設計對此狀態的不變式如下，避免「mod 命令意外在非開發 guild 曝光」：
+
+- **冪等**：兩次 `PUT` 都是宣告式全量覆寫，重啟 / 重跑啟動流程會收斂到同一目標狀態，
+  無需差異計算或清理步驟。
+- **註冊順序**：先執行 devGuild 組 `PUT`（把 mod 註冊進開發 guild），成功後再執行
+  global 組 `PUT`（把 mod 移出 global）。如此不會出現「mod 已從 global 移除、但開發
+  guild 尚未取得」的空窗；若 devGuild `PUT` 失敗則跳過 global 的 mod 移除前提不成立
+  —— 因 mod 本就不在新的 global body 內，global `PUT` 仍會把 mod 移出 global。
+- **partial-failure 為 fail-closed**：任一 `PUT` 失敗的最壞結果是「mod 命令暫時在某處
+  不可用」，**絕不會**讓 mod 命令出現在開發 guild 以外的地方。亦即失敗只會少曝光、不會
+  多曝光，符合本變更「限制可見範圍」的核心目標。
+- **回滾的已知限制（刻意接受）**：若叢集回滾到目前這版二進位（會把全部命令註冊成
+  global），mod 命令會再次全域曝光。此跨版本回滾 / 混版視窗由專案負責人裁定為不成比例
+  的風險、**刻意不在本設計加入版本閘門或 migration**；命令集冪等的特性保證「重新部署
+  新版」即可再次收斂回正確狀態。
 
 ## 測試
 
