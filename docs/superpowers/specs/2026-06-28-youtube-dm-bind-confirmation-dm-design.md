@@ -63,10 +63,11 @@ boolean` 標記 `@deprecated`，建議改用 `flags: MessageFlags.Ephemeral`（�
 - **module-to-module 依賴的既有範式**：兩種——(1) composition root 把上游 module 的
   連線/實例傳入下游建構子（`app.use(new YoutubeWatchGate(redisModule.redis))`）；
   (2) **`src/modules/webhook/` 風格**：下游建構子收 `app: Application`（加選用額外
-  參數），在 `init()` 內以 `this.app.get<RedisModule>("redis")` 取依賴並 guard
-  （未註冊則 throw），欄位以 `private redisModule!: RedisModule` 定義賦值。本設計
-  **採風格 (2)**：`OAuthModule` 收 `app`，於 `init()` 內 `app.get("redis")` 取
-  RedisModule。
+  參數），以 `this.app.get<RedisModule>("redis")` 取依賴並 guard（未註冊則 throw）。
+  本設計 **採風格 (2) 的 `constructor(app, ...)` 形狀**，但因 OAuth 需在建構子註冊
+  路由（見下「路由必須在 `listen()` 之前註冊」），故 `app.get("redis")` 與 stateStore
+  建立**提前到建構子**（webhook 把它放 `init()` 是因其無 route 時序限制；OAuth 有，
+  故提前，徹底避免啟動競態）。
 - **路由必須在 `listen()` 之前註冊**：`HttpServerModule` 是 `Application` 建構子內
   第一個 `use` 的 module（`this.http`），其 `init()` 呼叫 `server.listen()`，於
   `app.init()` 時**最先**執行。因此其他 module 的 `init()` 都晚於 listen，無法再加
@@ -95,13 +96,13 @@ DM 走 discord-bot 自己的 gateway `Client`（與 webhook process 的事件 DM
 ```text
 runDiscordBot()  ──組合──▶ Application
   · MongodbModule
-  · RedisModule（OAuthModule 於 init() 用 app.get("redis") 取得）
+  · RedisModule（OAuthModule 建構子用 app.get("redis") 取得）
   · new Client(Guilds) ──── 以建構子第二參數傳入 OAuthModule
   · app.http.server ─────── OAuthModule 建構子用它註冊路由（早於 listen）
                              ▼
         new OAuthModule(app, client)
-          建構子：在 app.http.server 註冊兩條路由（handler 委派 this.*）
-          init()：app.get("redis") → 建 OAuthStateStore 實例
+          建構子：app.get("redis") → 建 OAuthStateStore，然後在 app.http.server
+                  註冊兩條路由（handler 委派 this.*）；無啟動競態、無需 init()
                         ├─ beginAuth(method,userId) ◀── YoutubeDmCommand.bind
                         ├─ GET /oauth/youtube-dm/google/callback
                         └─ GET /oauth/youtube-dm/discord/callback
@@ -158,7 +159,19 @@ constructor(
   private readonly app: Application,
   private readonly client: Client
 ) {
-  // 路由必須早於 HttpServerModule.init() 的 listen()，故在建構子註冊
+  // 在註冊路由「之前」先解析依賴、建好 stateStore，避免 listen 後、init 前的
+  // 啟動競態（見下「時序：無啟動競態」）。RedisModule 於本模組之前 app.use，
+  // 故建構當下 app.get("redis") 必有值。
+  const redisModule = this.app.get<RedisModule>("redis");
+  if (!redisModule) {
+    throw new Error(
+      "OAuthModule: RedisModule must be registered before OAuthModule"
+    );
+  }
+  this.stateStore = new OAuthStateStore(redisModule.redis);
+
+  // 路由必須早於 HttpServerModule.init() 的 listen()，故在建構子註冊；
+  // 此時 stateStore 已就緒。
   const server = this.app.http.server;
   server.get("/oauth/youtube-dm/google/callback", (req, reply) =>
     this.handleGoogleCallback(req, reply)
@@ -168,29 +181,21 @@ constructor(
   );
 }
 
-private stateStore!: OAuthStateStore; // 於 init() 賦值（webhook 的 `redisModule!` 風格）
-```
-
-`init()`（webhook 風格：`app.get` + guard）：
-
-```ts
-async init(): Promise<void> {
-  const redisModule = this.app.get<RedisModule>("redis");
-  if (!redisModule) {
-    throw new Error("OAuthModule.init: RedisModule must be registered before this module");
-  }
-  this.stateStore = new OAuthStateStore(redisModule.redis);
-}
+private readonly stateStore: OAuthStateStore;
 ```
 
 - **`OAuthStateStore`**（取代 `state.ts` 的全域 `let client` + `initOAuthStateStore`）：
   持有 `redis`，方法 `put(state, data)` / `get(state)` / `del(state)` 封裝 key
-  （`youtube-dm-oauth:<state>`）、`PX: OAUTH_STATE_TTL_MS`、JSON 序列化。
-- **時序說明**：路由 handler 在建構子註冊，但其讀取的 `this.stateStore` 於 `init()`
-  才賦值——這是安全的：HTTP 請求只在 `listen()`（`HttpServerModule.init()`）之後到達，
-  而 `init()` 依 forward 次序在 RedisModule.init() 之後、HttpServer 已 listen 前後皆
-  晚於本模組建構子，故 handler 實際被呼叫時 `stateStore` 必已就緒。`beginAuth` 同理
-  （由 `bind` 指令於 runtime 呼叫，必在 `app.init()` 之後）。
+  （`youtube-dm-oauth:<state>`）、`PX: OAUTH_STATE_TTL_MS`、JSON 序列化。建構當下只
+  持有 `redis` client 參照；實際連線由 `RedisModule.init()`（在本模組建構之後、且在
+  任何 callback 於 runtime 觸發之前）建立，故 runtime 使用時連線必已就緒。
+- **時序：無啟動競態**。依 `app.use` 次序，`RedisModule` 在 `OAuthModule` 之前註冊，
+  故 `OAuthModule` **建構子**（早於 `app.init()`，因此也早於 HttpServer 的 `listen()`）
+  即可 `app.get("redis")` 取得 RedisModule 並建好 `stateStore`，**然後**才註冊路由。
+  因此「socket 開始 listen」時 `stateStore` 早已是 final 欄位、不可能為 undefined——
+  消除了「listen 後、某 init 前」的競態窗口。`OAuthModule` 因此**無需 `init()`**
+  （依賴全部在建構子解析；guard 亦在建構子）。`beginAuth` 同理於 runtime 被 `bind`
+  呼叫，`stateStore` 必已就緒。
 - DM sender 為方法 `sendBindingDm`（用 `this.client`，行為見 C），無需 init。
 
 公開方法（供 `bind` 指令使用，封裝「產生 state + 寫入 + 組授權連結」）：
@@ -203,10 +208,10 @@ async beginAuth(method: OAuthMethod, discordUserId: string): Promise<string>;
 `method === "google" ? buildGoogleAuthUrl(state) : buildDiscordAuthUrl(state)` → 回傳
 URL。
 
-**生命週期**：路由隨 `HttpServerModule.close()` 一併關閉；state store 僅持有 `redis`
-參照（連線由 `RedisModule` 擁有），DM sender 隨 `client` 失效。故 `OAuthModule` 的
-`close()` 為 no-op（或省略）。它以 Module 形態註冊，取得 `app.get("oauth")` 可發現性、
-`init()` 的依賴解析、與 LIFO 關閉次序中的正確位置。
+**生命週期**：依賴全部在建構子解析，故 `OAuthModule` **無 `init()`**；`close()` 為
+no-op（或省略）——路由隨 `HttpServerModule.close()` 一併關閉，state store 僅持有
+`redis` 參照（連線由 `RedisModule` 擁有），DM sender 隨 `client` 失效。它仍以 Module
+形態註冊，取得 `app.get("oauth")` 可發現性、與 LIFO 關閉次序中的正確位置。
 
 **callback 編排的可測試性**：`callback.ts` 的 `handleGoogleCallback` /
 `handleDiscordCallback` / `applyBinding` 維持為**可注入 collaborator 的純函式**，
@@ -230,15 +235,20 @@ closure over `client`）：
    預期的可達性失敗；其餘錯誤額外 `console.warn` 後同樣回 `false`（確認 DM 不重試、
    不阻斷 callback 回頁）。
 
-`applyBinding`（純函式，collaborator 含 `sendBindingDm`）流程：
+`applyBinding`（純函式，collaborator 含 `sendBindingDm`）流程。**不變量：只有實際綁定
+成功 / saved-pending 才寫入 Channel seed**——seeding 移到 bind 決定「之後」，避免被拒
+（上限）或失敗（pre-write 例外）時留下 orphan Channel 記錄：
 
-1. seed Channel 文件（既有：對每個 channelId `findByChannelId ?? create`）。
-2. `try { await YoutubeDmBindingModel.bindChannels(...) }`：
+1. `try { await YoutubeDmBindingModel.bindChannels(...) }`（**不先 seed**）：
    - `BindingLimitError` → `page(400, "超過上限、未綁定。請先解除部分頻道後再試。")`，
-     **return**（不送 DM）。
-   - `BindingTransformPendingError` → 標記 `pending = true`（source 已寫入，續送 DM）。
-   - 其他（pre-write 例外）→ `page(500, "綁定處理失敗，請重新發起。")`，**return**。
+     **return**（不 seed、不送 DM）。
+   - `BindingTransformPendingError` → 標記 `pending = true`（source 已寫入，續行）。
+   - 其他（pre-write 例外）→ `page(500, "綁定處理失敗，請重新發起。")`，**return**
+     （不 seed、不送 DM）。
    - 無例外 → `pending = false`。
+2. （成功 / pending）**seed 本次授權的 Channel 文件**：對每個 channelId
+   `findByChannelId ?? create`（冪等：已存在則不重建；OAuth state 單次使用，重複
+   callback 會在 state 解析階段被擋下，不會重複 seed）。
 3. 讀回完整清單：`const binding = await YoutubeDmBindingModel.findOne({ discordUserId });
 const channelIds = binding?.channelIds ?? [];`
 4. `const delivered = await sendBindingDm(discordUserId, channelIds);`
@@ -283,7 +293,7 @@ constructor(private oauth: { beginAuth(method: OAuthMethod, userId: string): Pro
 ```ts
 const app = new Application(); // app.http = HttpServerModule（最先、最後關）
 app.use(new MongodbModule());
-app.use(new RedisModule()); // OAuthModule.init() 以 app.get("redis") 取得
+app.use(new RedisModule()); // OAuthModule 建構子以 app.get("redis") 取得
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const oauth = app.use(new OAuthModule(app, client));
 const commands: AppCommand[] = [
@@ -325,8 +335,13 @@ await app.init();
   失敗而回 500。
 - **list/unbind 非 ephemeral 的可見性**：僅在使用者自己的 bot DM 顯示，非公開；屬
   已接受的 UX 取捨。
-- **路由時序**：route 在 `OAuthModule` 建構子註冊，早於 `HttpServerModule.init()` 的
-  `listen()`，與既有 `/healthz` 註冊時機一致，避免 fastify「listen 後加路由」失敗。
+- **路由時序 / 無啟動競態**：`OAuthModule` 建構子**先**解析 redis、建 `stateStore`，
+  **再**註冊路由，且全在 `app.init()`（含 HttpServer `listen()`）之前完成。故 socket
+  開始 listen 時 `stateStore` 已是 final 欄位，callback handler 不可能讀到 undefined；
+  與既有 `/healthz` 註冊時機一致，避免 fastify「listen 後加路由」失敗。
+- **Channel seed 不變量**：seeding 在 bind 決定之後，僅成功 / saved-pending 才寫入；
+  上限被拒 / pre-write 例外不留 orphan Channel 記錄。`findByChannelId ?? create` 冪等，
+  OAuth state 單次使用擋下重複 callback，故無重複 seed。
 
 ## 測試重點
 
@@ -340,6 +355,9 @@ await app.init();
   delivered true/false → 四種頁面字串與 status 200；`BindingLimitError` → 400 頁、
   **`sendBindingDm` 零呼叫**；pre-write 例外 → 500 頁、零呼叫；DM 收到的 `channelIds`
   = 綁定後**完整**清單（含先前已綁 + 本次新增）。
+- **Channel seed 順序 / 不變量**：`BindingLimitError` 與 pre-write 例外 → **Channel
+  `create` 零呼叫**（不留 orphan，stateful fake 斷言）；成功 / saved-pending → 對本次
+  channelId 呼叫 `findByChannelId ?? create`（已存在則不重建）。
 - **`sendBindingDm`**：正常 → `client.users.fetch` + `user.send` 被呼叫、內容含
   `renderBoundChannelLines` 行、回 `true`；`user.send` 拋 `{ code: 50007 }` → 回
   `false`、不 throw、不 `console.warn`；拋其他錯誤 → 回 `false`、不 throw、有
@@ -347,10 +365,12 @@ await app.init();
 - **callback 純函式注入**：`handleGoogleCallback` / `handleDiscordCallback` 把接線的
   `sendBindingDm` 與 provider 函式傳入 `applyBinding`（spy 斷言透傳）；缺 `code` 的
   prefetch 不碰 state；Discord 授權者 id 與 state 不符時拒絕。
-- **`OAuthModule` 建構 + init**：以 fake `app`（`app.http.server` = spy fastify、
-  `app.get("redis")` 回 fake RedisModule）建構 → 斷言建構子在 spy fastify 註冊兩條
-  `GET` 路由於正確路徑（不需 listen）；呼叫 `init()` → 建出 `OAuthStateStore`；
-  `app.get("redis")` 回 `undefined` 時 `init()` throw（guard）。
+- **`OAuthModule` 建構（無啟動競態）**：以 fake `app`（`app.http.server` = spy
+  fastify、`app.get("redis")` 回 fake RedisModule）建構 → 斷言**建構子已建好
+  `stateStore`**（路由 handler 立即可用，**不需呼叫 `init()`**）且在 spy fastify
+  註冊兩條 `GET` 路由於正確路徑（不需 listen）；`app.get("redis")` 回 `undefined`
+  時**建構子** throw（guard）。模擬「建構後立刻觸發已註冊的 callback handler」→
+  `stateStore` 已可用、不為 undefined。
 - **`/youtube-dm` 回覆 flags**（mock interaction）：`bind` 兩個 reply 帶
   `flags: MessageFlags.Ephemeral`；`list` 空清單與清單 reply、`unbind` 兩個 reply
   **不帶** ephemeral flag；install-hint followUp 帶 `flags: MessageFlags.Ephemeral`；
