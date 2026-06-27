@@ -79,11 +79,11 @@ spec:
                 secretKeyRef:
                   name: discord-oauth-secrets
                   key: DISCORD_OAUTH_CLIENT_SECRET
-            - name: OAUTH_PUBLIC_BASE_URL
+            - name: PUBLIC_BASE_URL
               valueFrom:
                 secretKeyRef:
-                  name: discord-oauth-secrets
-                  key: OAUTH_PUBLIC_BASE_URL
+                  name: honeybee-secrets
+                  key: PUBLIC_BASE_URL
           resources: {}
           ports:
             - name: http-port

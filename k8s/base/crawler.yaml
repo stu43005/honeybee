@@ -49,11 +49,11 @@ spec:
                 secretKeyRef:
                   name: honeybee-mongodb
                   key: MONGO_URI
-            - name: CRAWLER_ROOT_URL
+            - name: PUBLIC_BASE_URL
               valueFrom:
                 secretKeyRef:
                   name: honeybee-secrets
-                  key: CRAWLER_ROOT_URL
+                  key: PUBLIC_BASE_URL
             - name: YOUTUBE_PUBSUB_SECRET
               valueFrom:
                 secretKeyRef:
