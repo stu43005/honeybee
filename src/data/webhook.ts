@@ -12,6 +12,10 @@ export function checkIsDiscordWebhookUrl(url: string): boolean {
   return url.startsWith(DefaultRestOptions.api + "/webhooks/");
 }
 
+export function checkIsDiscordDmUrl(url: string): boolean {
+  return url.startsWith("discord-dm://");
+}
+
 export const defaultUpdateUrl = (parameters: Record<string, any>): string => {
   if (parameters.insertUrl && checkIsDiscordWebhookUrl(parameters.insertUrl)) {
     const url = new URL(parameters.insertUrl);
