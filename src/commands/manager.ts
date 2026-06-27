@@ -4,6 +4,7 @@ import trackOperator from "../components/track-operator.js";
 import videoScaler from "../components/video-scaler.js";
 import videoStats from "../components/video-stats.js";
 import webhookPrepare from "../components/webhook-prepare.js";
+import youtubeDmOperator from "../components/youtube-dm-operator.js";
 import { Application } from "../modules/application.js";
 import { MongodbModule } from "../modules/db.js";
 import { AgendaModule } from "../modules/schedule.js";
@@ -18,6 +19,7 @@ export async function runManager() {
   cleanup(app);
   trackOperator(app);
   webhookPrepare(app);
+  youtubeDmOperator(app);
   videoStats(app);
   videoScaler(app);
   chatsArchive(app);
