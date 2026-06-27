@@ -3,12 +3,14 @@ import axios, { AxiosError } from "axios";
 import {
   HTTPError,
   REST,
-  type RequestMethod,
+  RequestMethod,
+  Routes,
   type RouteLike,
 } from "discord.js";
 import jsonTemplates, { type JsonTemplate } from "json-templates";
 import { isEqual } from "lodash-es";
 import { mongo } from "mongoose";
+import assert from "node:assert";
 import http from "node:http";
 import https from "node:https";
 import { setInterval, setTimeout } from "node:timers/promises";
@@ -18,6 +20,7 @@ import {
   WEBHOOK_RESULT_NON_FOLLOW_TTL_MS,
 } from "../constants.js";
 import {
+  checkIsDiscordDmUrl,
   checkIsDiscordWebhookUrl,
   defaultInsertMethod,
   defaultUpdateMethod,
@@ -30,6 +33,7 @@ import ChannelModel from "../models/Channel.js";
 import VideoModel, { Video } from "../models/Video.js";
 import WebhookModel, { type Webhook } from "../models/Webhook.js";
 import WebhookResultModel from "../models/WebhookResult.js";
+import YoutubeDmBindingModel from "../models/YoutubeDmBinding.js";
 import { Application } from "../modules/application.js";
 import { getCacheInstance } from "../modules/cache.js";
 import { type WatcherResultDocument } from "../modules/collection-watcher.js";
@@ -60,10 +64,120 @@ const axiosInstance = axios.create({
 });
 const discordRest = new REST();
 
+// Bot-token REST client used only for DM delivery (auth: true). Separate from the
+// webhook-delivery `discordRest` (auth: false with self-authenticating URLs).
+export const dmRest = new REST();
+
+// Caches the per-user DM channel id so we don't recreate it on every event.
+export const dmChannelCache = getCacheInstance({ ttl: 60 * 60 * 1000 });
+
 const cache = getCacheInstance({
   ttl: 300_000,
   refreshThreshold: 30_000,
 });
+
+export async function dmConsentAllowed(
+  discordUserId: string,
+  authorChannelId: string
+): Promise<boolean> {
+  const binding = await YoutubeDmBindingModel.findOne({
+    discordUserId,
+  }).setOptions({ readPreference: "primary" });
+  return !!binding && binding.channelIds.includes(authorChannelId);
+}
+
+export async function sendDiscordDm(
+  url: string,
+  authorChannelId: string,
+  body: any,
+  webhook: DocumentType<Webhook>,
+  resultIdentifier: WebhookResultIdentifier
+) {
+  const discordUserId = url.slice("discord-dm://".length);
+
+  // Delivery-time consent: skip if the channel is no longer bound (closes the
+  // unbind window down to this read-to-send gap).
+  if (!(await dmConsentAllowed(discordUserId, authorChannelId))) {
+    documentLog(
+      webhook,
+      `[dm-consent-skip] ${discordUserId} no longer bound to ${authorChannelId}`
+    );
+    return;
+  }
+
+  const payload: Record<string, unknown> = { embeds: body.embeds };
+  if (body.content) payload.content = body.content;
+
+  const ttlMs = webhook.followUpdate
+    ? WEBHOOK_RESULT_FOLLOW_TTL_MS
+    : WEBHOOK_RESULT_NON_FOLLOW_TTL_MS;
+
+  const sendOnce = async () => {
+    const dmChannelId = await dmChannelCache.wrap(
+      `dm-channel-${discordUserId}`,
+      async () => {
+        const dm = (await dmRest.request({
+          fullRoute: Routes.userChannels(),
+          method: RequestMethod.Post,
+          body: { recipient_id: discordUserId },
+          auth: true,
+        })) as { id: string };
+        return dm.id;
+      }
+    );
+    return dmRest.request({
+      fullRoute: Routes.channelMessages(dmChannelId),
+      method: RequestMethod.Post,
+      body: payload,
+      auth: true,
+    });
+  };
+
+  try {
+    let response;
+    try {
+      response = await sendOnce();
+    } catch (error) {
+      // Cached DM channel may be stale (404) — clear it (awaited) and rebuild once.
+      if ((error as { status?: number }).status === 404) {
+        await dmChannelCache.del(`dm-channel-${discordUserId}`);
+        response = await sendOnce();
+      } else {
+        throw error;
+      }
+    }
+
+    const setFields: Record<string, unknown> = {
+      method: "POST",
+      url,
+      body: payload,
+      response,
+      statusCode: 200,
+    };
+    const unsetFields: Record<string, unknown> = { error: "" };
+    if (ttlMs !== null) {
+      setFields.expireAt = new Date(Date.now() + ttlMs);
+    } else {
+      unsetFields.expireAt = "";
+    }
+    await WebhookResultModel.updateOne(resultIdentifier, {
+      $set: setFields,
+      $unset: unsetFields,
+    });
+  } catch (error) {
+    const status = (error as { status?: number }).status ?? -1;
+    await WebhookResultModel.updateOne(resultIdentifier, {
+      $set: { statusCode: status, error: `${error}` },
+    });
+    // Terminal (cannot DM this user) -> swallow so bee-queue marks the job done.
+    // Transient (5xx / unknown) -> rethrow so the worker handler retries.
+    if (status !== 403 && status !== 404) {
+      throw error;
+    }
+  } finally {
+    void cache.del(createWebhookResultCacheKey(resultIdentifier));
+  }
+}
 
 async function sendDiscordWebhook(
   method: string,
@@ -366,7 +480,7 @@ async function processWebhookEvent(
     return;
   }
 
-  if (checkIsDiscordWebhookUrl(url)) {
+  if (checkIsDiscordWebhookUrl(url) || checkIsDiscordDmUrl(url)) {
     if (body.embeds && Array.isArray(body.embeds)) {
       body.embeds = body.embeds.map((embed: any) => {
         if (typeof embed?.footer?.text === "string")
@@ -399,6 +513,14 @@ async function processWebhookEvent(
 
   if (checkIsDiscordWebhookUrl(url)) {
     await sendDiscordWebhook(method, url, body, webhook, resultIdentifier);
+  } else if (checkIsDiscordDmUrl(url)) {
+    await sendDiscordDm(
+      url,
+      data.fullDocument.authorChannelId,
+      body,
+      webhook,
+      resultIdentifier
+    );
   } else {
     await sendWebhook(method, url, body, webhook, resultIdentifier);
   }
@@ -406,6 +528,13 @@ async function processWebhookEvent(
 
 export async function runWebhook() {
   await importAllModels();
+
+  assert(
+    process.env.DISCORD_TOKEN,
+    "DISCORD_TOKEN is required for DM delivery"
+  );
+  dmRest.setToken(process.env.DISCORD_TOKEN);
+
   const app = new Application();
 
   // Infrastructure modules — init first, close last
@@ -413,10 +542,12 @@ export async function runWebhook() {
   app.use({
     name: "discord-rest-client",
     async close() {
-      // wait for all pending Discord REST handlers to flush
-      for (const [, handler] of discordRest.handlers) {
-        while (!handler.inactive) {
-          await setTimeout(100);
+      // wait for all pending Discord REST handlers (webhook + DM) to flush
+      for (const rest of [discordRest, dmRest]) {
+        for (const [, handler] of rest.handlers) {
+          while (!handler.inactive) {
+            await setTimeout(100);
+          }
         }
       }
     },
