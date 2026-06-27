@@ -19,3 +19,23 @@ export function partitionCommandsByScope(commands: AppCommand[]): {
   }
   return { global, devGuild };
 }
+
+/**
+ * Execution-time authorization guard for dev-guild-only commands. Registration
+ * scope is only a visibility hint; this guard is the actual boundary, so a stale
+ * / cached / failed registration cannot let a mod command run outside the dev
+ * guild. Fails closed when the dev guild id is unset.
+ */
+export function isDevGuildCommandAllowed({
+  registration,
+  guildId,
+  devGuildId,
+}: {
+  registration: AppCommand["registration"];
+  guildId: string | null;
+  devGuildId: string | undefined;
+}): boolean {
+  if (registration !== "devGuild") return true;
+  if (!devGuildId) return false;
+  return guildId === devGuildId;
+}
