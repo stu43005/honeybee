@@ -6,6 +6,7 @@ import VideoModel, { type Video } from "../../../models/Video.js";
 import type { Command } from "../command.js";
 
 export class SetVideoCommand implements Command {
+  public registration = "devGuild" as const;
   public metadata = new SlashCommandBuilder()
     .setName("set-video")
     .setDescription("Modify video settings")

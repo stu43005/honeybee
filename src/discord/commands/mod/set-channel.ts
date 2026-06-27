@@ -10,6 +10,7 @@ import {
 import type { Command } from "../command.js";
 
 export class SetChannelCommand implements Command {
+  public registration = "devGuild" as const;
   public metadata = new SlashCommandBuilder()
     .setName("set-channel")
     .setDescription("Modify channel settings")

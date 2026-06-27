@@ -12,6 +12,12 @@ export interface AppCommand<
     RESTPostAPIApplicationCommandsJSONBody,
 > {
   metadata: Meta;
+  /**
+   * Registration / execution scope.
+   * - "global" (or unset): registered as a global application command.
+   * - "devGuild": registered only to DISCORD_DEV_GUILD_ID and only executable there.
+   */
+  registration?: "global" | "devGuild";
   execute(intr: Intr): Promise<void>;
   autocomplete?: (intr: AutocompleteInteraction) => Promise<void>;
 }

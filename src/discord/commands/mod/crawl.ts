@@ -11,6 +11,7 @@ import { updateVideoFromYoutube } from "../../../modules/youtube.js";
 import type { Command } from "../command.js";
 
 export class CrawlCommand implements Command {
+  public registration = "devGuild" as const;
   public metadata = new SlashCommandBuilder()
     .setName("crawl")
     .setDescription("Notices or recrawls video.")
