@@ -290,12 +290,15 @@ Expected: FAIL，`isDevGuildCommandAllowed` 不是匯出（型別/執行期錯�
  * / cached / failed registration cannot let a mod command run outside the dev
  * guild. Fails closed when the dev guild id is unset.
  */
-export function isDevGuildCommandAllowed(params: {
+export function isDevGuildCommandAllowed({
+  registration,
+  guildId,
+  devGuildId,
+}: {
   registration: AppCommand["registration"];
   guildId: string | null;
   devGuildId: string | undefined;
 }): boolean {
-  const { registration, guildId, devGuildId } = params;
   if (registration !== "devGuild") return true;
   if (!devGuildId) return false;
   return guildId === devGuildId;
