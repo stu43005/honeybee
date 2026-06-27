@@ -144,10 +144,31 @@ mod 三個命令（`crawl`、`set-channel`、`set-video`）在各自 class 上�
 mod 命令的 `SlashCommandBuilder` 維持不呼叫 `setContexts` / `setIntegrationTypes`
 即可。
 
-### 3. 各命令 metadata 調整
+### 3. mod 命令執行期 guild 守衛（fail-closed 授權邊界）
+
+guild 註冊只決定**可見性**；為避免註冊狀態 stale / 快取延遲 / `PUT` 失敗 / 回滾時
+mod 命令在開發 guild 以外被執行，於共用 dispatcher 加一道**執行期授權守衛**，與
+`registration` 標記共用單一真相來源：
+
+- 在 `src/commands/discord-bot.ts` 的 `InteractionCreate` handler 中，找到對應命令後、
+  呼叫 `execute` / `autocomplete` 前，若該命令的 `registration === "devGuild"`，檢查
+  `intr.guildId === DISCORD_DEV_GUILD_ID`：
+  - 相符 → 照常執行。
+  - 不相符（含 DM 時 `guildId` 為 null、或在其他 guild）→ **不執行**。對
+    ApplicationCommand 互動回 ephemeral 拒絕訊息；對 Autocomplete 互動回空建議
+    （不洩漏命令存在）。
+- **fail-closed**：`DISCORD_DEV_GUILD_ID` 未設 / 為空字串時，守衛對所有 `devGuild`
+  命令一律拒絕（與「未設則不註冊」相互佐證）。
+- 此守衛是「範圍授權」而非「使用者權限」檢查，符合 mod「不關心使用者權限、只限制在開發
+  群組」的需求；註冊範圍維持為可見性邊界，執行授權由此守衛把關。
+- 守衛抽成可單元測試的純判斷（輸入 `registration`、`intr.guildId`、
+  `DISCORD_DEV_GUILD_ID`，輸出 allow / reject），dispatcher 依結果決定是否執行。
+
+### 4. 各命令 metadata 調整
 
 - **mod（crawl / set-channel / set-video）**：metadata 內容不變，只在 class 上加
-  `registration = "devGuild"`。不設權限（依需求不關心權限）。
+  `registration = "devGuild"`。不設使用者權限（依需求不關心權限）；範圍由 guild 註冊
+  ＋執行期 guild 守衛把關（見上節）。
 - **track**：維持 `setDefaultMemberPermissions(ManageWebhooks)` 與
   `setContexts(Guild)`；明確補上 `setIntegrationTypes(ApplicationIntegrationType.GuildInstall)`
   以表達「僅 guild-install」的意圖（值即預設值，行為不變，純為可讀性與防未來誤改）。
@@ -155,7 +176,7 @@ mod 命令的 `SlashCommandBuilder` 維持不呼叫 `setContexts` / `setIntegrat
   - `setContexts(InteractionContextType.BotDM)`（由原本的 `Guild` 改為 `BotDM`）。
   - `setIntegrationTypes(ApplicationIntegrationType.GuildInstall, ApplicationIntegrationType.UserInstall)`。
 
-### 4. youtube-dm 執行期引導 user-install
+### 5. youtube-dm 執行期引導 user-install
 
 `youtube-dm` 的 `execute` 在送出回覆時，檢查
 `intr.authorizingIntegrationOwners`：
@@ -190,7 +211,7 @@ Settings 的 scope 含 `applications.commands`。若 application 層未啟用 us
 `authorizingIntegrationOwners` 與 application id，輸出「是否需要提示」與提示字串），
 以便對「有/無 UserInstall key」兩種輸入做單元測試。
 
-### 5. 設定（constants）
+### 6. 設定（constants）
 
 `src/constants.ts` 在 DISCORD 相關區塊新增：
 
@@ -200,7 +221,7 @@ export const DISCORD_DEV_GUILD_ID = process.env.DISCORD_DEV_GUILD_ID;
 
 optional；未設時 mod 命令不註冊（見上）。沿用專案「所有設定走環境變數」慣例。
 
-### 6. 部署（k8s）
+### 7. 部署（k8s）
 
 `k8s/base/discord-bot.yaml` 的 deployment 在 `env` 區塊新增一條，沿用既有
 `honeybee-secrets` secret（與 `PUBLIC_BASE_URL` 同來源）。**必須帶
@@ -268,15 +289,24 @@ Discord 的命令集是持久化的外部狀態（global 命令集、各 guild �
     rollout 停住。這是本變更生效前的既有 global 曝光延續，並非新引入，操作者修正後重新
     部署、global `PUT` 成功即收斂消除。此處明確**不**宣稱「failure 絕不會曝光 mod」，但
     失敗一律以 crashloop / rollout 中止呈現，不會靜默 fail-open。
+- **執行期 guild 守衛兜底**：上述任何「mod 在開發 guild 以外仍可見」的失敗 / 過渡狀態
+  下，執行期 guild 守衛（見「mod 命令執行期 guild 守衛」）仍會在 `execute` 前以
+  `intr.guildId === DISCORD_DEV_GUILD_ID` 把關 —— mod 即使可見也**不會在開發 guild 以外
+  被執行**。可見性可能短暫不準，但授權邊界不依賴註冊狀態。
 - **回滾 / 混版（刻意接受、不在本設計處理）**：若叢集回滾到先前會把全部命令註冊成
-  global 的二進位，mod 命令會再次全域曝光。此跨版本回滾 / 混版視窗由專案負責人先前裁定
-  為不成比例的風險、刻意不加入版本閘門 / migration job / 部署鎖；命令集冪等保證「重新
-  部署新版」即可再次收斂回正確狀態。詳見「範圍外」。
+  global 的舊二進位，mod 命令會再次全域**可見**。此跨版本回滾 / 混版視窗由專案負責人
+  先前裁定為不成比例的風險、刻意不加入版本閘門 / migration job / 部署鎖；命令集冪等保證
+  「重新部署新版」即可再次收斂回正確狀態。註：舊二進位不含執行期 guild 守衛，故回滾期間
+  守衛兜底亦失效 —— 這同屬已接受的回滾風險。詳見「範圍外」。
 
 ## 測試
 
 - **命令分組純函式**：輸入混合 `registration` 標記的命令陣列，斷言 global 組與
   devGuild 組成員、順序正確（結構性斷言，非僅呼叫次數）。
+- **執行期 guild 守衛純函式**：對 `(registration, guildId, DISCORD_DEV_GUILD_ID)`
+  各組合斷言 allow / reject：`devGuild` 命令在相符 guild → allow；在他 guild → reject；
+  在 DM（`guildId` null）→ reject；`DISCORD_DEV_GUILD_ID` 未設 / 空 → 一律 reject
+  （fail-closed）；`global` 命令不受守衛影響 → allow。
 - **youtube-dm 引導邏輯**：對引導工具函式分別餵入「含 UserInstall key」「只含
   GuildInstall key」「空 / undefined」三種
   `authorizingIntegrationOwners`，斷言是否附加提示與提示內容（沿用並擴充既有
@@ -290,7 +320,8 @@ Discord 的命令集是持久化的外部狀態（global 命令集、各 guild �
 
 ## 範圍外
 
-- 不調整 mod 命令的內部商業邏輯，只調整其註冊範圍。
+- 不調整 mod 命令的內部商業邏輯，只調整其註冊範圍並於 dispatcher 加執行期 guild
+  守衛（不動各 mod 命令 `execute` 內部邏輯）。
 - 不為 track 開 user-install（研究結論：不可行）。
 - 不處理 Discord 端 dev guild secret、以及 Developer Portal 啟用 User Install
   context 的設定（屬叢集 / Discord app 管理操作，列為部署前置條件）。
