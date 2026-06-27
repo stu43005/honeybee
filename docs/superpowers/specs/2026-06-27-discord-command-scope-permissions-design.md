@@ -128,6 +128,17 @@ mod 三個命令（`crawl`、`set-channel`、`set-video`）在各自 class 上�
    `rest.put(Routes.applicationCommands(DISCORD_ID), { body: globalBody })`。
    因為 PUT 是全量覆寫，把 mod 命令移出 global body 後，下次部署 Discord 會自動把
    mod 從 global 命令集移除。
+4. **失敗即中止啟動（fail-fast）**：上述任一 `PUT`（devGuild 或 global）失敗時，
+   `registerCommands` 不再吞錯續行，而是**讓錯誤往外拋**，使 `app.init()` reject、
+   process 以非零碼結束。如此啟動失敗會反映為 pod crashloop / rollout 卡住的可見訊號，
+   而非靜默 log。實作須確保拋出的錯誤確實終止 process（非僅被 catch 後 return）。
+   注意：`DISCORD_DEV_GUILD_ID` **未設**屬刻意跳過（warn + 略過 devGuild 註冊），
+   **不視為失敗**、不觸發退出。
+
+這取代了原本「log error 後 return、不中斷啟動」的行為。對應的效益：若 Developer Portal
+未啟用 User Install 導致 global `PUT` 整批驗證失敗，新 pod 會啟動失敗、rollout 停在舊
+版本（mod 仍如舊版全域可見），操作者由失敗的 rollout 立即察覺並修正，而不是新版上線後
+靜默 fail-open。
 
 註：guild 命令 metadata 不應帶 `integration_types` / `contexts`（Discord 會忽略），
 mod 命令的 `SlashCommandBuilder` 維持不呼叫 `setContexts` / `setIntegrationTypes`
@@ -212,21 +223,22 @@ secret 實際值（`543454386873958411`）由叢集端 secret 管理，不寫入
 
 ## 錯誤處理與邊界情境
 
-- `DISCORD_DEV_GUILD_ID` 未設：跳過 devGuild 註冊並 warn，mod 命令全域不可見
-  （fail-closed）。
+- `DISCORD_DEV_GUILD_ID` 未設：跳過 devGuild 註冊並 warn（**非失敗、不退出**），mod
+  命令全域不可見（fail-closed）。
 - devGuild PUT 失敗（bot 不在該 guild、缺 Manage Server 之類 → 403 / Missing
-  Access）：log error 但不中斷啟動，global 命令註冊與其餘流程不受影響。
-- global PUT 失敗：維持現有錯誤處理（log error 後 return，不拋出）。
+  Access）：**fail-fast** —— 拋錯中止啟動、process 非零退出，global `PUT` 不再執行。
+- global PUT 失敗：**fail-fast** —— 拋錯中止啟動、process 非零退出（取代原本「log
+  error 後 return」）。
 - **portal 未啟用 User Install 導致 global PUT 整批失敗（耦合風險，硬性前置條件）**：
   global `PUT` 是 all-or-nothing 全量覆寫，且同一批 body 同時包含「youtube-dm 帶
   `[GuildInstall, UserInstall]`」與「mod 已移出 global」。若 Developer Portal 尚未啟用
   User Install context，Discord 會因 `integration_types` 含未支援的 context 而**整批
-  拒絕**此 `PUT` → 連帶「mod 移出 global」也不會生效，mod 維持全域曝光。操作者可見訊號
-  為「mod 命令仍全域可見 + 啟動 log 出現 global 註冊 error」。因此**在部署本變更前，
+  拒絕**此 `PUT` → 連帶「mod 移出 global」也不會生效。在 fail-fast 下，新 pod 會啟動
+  失敗、rollout 停在舊版本（mod 仍如舊版全域可見），操作者由「失敗的 rollout /
+  crashloop + 啟動 error log」立即察覺，而非新版靜默 fail-open。因此**在部署本變更前，
   必須先在 Developer Portal 啟用 User Install context**（列為硬性部署前置條件，見
-  「部署」與「範圍外」）；此為一次性設定錯誤，修正 portal 設定後重新部署即收斂，不另加
-  rollout gate / preflight 程式碼（與下方「回滾 / 混版」同屬專案負責人已接受的短暫
-  設定 / 部署視窗風險）。
+  「部署」與「範圍外」）；fail-fast 已提供可見失敗訊號，故不另加 preflight / 版本閘門
+  程式碼，修正 portal 設定後重新部署即收斂。
 - youtube-dm 在 `authorizingIntegrationOwners` 為 undefined 或缺 UserInstall key
   時：視為未 user-install，附加引導提示；不得因此拋例外。
 - 既有 youtube-dm 使用者（先前以 Guild context 註冊）：context 改為 BotDM
@@ -244,18 +256,18 @@ Discord 的命令集是持久化的外部狀態（global 命令集、各 guild �
   （列為該擴充的前置條件，不在本設計範圍）。
 - **冪等**：兩次 `PUT` 都是宣告式全量覆寫，重啟 / 重跑啟動流程會收斂到同一目標狀態，
   無需差異計算或清理步驟。任何一次部分失敗，都會在「下次成功啟動」時被重新覆寫修正。
-- **註冊順序**：先執行 devGuild 組 `PUT`（把 mod 註冊進開發 guild），成功後再執行
-  global 組 `PUT`（把 mod 移出 global）。如此先確保 mod 在開發 guild 就位，再從 global
-  移除。
-- **partial-failure 的實際狀態（非過度宣稱）**：
-  - **devGuild `PUT` 失敗、global `PUT` 成功**：mod 已從 global 移除、但尚未進開發
-    guild → mod 在**所有地方暫時不可用**（少曝光，符合「限制範圍」目標，但開發 guild
-    會有可用性空窗，直到下次成功啟動）。實作上 devGuild 失敗僅 log error、不中斷，仍會
-    繼續 global `PUT`。
-  - **global `PUT` 失敗**：Discord 保留**先前的 global 命令集**。由於目前線上版本的
-    global 集**仍含 mod**，在第一次成功的 global `PUT` 之前，mod 會**持續全域曝光**
-    —— 這是本變更生效前的既有狀態延續，並非新引入的曝光，且會在下次成功 global `PUT`
-    時收斂消除。此處明確**不**宣稱「failure 絕不會曝光 mod」。
+- **註冊順序 + fail-fast**：先執行 devGuild 組 `PUT`（把 mod 註冊進開發 guild），成功
+  後再執行 global 組 `PUT`（把 mod 移出 global）；任一 `PUT` 失敗即中止啟動。因 fail-fast
+  在 devGuild 失敗時不會繼續動 global，「mod 已從 global 移除、但尚未進開發 guild」的
+  交叉空窗**不會發生**。
+- **partial-failure 的實際狀態（fail-fast 下）**：
+  - **devGuild `PUT` 失敗**：立即拋錯中止，global `PUT` 不執行 → global 命令集維持
+    **舊狀態**（與本變更前相同，仍含 mod）；pod crashloop、rollout 停住。無交叉空窗。
+  - **global `PUT` 失敗（devGuild 已成功）**：mod 已就位於開發 guild；global 因失敗保留
+    **舊集**（仍含 mod）→ mod 暫時同時在開發 guild 與 global 可見；pod crashloop、
+    rollout 停住。這是本變更生效前的既有 global 曝光延續，並非新引入，操作者修正後重新
+    部署、global `PUT` 成功即收斂消除。此處明確**不**宣稱「failure 絕不會曝光 mod」，但
+    失敗一律以 crashloop / rollout 中止呈現，不會靜默 fail-open。
 - **回滾 / 混版（刻意接受、不在本設計處理）**：若叢集回滾到先前會把全部命令註冊成
   global 的二進位，mod 命令會再次全域曝光。此跨版本回滾 / 混版視窗由專案負責人先前裁定
   為不成比例的風險、刻意不加入版本閘門 / migration job / 部署鎖；命令集冪等保證「重新
