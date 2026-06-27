@@ -129,3 +129,22 @@ export const YOUTUBE_WATCH_ACQUIRE_MAX_WAIT_MS = Number(
 // / eval-error / saturated). 1 minute keeps a sustained anomaly observable
 // without flooding (versus logging on every acquire).
 export const YOUTUBE_WATCH_DEGRADED_LOG_INTERVAL_MS = 60 * 1000;
+
+// YouTube DM personal-notification binding
+export const GOOGLE_OAUTH_CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID;
+export const GOOGLE_OAUTH_CLIENT_SECRET =
+  process.env.GOOGLE_OAUTH_CLIENT_SECRET;
+export const DISCORD_OAUTH_CLIENT_ID = process.env.DISCORD_OAUTH_CLIENT_ID;
+export const DISCORD_OAUTH_CLIENT_SECRET =
+  process.env.DISCORD_OAUTH_CLIENT_SECRET;
+// Public base URL the OAuth providers redirect back to, e.g. https://honeybee.example.ts.net
+export const OAUTH_PUBLIC_BASE_URL = process.env.OAUTH_PUBLIC_BASE_URL;
+// OAuth state lifetime: 10 min — enough for one browser consent round-trip, short enough
+// to bound the bearer-link replay window for the Google path.
+export const OAUTH_STATE_TTL_MS = Number(
+  process.env.OAUTH_STATE_TTL_MS ?? 10 * 60 * 1000
+);
+// Soft per-user channel cap — bounds a single derived webhook's $in size; not enforced atomically.
+export const YOUTUBE_DM_MAX_CHANNELS_PER_USER = Number(
+  process.env.YOUTUBE_DM_MAX_CHANNELS_PER_USER ?? 10
+);
