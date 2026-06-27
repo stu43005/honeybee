@@ -20,7 +20,7 @@ export function buildUserInstallHint(
 
   const url = `https://discord.com/oauth2/authorize?client_id=${applicationId}&integration_type=1&scope=applications.commands`;
   return (
-    "💡 將本 App 安裝到你的帳號，即可在任何 DM 使用本指令（不受退出伺服器或移除 Bot 影響）：\n" +
+    "💡 將本 App 安裝到你的帳號，即可直接與本 Bot 私訊（DM）使用本指令，不再需要與 Bot 共享伺服器（退出伺服器或 Bot 被移除都不影響）：\n" +
     url
   );
 }
