@@ -1,13 +1,62 @@
+import type { DocumentType } from "@typegoose/typegoose";
 import axios from "axios";
+import type { AxiosInstance } from "axios";
 import assert from "node:assert";
 import http from "node:http";
 import https from "node:https";
 import { setTimeout } from "node:timers/promises";
-import { matchPresets } from "../data/webhook.js";
+import { checkIsDiscordDmUrl, matchPresets } from "../data/webhook.js";
+import { type Webhook } from "../models/Webhook.js";
 import WebhookModel from "../models/Webhook.js";
 import type { Application } from "../modules/application.js";
 import { documentLog } from "../modules/db.js";
 import type { AgendaModule } from "../modules/schedule.js";
+
+export async function prepareWebhook(
+  webhook: DocumentType<Webhook>,
+  axiosInstance: AxiosInstance
+): Promise<void> {
+  // DM webhooks have no HTTP endpoint; skip the whole iteration (no axios.get, no
+  // failedAttempts / enabled / lastChecked / lastSuccess mutation, no save).
+  if (checkIsDiscordDmUrl(webhook.insertUrl)) {
+    return;
+  }
+
+  // Check if the webhook is still valid
+  webhook.failedAttempts ??= 0;
+  try {
+    await axiosInstance.get(webhook.insertUrl, {
+      timeout: 60_000,
+    });
+    webhook.lastSuccess = new Date();
+    webhook.failedAttempts = 0;
+    webhook.enabled = true;
+  } catch (error) {
+    documentLog(webhook, "<!> [ERROR] Unable to connect to the webhook", error);
+    webhook.failedAttempts += 1;
+
+    // Disable webhook after 24 failed attempts to prevent excessive retries.
+    if (webhook.failedAttempts >= 24) {
+      webhook.enabled = false;
+    }
+  }
+  webhook.lastChecked = new Date();
+
+  // Prepare webhook match
+  try {
+    if (webhook.matchPreset && matchPresets[webhook.matchPreset]) {
+      const match = await matchPresets[webhook.matchPreset](webhook);
+      if (JSON.stringify(webhook.match) !== JSON.stringify(match)) {
+        documentLog(webhook, "change match");
+        webhook.match = match;
+      }
+    }
+  } catch (error) {
+    documentLog(webhook, "<!> [ERROR] Unable to prepare webhook", error);
+  }
+
+  await webhook.save();
+}
 
 export default function webhookPrepare(app: Application) {
   const { agenda } = app.get<AgendaModule>("agenda") ?? {};
@@ -22,44 +71,7 @@ export default function webhookPrepare(app: Application) {
     });
 
     for await (const webhook of WebhookModel.findEnabled()) {
-      // Check if the webhook is still valid
-      webhook.failedAttempts ??= 0;
-      try {
-        await axiosInstance.get(webhook.insertUrl, {
-          timeout: 60_000,
-        });
-        webhook.lastSuccess = new Date();
-        webhook.failedAttempts = 0;
-        webhook.enabled = true;
-      } catch (error) {
-        documentLog(
-          webhook,
-          "<!> [ERROR] Unable to connect to the webhook",
-          error
-        );
-        webhook.failedAttempts += 1;
-
-        // Disable webhook after 24 failed attempts to prevent excessive retries.
-        if (webhook.failedAttempts >= 24) {
-          webhook.enabled = false;
-        }
-      }
-      webhook.lastChecked = new Date();
-
-      // Prepare webhook match
-      try {
-        if (webhook.matchPreset && matchPresets[webhook.matchPreset]) {
-          const match = await matchPresets[webhook.matchPreset](webhook);
-          if (JSON.stringify(webhook.match) !== JSON.stringify(match)) {
-            documentLog(webhook, "change match");
-            webhook.match = match;
-          }
-        }
-      } catch (error) {
-        documentLog(webhook, "<!> [ERROR] Unable to prepare webhook", error);
-      }
-
-      await webhook.save();
+      await prepareWebhook(webhook, axiosInstance);
       await setTimeout(1000);
     }
   });
