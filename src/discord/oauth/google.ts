@@ -2,13 +2,13 @@ import { google as googleapis, type youtube_v3 } from "googleapis";
 import {
   GOOGLE_OAUTH_CLIENT_ID,
   GOOGLE_OAUTH_CLIENT_SECRET,
-  OAUTH_PUBLIC_BASE_URL,
+  PUBLIC_BASE_URL,
 } from "../../constants.js";
 
 const SCOPES = ["https://www.googleapis.com/auth/youtube.readonly"];
 
 export function googleRedirectUri(): string {
-  return `${OAUTH_PUBLIC_BASE_URL}/oauth/youtube-dm/google/callback`;
+  return `${PUBLIC_BASE_URL}/oauth/youtube-dm/google/callback`;
 }
 
 function oauthClient() {

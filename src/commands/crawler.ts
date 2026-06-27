@@ -11,7 +11,7 @@ import moment from "moment-timezone";
 import { setTimeout } from "timers/promises";
 import YouTubeNotifier from "youtube-notification";
 import {
-  CRAWLER_ROOT_URL,
+  PUBLIC_BASE_URL,
   HOLODEX_ALL_VTUBERS,
   HOLODEX_FETCH_ORG,
   HOLODEX_MAX_UPCOMING_HOURS,
@@ -218,12 +218,9 @@ export async function runCrawler() {
 
   //#region youtube pubsub
 
-  const enabledYtPubsub = !!CRAWLER_ROOT_URL;
+  const enabledYtPubsub = !!PUBLIC_BASE_URL;
   const ytNotifier = new YouTubeNotifier({
-    hubCallback: new URL(
-      "./notifications/youtube",
-      CRAWLER_ROOT_URL
-    ).toString(),
+    hubCallback: new URL("./notifications/youtube", PUBLIC_BASE_URL).toString(),
     secret: YOUTUBE_PUBSUB_SECRET,
     middleware: true,
   });

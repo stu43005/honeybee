@@ -14,7 +14,10 @@ export const HOLODEX_FETCH_ORG =
 export const HOLODEX_MAX_UPCOMING_HOURS = Number(
   process.env.HOLODEX_MAX_UPCOMING_HOURS ?? 12
 );
-export const CRAWLER_ROOT_URL = process.env.CRAWLER_ROOT_URL;
+// Public base URL the deployment is reachable at (shared ingress host), e.g.
+// https://honeybee.example.ts.net — used both to build the crawler's PubSubHubbub
+// callback and the OAuth providers' redirect URIs.
+export const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL;
 export const YOUTUBE_PUBSUB_SECRET = process.env.YOUTUBE_PUBSUB_SECRET;
 export const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 
@@ -137,8 +140,6 @@ export const GOOGLE_OAUTH_CLIENT_SECRET =
 export const DISCORD_OAUTH_CLIENT_ID = process.env.DISCORD_OAUTH_CLIENT_ID;
 export const DISCORD_OAUTH_CLIENT_SECRET =
   process.env.DISCORD_OAUTH_CLIENT_SECRET;
-// Public base URL the OAuth providers redirect back to, e.g. https://honeybee.example.ts.net
-export const OAUTH_PUBLIC_BASE_URL = process.env.OAUTH_PUBLIC_BASE_URL;
 // OAuth state lifetime: 10 min — enough for one browser consent round-trip, short enough
 // to bound the bearer-link replay window for the Google path.
 export const OAUTH_STATE_TTL_MS = Number(

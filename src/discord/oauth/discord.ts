@@ -2,13 +2,13 @@ import axios from "axios";
 import {
   DISCORD_OAUTH_CLIENT_ID,
   DISCORD_OAUTH_CLIENT_SECRET,
-  OAUTH_PUBLIC_BASE_URL,
+  PUBLIC_BASE_URL,
 } from "../../constants.js";
 
 const API = "https://discord.com/api";
 
 export function discordRedirectUri(): string {
-  return `${OAUTH_PUBLIC_BASE_URL}/oauth/youtube-dm/discord/callback`;
+  return `${PUBLIC_BASE_URL}/oauth/youtube-dm/discord/callback`;
 }
 
 export function buildDiscordAuthUrl(state: string): string {
