@@ -140,6 +140,10 @@ export const GOOGLE_OAUTH_CLIENT_SECRET =
 export const DISCORD_OAUTH_CLIENT_ID = process.env.DISCORD_OAUTH_CLIENT_ID;
 export const DISCORD_OAUTH_CLIENT_SECRET =
   process.env.DISCORD_OAUTH_CLIENT_SECRET;
+// Discord guild that the mod-only slash commands (crawl / set-channel / set-video)
+// are registered to and allowed to execute in. Optional: when unset, those commands
+// are not registered anywhere and the runtime guard rejects them (fail-closed).
+export const DISCORD_DEV_GUILD_ID = process.env.DISCORD_DEV_GUILD_ID;
 // OAuth state lifetime: 10 min — enough for one browser consent round-trip, short enough
 // to bound the bearer-link replay window for the Google path.
 export const OAUTH_STATE_TTL_MS = Number(
