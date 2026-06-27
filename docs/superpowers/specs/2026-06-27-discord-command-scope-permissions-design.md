@@ -156,10 +156,24 @@ mod 命令的 `SlashCommandBuilder` 維持不呼叫 `setContexts` / `setIntegrat
 - `authorizingIntegrationOwners` 可能為 undefined / 缺 key，需防禦性處理（缺
   UserInstall key 即視為「未 user-install」）。
 
-安裝連結需要本應用的 application id（由 `intr.client.application.id` 取得）。連結的
-確切格式（`integration_type` 對應值、`scope` 內容）屬 Discord OAuth 授權 URL 慣例而
-非 discord.js API，**在實作計畫階段以 research subagent 對 Discord 官方文件查證後才
-寫入**，本設計不預先寫死字串。
+安裝連結需要本應用的 application id（由 `intr.client.application.id` 取得）。已查證
+Discord 官方文件（developer docs OAuth2 / Application），user-install 的安裝連結
+（install link，純安裝命令、不需 token 交換，故不帶 `response_type` / `redirect_uri`）
+格式為：
+
+```text
+https://discord.com/oauth2/authorize?client_id=<APPLICATION_ID>&integration_type=1&scope=applications.commands
+```
+
+其中 `integration_type=1` 對應 user-install、`scope=applications.commands` 為命令安裝
+所需 scope。
+
+**Application 端前置設定（部署前置條件）**：須在 Discord Developer Portal →
+Installation 啟用 **User Install** installation context，並設定 Default Install
+Settings 的 scope 含 `applications.commands`。若 application 層未啟用 user-install，
+則命令 metadata 設 `integration_types: [..., UserInstall]` 在 `PUT` 註冊時會**驗證
+失敗**（Discord 限制：`integration_types` 只能包含 application 層已支援的 context）。
+此 portal 設定屬叢集 / Discord app 管理操作，列為部署前置條件（見「部署」與「範圍外」）。
 
 此引導邏輯抽成一個小工具函式（輸入
 `authorizingIntegrationOwners` 與 application id，輸出「是否需要提示」與提示字串），
@@ -205,21 +219,31 @@ secret 實際值（`543454386873958411`）由叢集端 secret 管理，不寫入
 ## 註冊冪等性與部署順序
 
 Discord 的命令集是持久化的外部狀態（global 命令集、各 guild 命令集），兩次 `PUT`
-皆為全量覆寫。本設計對此狀態的不變式如下，避免「mod 命令意外在非開發 guild 曝光」：
+皆為全量覆寫（last-writer-wins）。本設計對此狀態的行為如下：
 
+- **單一寫入者**：discord-bot deployment 為 `replicas: 1`（見
+  `k8s/base/discord-bot.yaml`），且註冊只在該唯一 pod 啟動時執行，正常運作下不存在多
+  pod 並發 `PUT` 互相覆寫的情形。本設計不額外引入分散式鎖 / leader election —— 前提
+  是維持 `replicas: 1`；若未來把 discord-bot 擴成多副本，需另行加入單一寫入者保證
+  （列為該擴充的前置條件，不在本設計範圍）。
 - **冪等**：兩次 `PUT` 都是宣告式全量覆寫，重啟 / 重跑啟動流程會收斂到同一目標狀態，
-  無需差異計算或清理步驟。
+  無需差異計算或清理步驟。任何一次部分失敗，都會在「下次成功啟動」時被重新覆寫修正。
 - **註冊順序**：先執行 devGuild 組 `PUT`（把 mod 註冊進開發 guild），成功後再執行
-  global 組 `PUT`（把 mod 移出 global）。如此不會出現「mod 已從 global 移除、但開發
-  guild 尚未取得」的空窗；若 devGuild `PUT` 失敗則跳過 global 的 mod 移除前提不成立
-  —— 因 mod 本就不在新的 global body 內，global `PUT` 仍會把 mod 移出 global。
-- **partial-failure 為 fail-closed**：任一 `PUT` 失敗的最壞結果是「mod 命令暫時在某處
-  不可用」，**絕不會**讓 mod 命令出現在開發 guild 以外的地方。亦即失敗只會少曝光、不會
-  多曝光，符合本變更「限制可見範圍」的核心目標。
-- **回滾的已知限制（刻意接受）**：若叢集回滾到目前這版二進位（會把全部命令註冊成
-  global），mod 命令會再次全域曝光。此跨版本回滾 / 混版視窗由專案負責人裁定為不成比例
-  的風險、**刻意不在本設計加入版本閘門或 migration**；命令集冪等的特性保證「重新部署
-  新版」即可再次收斂回正確狀態。
+  global 組 `PUT`（把 mod 移出 global）。如此先確保 mod 在開發 guild 就位，再從 global
+  移除。
+- **partial-failure 的實際狀態（非過度宣稱）**：
+  - **devGuild `PUT` 失敗、global `PUT` 成功**：mod 已從 global 移除、但尚未進開發
+    guild → mod 在**所有地方暫時不可用**（少曝光，符合「限制範圍」目標，但開發 guild
+    會有可用性空窗，直到下次成功啟動）。實作上 devGuild 失敗僅 log error、不中斷，仍會
+    繼續 global `PUT`。
+  - **global `PUT` 失敗**：Discord 保留**先前的 global 命令集**。由於目前線上版本的
+    global 集**仍含 mod**，在第一次成功的 global `PUT` 之前，mod 會**持續全域曝光**
+    —— 這是本變更生效前的既有狀態延續，並非新引入的曝光，且會在下次成功 global `PUT`
+    時收斂消除。此處明確**不**宣稱「failure 絕不會曝光 mod」。
+- **回滾 / 混版（刻意接受、不在本設計處理）**：若叢集回滾到先前會把全部命令註冊成
+  global 的二進位，mod 命令會再次全域曝光。此跨版本回滾 / 混版視窗由專案負責人先前裁定
+  為不成比例的風險、刻意不加入版本閘門 / migration job / 部署鎖；命令集冪等保證「重新
+  部署新版」即可再次收斂回正確狀態。詳見「範圍外」。
 
 ## 測試
 
@@ -240,5 +264,9 @@ Discord 的命令集是持久化的外部狀態（global 命令集、各 guild �
 
 - 不調整 mod 命令的內部商業邏輯，只調整其註冊範圍。
 - 不為 track 開 user-install（研究結論：不可行）。
-- 不處理 Discord 端 dev guild secret 的建立 / 輪替（叢集 secret 管理範疇）。
-- 既有命令的部署 / 回滾 / 混版相容性不在本設計討論範圍。
+- 不處理 Discord 端 dev guild secret、以及 Developer Portal 啟用 User Install
+  context 的設定（屬叢集 / Discord app 管理操作，列為部署前置條件）。
+- **不為跨版本回滾 / 混版的命令曝光加入額外保證程式碼（版本閘門、migration job、
+  部署鎖等）**。理由：更版部署在短時間內即完成，回滾 / 混版視窗極短，專案負責人已
+  明確接受此風險；命令集為冪等全量覆寫，重新部署新版即收斂回正確狀態。後續 review
+  不應再就此議題要求加碼。
