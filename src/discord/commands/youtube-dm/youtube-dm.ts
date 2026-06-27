@@ -1,4 +1,5 @@
 import {
+  ApplicationIntegrationType,
   InteractionContextType,
   SlashCommandBuilder,
   type AutocompleteInteraction,
@@ -50,7 +51,11 @@ export class YoutubeDmCommand implements Command {
             .setAutocomplete(true)
         )
     )
-    .setContexts(InteractionContextType.Guild)
+    .setContexts(InteractionContextType.BotDM)
+    .setIntegrationTypes(
+      ApplicationIntegrationType.GuildInstall,
+      ApplicationIntegrationType.UserInstall
+    )
     .toJSON();
 
   public async execute(intr: ChatInputCommandInteraction): Promise<void> {

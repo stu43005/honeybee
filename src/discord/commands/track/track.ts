@@ -1,5 +1,6 @@
 import type { DocumentType } from "@typegoose/typegoose";
 import {
+  ApplicationIntegrationType,
   bold,
   ButtonBuilder,
   ButtonStyle,
@@ -123,6 +124,7 @@ export class TrackCommand implements Command {
     )
     .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageWebhooks)
     .setContexts(InteractionContextType.Guild)
+    .setIntegrationTypes(ApplicationIntegrationType.GuildInstall)
     .toJSON();
 
   public async execute(intr: ChatInputCommandInteraction): Promise<void> {
