@@ -217,6 +217,16 @@ secret 實際值（`543454386873958411`）由叢集端 secret 管理，不寫入
 - devGuild PUT 失敗（bot 不在該 guild、缺 Manage Server 之類 → 403 / Missing
   Access）：log error 但不中斷啟動，global 命令註冊與其餘流程不受影響。
 - global PUT 失敗：維持現有錯誤處理（log error 後 return，不拋出）。
+- **portal 未啟用 User Install 導致 global PUT 整批失敗（耦合風險，硬性前置條件）**：
+  global `PUT` 是 all-or-nothing 全量覆寫，且同一批 body 同時包含「youtube-dm 帶
+  `[GuildInstall, UserInstall]`」與「mod 已移出 global」。若 Developer Portal 尚未啟用
+  User Install context，Discord 會因 `integration_types` 含未支援的 context 而**整批
+  拒絕**此 `PUT` → 連帶「mod 移出 global」也不會生效，mod 維持全域曝光。操作者可見訊號
+  為「mod 命令仍全域可見 + 啟動 log 出現 global 註冊 error」。因此**在部署本變更前，
+  必須先在 Developer Portal 啟用 User Install context**（列為硬性部署前置條件，見
+  「部署」與「範圍外」）；此為一次性設定錯誤，修正 portal 設定後重新部署即收斂，不另加
+  rollout gate / preflight 程式碼（與下方「回滾 / 混版」同屬專案負責人已接受的短暫
+  設定 / 部署視窗風險）。
 - youtube-dm 在 `authorizingIntegrationOwners` 為 undefined 或缺 UserInstall key
   時：視為未 user-install，附加引導提示；不得因此拋例外。
 - 既有 youtube-dm 使用者（先前以 Guild context 註冊）：context 改為 BotDM
