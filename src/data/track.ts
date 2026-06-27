@@ -23,7 +23,7 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
         return {
           colls: ["videos"],
           match: {
-            channelId: getChannelIdFilter(track),
+            channelId: getChannelIdFilter(track.trackChannels),
             status: {
               $in: ["live", "past", "missing"],
             },
@@ -48,7 +48,7 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
         return {
           colls: ["videos"],
           match: {
-            channelId: getChannelIdFilter(track),
+            channelId: getChannelIdFilter(track.trackChannels),
             uploadedVideo: true,
             ...getIncludeShortsFilter(track),
             ...getMemberVideosFilter(track),
@@ -70,7 +70,7 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
         return {
           colls: ["videos"],
           match: {
-            channelId: getChannelIdFilter(track),
+            channelId: getChannelIdFilter(track.trackChannels),
             status: {
               $in: ["live", "past", "missing"],
             },
@@ -94,7 +94,7 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
         return {
           colls: ["videos"],
           match: {
-            channelId: getChannelIdFilter(track),
+            channelId: getChannelIdFilter(track.trackChannels),
             status: "upcoming",
             ...(uploads ? {} : { uploadedVideo: { $ne: true } }),
             ...(premieres ? {} : { premiere: { $ne: true } }),
@@ -139,8 +139,8 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
             "membershipgifts",
           ],
           match: {
-            authorChannelId: getChannelIdFilter(track),
-            originChannelId: getChannelIdFilter(track),
+            authorChannelId: getChannelIdFilter(track.trackChannels),
+            originChannelId: getChannelIdFilter(track.trackChannels),
             isReplay: { $ne: true },
           },
           templatePreset: "discord-embed-chats",
@@ -164,8 +164,8 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
             "membershipgifts",
           ],
           match: {
-            authorChannelId: getChannelIdFilter(track),
-            originChannelId: getChannelIdFilter(track, true),
+            authorChannelId: getChannelIdFilter(track.trackChannels),
+            originChannelId: getChannelIdFilter(track.trackChannels, true),
             isReplay: { $ne: true },
           },
           templatePreset: "discord-embed-chats",
@@ -199,7 +199,7 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
             ...(chatBlocklist.size > 0
               ? { authorChannelId: { $nin: Array.from(chatBlocklist) } }
               : {}),
-            originChannelId: getChannelIdFilter(track),
+            originChannelId: getChannelIdFilter(track.trackChannels),
             isModerator: true,
             isReplay: { $ne: true },
           },
@@ -232,7 +232,7 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
           ],
           match: {
             authorChannelId: { $in: Array.from(chatFollowlist) },
-            originChannelId: getChannelIdFilter(track),
+            originChannelId: getChannelIdFilter(track.trackChannels),
             isReplay: { $ne: true },
           },
           templatePreset: "discord-embed-chats",
@@ -249,7 +249,7 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
         return {
           colls: ["polls"],
           match: {
-            originChannelId: getChannelIdFilter(track),
+            originChannelId: getChannelIdFilter(track.trackChannels),
           },
           followUpdate: true,
           templatePreset: "discord-embed-polls",
@@ -263,7 +263,7 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
         return {
           colls: ["modechanges"],
           match: {
-            originChannelId: getChannelIdFilter(track),
+            originChannelId: getChannelIdFilter(track.trackChannels),
             isReplay: { $ne: true },
           },
           templatePreset: "discord-embed-modechanges",
@@ -277,7 +277,7 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
         return {
           colls: ["raids"],
           match: {
-            originChannelId: getChannelIdFilter(track),
+            originChannelId: getChannelIdFilter(track.trackChannels),
           },
           followUpdate: true,
           templatePreset: "discord-embed-raids",
@@ -292,10 +292,15 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
         return {
           colls: ["raids"],
           match: {
-            sourceChannelId: getChannelIdFilter(track),
+            sourceChannelId: getChannelIdFilter(track.trackChannels),
             ...(onlyOne
               ? {}
-              : { originChannelId: getChannelIdFilter(track, true) }),
+              : {
+                  originChannelId: getChannelIdFilter(
+                    track.trackChannels,
+                    true
+                  ),
+                }),
           },
           followUpdate: true,
           templatePreset: "discord-embed-raids-outgoing",
@@ -304,25 +309,25 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
     },
   } satisfies Record<string, TrackFeaturesConfig>);
 
-function getChannelIdFilter(track: Track, reverse = false) {
-  if (track.trackChannels.length === 0) {
+export function getChannelIdFilter(channelIds: string[], reverse = false) {
+  if (channelIds.length === 0) {
     return null;
   }
-  if (track.trackChannels.length === 1) {
+  if (channelIds.length === 1) {
     if (reverse) {
       return {
-        $ne: track.trackChannels[0],
+        $ne: channelIds[0],
       };
     }
-    return track.trackChannels[0];
+    return channelIds[0];
   }
   if (reverse) {
     return {
-      $nin: track.trackChannels,
+      $nin: channelIds,
     };
   }
   return {
-    $in: track.trackChannels,
+    $in: channelIds,
   };
 }
 
