@@ -117,7 +117,9 @@ mod 三個命令（`crawl`、`set-channel`、`set-video`）在各自 class 上�
 
 1. 用純函式把傳入的命令依 `registration` 欄位分成 `globalCommands` 與
    `devGuildCommands` 兩組（預設歸 global）。此分組函式（例如
-   `partitionCommandsByScope`）獨立可測，回傳兩組命令的 metadata 陣列。
+   `partitionCommandsByScope`）獨立可測，回傳兩組命令（`AppCommand[]`）；註冊時各自取
+   `cmd.metadata` 組 `PUT` body（回傳命令物件而非僅 metadata，是因守衛、日誌與名稱輸出
+   都需要命令物件本身）。
 2. **先**處理 devGuild 組（先讓 mod 在開發 guild 就位，再從 global 移除，避免空窗，
    詳見「註冊冪等性與部署順序」）：
    - 若 `DISCORD_DEV_GUILD_ID` 有設，執行
@@ -183,10 +185,14 @@ mod 命令在開發 guild 以外被執行，於共用 dispatcher 加一道**執�
 
 - 若該 map **含 UserInstall key**（使用者已 user-install）→ 不附加提示。
 - 若該 map **只有 GuildInstall key、無 UserInstall key**（此 DM 路徑是靠共享伺服器
-  成立的）→ 在回覆內容尾端附加一段提示文字 + user-install 安裝連結，引導使用者把 app
-  安裝到自己帳號，使 DM 路徑不再依賴伺服器成員關係。
-- `authorizingIntegrationOwners` 可能為 undefined / 缺 key，需防禦性處理（缺
-  UserInstall key 即視為「未 user-install」）。
+  成立的）→ 在主要回覆**之後**送出一則 user-install 引導（提示文字 + 安裝連結），引導
+  使用者把 app 安裝到自己帳號，使 DM 路徑不再依賴伺服器成員關係。送出方式採**獨立的
+  ephemeral follow-up 訊息**（`intr.followUp({ ephemeral: true, ... })`）而非串接進每個
+  subcommand 的 reply 內容：execute() 的 bind / list / unbind 各有多個 reply 出口，集中
+  在 switch 之後送一則 follow-up 可單點處理、不污染 6 個 reply 點，UX 上等價於「在回覆
+  之後附帶提示」。
+- `authorizingIntegrationOwners` 可能為 undefined / 空物件 `{}` / 缺 key，需防禦性處理
+  （缺 UserInstall key 即視為「未 user-install」）。
 
 安裝連結需要本應用的 application id（由 `intr.client.application.id` 取得）。已查證
 Discord 官方文件（developer docs OAuth2 / Application），user-install 的安裝連結

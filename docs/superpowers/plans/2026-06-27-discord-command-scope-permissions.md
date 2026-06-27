@@ -123,12 +123,16 @@ import { commands } from "./index.js";
 import { partitionCommandsByScope } from "./registration.js";
 
 describe("partitionCommandsByScope", () => {
-  it("splits mod commands into devGuild and the rest into global", () => {
+  it("splits mod commands into devGuild and the rest into global, preserving input order", () => {
     const { global, devGuild } = partitionCommandsByScope(commands);
-    const devNames = devGuild.map((c) => c.metadata.name).sort();
-    const globalNames = global.map((c) => c.metadata.name).sort();
-    expect(devNames).toEqual(["crawl", "set-channel", "set-video"]);
-    expect(globalNames).toEqual(["track", "youtube-dm"]);
+    // `commands` is sorted by name in index.ts; partition preserves that order.
+    // Assert exact ordered arrays (no sort) to verify both membership AND order.
+    expect(devGuild.map((c) => c.metadata.name)).toEqual([
+      "crawl",
+      "set-channel",
+      "set-video",
+    ]);
+    expect(global.map((c) => c.metadata.name)).toEqual(["track", "youtube-dm"]);
   });
 });
 ```
@@ -596,6 +600,11 @@ describe("buildUserInstallHint", () => {
     const hint = buildUserInstallHint(undefined, "app123");
     expect(hint).toContain("integration_type=1");
   });
+
+  it("returns a hint when owners is an empty map (no UserInstall key)", () => {
+    const hint = buildUserInstallHint({}, "app123");
+    expect(hint).toContain("integration_type=1");
+  });
 });
 ```
 
@@ -824,8 +833,8 @@ git commit -m "feat(youtube-dm): nudge guild-install users toward user-install"
 
 - [ ] **Step 2: 驗證 YAML 結構**
 
-Run: `node -e "const y=require('js-yaml'); const fs=require('fs'); const docs=fs.readFileSync('k8s/base/discord-bot.yaml','utf8').split(/^---$/m).map(d=>y.load(d)); const dep=docs.find(d=>d&&d.kind==='Deployment'); const env=dep.spec.template.spec.containers[0].env; const e=env.find(x=>x.name==='DISCORD_DEV_GUILD_ID'); if(!e) throw new Error('env missing'); if(e.valueFrom.secretKeyRef.optional!==true) throw new Error('optional must be true'); console.log('OK', JSON.stringify(e));"`
-Expected: 印出 `OK {...}`（確認 env 存在且 `optional: true`）。若 `js-yaml` 不可用，改以 `npx --yes js-yaml@4 ...` 或直接 `Read` 該檔目視確認結構與縮排正確。
+Run: `node -e "const y=require('js-yaml'); const fs=require('fs'); const docs=fs.readFileSync('k8s/base/discord-bot.yaml','utf8').split(/^---$/m).map(d=>y.load(d)); const dep=docs.find(d=>d&&d.kind==='Deployment'); if(dep.spec.replicas!==1) throw new Error('replicas must stay 1 (single-writer premise for command registration)'); const env=dep.spec.template.spec.containers[0].env; const e=env.find(x=>x.name==='DISCORD_DEV_GUILD_ID'); if(!e) throw new Error('env missing'); if(e.valueFrom.secretKeyRef.optional!==true) throw new Error('optional must be true'); console.log('OK replicas=1', JSON.stringify(e));"`
+Expected: 印出 `OK replicas=1 {...}`（確認 `replicas: 1` 仍成立——這是命令註冊單一寫入者前提——且 env 存在並帶 `optional: true`）。若 `js-yaml` 不可用，直接 `Read` 該檔目視確認 `replicas: 1`、env 結構與縮排正確。
 
 - [ ] **Step 3: Commit**
 
