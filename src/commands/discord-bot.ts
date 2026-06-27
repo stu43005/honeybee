@@ -9,15 +9,19 @@ import {
   RESTJSONErrorCodes,
   Routes,
   type Interaction,
-  type RESTPutAPIApplicationCommandsJSONBody,
 } from "discord.js";
 import { commands } from "../discord/commands/index.js";
 import type { AppCommand } from "../discord/commands/command.js";
+import {
+  isDevGuildCommandAllowed,
+  partitionCommandsByScope,
+} from "../discord/commands/registration.js";
 import {
   handleDiscordCallback,
   handleGoogleCallback,
 } from "../discord/oauth/callback.js";
 import { initOAuthStateStore } from "../discord/oauth/state.js";
+import { DISCORD_DEV_GUILD_ID } from "../constants.js";
 import { Application } from "../modules/application.js";
 import { MongodbModule } from "../modules/db.js";
 import { RedisModule } from "../modules/redis.js";
@@ -36,24 +40,40 @@ const IGNORED_ERRORS: (string | number)[] = [
 ];
 
 async function registerCommands(commands: AppCommand[]): Promise<void> {
-  const cmdDatas: RESTPutAPIApplicationCommandsJSONBody = commands.map(
-    (cmd) => cmd.metadata
-  );
-  const cmdNames = cmdDatas.map((cmdData) => cmdData.name);
+  const { global, devGuild } = partitionCommandsByScope(commands);
+  const rest = new REST({ version: "9" }).setToken(DISCORD_TOKEN);
+
+  // Dev-guild commands first: land mod commands in the dev guild before the
+  // global PUT removes them from the global set, so there is no cross-state gap.
+  if (devGuild.length > 0) {
+    if (DISCORD_DEV_GUILD_ID) {
+      console.log(
+        `Registering dev-guild commands [${DISCORD_DEV_GUILD_ID}]: ${devGuild
+          .map((cmd) => `'${cmd.metadata.name}'`)
+          .join(", ")}.`
+      );
+      await rest.put(
+        Routes.applicationGuildCommands(DISCORD_ID, DISCORD_DEV_GUILD_ID),
+        { body: devGuild.map((cmd) => cmd.metadata) }
+      );
+    } else {
+      console.warn(
+        `DISCORD_DEV_GUILD_ID is not set; skipping dev-guild registration. ` +
+          `These commands will be unavailable everywhere: ${devGuild
+            .map((cmd) => `'${cmd.metadata.name}'`)
+            .join(", ")}.`
+      );
+    }
+  }
 
   console.log(
-    `Registering commands: ${cmdNames
-      .map((cmdName) => `'${cmdName}'`)
+    `Registering global commands: ${global
+      .map((cmd) => `'${cmd.metadata.name}'`)
       .join(", ")}.`
   );
-
-  try {
-    const rest = new REST({ version: "9" }).setToken(DISCORD_TOKEN);
-    await rest.put(Routes.applicationCommands(DISCORD_ID), { body: cmdDatas });
-  } catch (error) {
-    console.error(`An error occurred while registering commands.`, error);
-    return;
-  }
+  await rest.put(Routes.applicationCommands(DISCORD_ID), {
+    body: global.map((cmd) => cmd.metadata),
+  });
 
   console.log(`Commands registered.`);
 }
@@ -113,6 +133,29 @@ export async function runDiscordBot() {
           console.error(
             `[${intr.id}] A command with the name '${intr.commandName}' could not be found.`
           );
+          return;
+        }
+
+        // Scope guard: dev-guild-only commands may only run in the configured
+        // dev guild. Registration is visibility; this is the authorization edge.
+        if (
+          !isDevGuildCommandAllowed({
+            registration: command.registration,
+            guildId: intr.guildId,
+            devGuildId: DISCORD_DEV_GUILD_ID,
+          })
+        ) {
+          console.warn(
+            `[${intr.id}] Rejected dev-guild command '${command.metadata.name}' from guild '${intr.guildId}'.`
+          );
+          if (intr.isAutocomplete()) {
+            await intr.respond([]);
+          } else if (intr.isRepliable()) {
+            await intr.reply({
+              content: "This command is not available here.",
+              ephemeral: true,
+            });
+          }
           return;
         }
 
