@@ -1,5 +1,6 @@
 /// <reference types="jest" />
 import { afterEach, describe, expect, it, jest } from "@jest/globals";
+import { ApplicationIntegrationType } from "discord.js";
 import ChannelModel from "../../../models/Channel.js";
 import YoutubeDmBindingModel from "../../../models/YoutubeDmBinding.js";
 import { initOAuthStateStore } from "../../oauth/state.js";
@@ -20,14 +21,21 @@ function fakeRedis() {
 function intr(opts: {
   subcommand: string;
   optionValues?: Record<string, string>;
+  owners?: Partial<Record<ApplicationIntegrationType, string>>;
 }) {
   return {
+    id: "i1",
     user: { id: "d1" },
+    client: { application: { id: "app123" } },
+    authorizingIntegrationOwners: opts.owners ?? {
+      [ApplicationIntegrationType.UserInstall]: "d1",
+    },
     options: {
       getSubcommand: () => opts.subcommand,
       getString: (name: string) => opts.optionValues?.[name] ?? null,
     },
     reply: jest.fn(() => Promise.resolve(undefined)),
+    followUp: jest.fn(() => Promise.resolve(undefined)),
   } as any;
 }
 
@@ -109,5 +117,44 @@ describe("YoutubeDmCommand", () => {
     const arg = i.reply.mock.calls[0][0];
     expect(arg.content).toContain("Chan A");
     expect(arg.content).toContain("UCa");
+  });
+
+  it("appends a user-install hint followUp when only guild-installed", async () => {
+    jest
+      .spyOn(YoutubeDmBindingModel, "findOne")
+      .mockResolvedValue({ channelIds: ["UCa"] } as any);
+    jest
+      .spyOn(ChannelModel, "findByChannelId")
+      .mockResolvedValue({ name: "Chan A" } as any);
+    const cmd = new YoutubeDmCommand();
+    const i = intr({
+      subcommand: "list",
+      owners: { [ApplicationIntegrationType.GuildInstall]: "g1" },
+    });
+
+    await cmd.execute(i);
+
+    expect(i.followUp).toHaveBeenCalledTimes(1);
+    const arg = i.followUp.mock.calls[0][0];
+    expect(arg.content).toContain("integration_type=1");
+    expect(arg.ephemeral).toBe(true);
+  });
+
+  it("does not append a hint when already user-installed", async () => {
+    jest
+      .spyOn(YoutubeDmBindingModel, "findOne")
+      .mockResolvedValue({ channelIds: ["UCa"] } as any);
+    jest
+      .spyOn(ChannelModel, "findByChannelId")
+      .mockResolvedValue({ name: "Chan A" } as any);
+    const cmd = new YoutubeDmCommand();
+    const i = intr({
+      subcommand: "list",
+      owners: { [ApplicationIntegrationType.UserInstall]: "d1" },
+    });
+
+    await cmd.execute(i);
+
+    expect(i.followUp).not.toHaveBeenCalled();
   });
 });

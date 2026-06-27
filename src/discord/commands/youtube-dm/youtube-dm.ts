@@ -16,6 +16,7 @@ import {
   type OAuthMethod,
 } from "../../oauth/state.js";
 import type { Command } from "../command.js";
+import { buildUserInstallHint } from "./install-hint.js";
 
 export class YoutubeDmCommand implements Command {
   public metadata = new SlashCommandBuilder()
@@ -71,6 +72,16 @@ export class YoutubeDmCommand implements Command {
       case "unbind":
         await this.unbind(intr, discordUserId);
         break;
+    }
+
+    // Every subcommand has already replied (ephemerally) above; nudge guild-install
+    // users toward user-install so the DM path is not tied to shared-guild membership.
+    const hint = buildUserInstallHint(
+      intr.authorizingIntegrationOwners,
+      intr.client.application.id
+    );
+    if (hint) {
+      await intr.followUp({ content: hint, ephemeral: true });
     }
   }
 
