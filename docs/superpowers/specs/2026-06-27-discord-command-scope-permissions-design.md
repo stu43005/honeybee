@@ -192,7 +192,12 @@ optional；未設時 mod 命令不註冊（見上）。沿用專案「所有設�
 ### 6. 部署（k8s）
 
 `k8s/base/discord-bot.yaml` 的 deployment 在 `env` 區塊新增一條，沿用既有
-`honeybee-secrets` secret（與 `PUBLIC_BASE_URL` 同來源）：
+`honeybee-secrets` secret（與 `PUBLIC_BASE_URL` 同來源）。**必須帶
+`optional: true`**：因 `DISCORD_DEV_GUILD_ID` 設計為 optional，若 secret 尚未加入此
+key（例如 staging / prod 還沒設），`optional: true` 會讓該 env 單純不存在、pod 正常
+啟動並走「未設 → 跳過 devGuild 註冊」路徑；若不帶 `optional: true`，缺 key 會使
+Kubernetes **阻擋整個 pod 啟動**，把一個 scoped 的 optional 設定變成整個 discord-bot
+服務中斷（連 global 命令註冊都不會跑），與本設計的 fail-closed 意圖矛盾。
 
 ```yaml
 - name: DISCORD_DEV_GUILD_ID
@@ -200,6 +205,7 @@ optional；未設時 mod 命令不註冊（見上）。沿用專案「所有設�
     secretKeyRef:
       name: honeybee-secrets
       key: DISCORD_DEV_GUILD_ID
+      optional: true
 ```
 
 secret 實際值（`543454386873958411`）由叢集端 secret 管理，不寫入 repo。
