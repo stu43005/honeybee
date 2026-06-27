@@ -9,6 +9,7 @@ import {
 } from "@typegoose/typegoose";
 import { Base, TimeStamps } from "@typegoose/typegoose/lib/defaultClasses.js";
 import { Track } from "./Track.js";
+import { YoutubeDmBinding } from "./YoutubeDmBinding.js";
 
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type, @typescript-eslint/no-unsafe-declaration-merging -- Typegoose idiom: interface merges Base fields (_id) into the class instance type
 export interface Webhook extends Base {}
@@ -26,6 +27,13 @@ export interface Webhook extends Base {}
       track: { $type: "objectId" },
       feature: { $type: "string" },
     },
+  }
+)
+@index(
+  { youtubeDmBinding: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { youtubeDmBinding: { $type: "objectId" } },
   }
 )
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging -- see interface declaration above
@@ -114,6 +122,11 @@ export class Webhook extends TimeStamps {
 
   @prop()
   public feature?: string;
+
+  // youtube dm binding reference
+
+  @prop({ ref: "YoutubeDmBinding" })
+  public youtubeDmBinding?: Ref<YoutubeDmBinding>;
 
   //#region find methods
 
