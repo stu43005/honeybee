@@ -84,6 +84,12 @@ spec:
                 secretKeyRef:
                   name: honeybee-secrets
                   key: PUBLIC_BASE_URL
+            - name: DISCORD_DEV_GUILD_ID
+              valueFrom:
+                secretKeyRef:
+                  name: honeybee-secrets
+                  key: DISCORD_DEV_GUILD_ID
+                  optional: true
           resources: {}
           ports:
             - name: http-port
