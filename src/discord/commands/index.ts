@@ -3,12 +3,14 @@ import { CrawlCommand } from "./mod/crawl.js";
 import { SetChannelCommand } from "./mod/set-channel.js";
 import { SetVideoCommand } from "./mod/set-video.js";
 import { TrackCommand } from "./track/track.js";
+import { YoutubeDmCommand } from "./youtube-dm/youtube-dm.js";
 
 export const commands: AppCommand[] = [
   new CrawlCommand(),
   new SetChannelCommand(),
   new SetVideoCommand(),
   new TrackCommand(),
+  new YoutubeDmCommand(),
 ];
 
 commands.sort((a, b) => (a.metadata.name > b.metadata.name ? 1 : -1));
