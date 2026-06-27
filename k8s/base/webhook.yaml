@@ -39,6 +39,11 @@ spec:
                 secretKeyRef:
                   name: honeybee-mongodb
                   key: MONGO_URI
+            - name: DISCORD_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: discord-token
+                  key: DISCORD_TOKEN
           resources: {}
           ports:
             - name: http-port

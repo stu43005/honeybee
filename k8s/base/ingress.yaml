@@ -10,15 +10,22 @@ metadata:
 spec:
   ingressClassName: tailscale
   tls:
-  - hosts:
-    - honeybee
+    - hosts:
+        - honeybee
   rules:
-  - http:
-      paths:
-      - path: /notifications/
-        pathType: Prefix
-        backend:
-          service:
-            name: honeybee-crawler
-            port:
-              name: http-port
+    - http:
+        paths:
+          - path: /notifications/
+            pathType: Prefix
+            backend:
+              service:
+                name: honeybee-crawler
+                port:
+                  name: http-port
+          - path: /oauth/
+            pathType: Prefix
+            backend:
+              service:
+                name: honeybee-discord-bot
+                port:
+                  name: http-port
