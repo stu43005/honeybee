@@ -10,13 +10,14 @@
    目前完整綁定頻道清單」。這封 DM 同時兼作**私訊可達性測試**：若送不出去（使用者
    關閉私訊 / 封鎖 bot），在 callback 的 HTML 結果頁加註提示，讓使用者當下就知道
    將收不到事件通知。
-2. **OAuth 模組化**：把現有散落於 `src/discord/oauth/`（`state.ts` 的全域 client、
-   `callback.ts` 的 handler、`discord-bot.ts` 內的路由註冊閉包）的 OAuth 流程**整個
-   移到 `src/modules/oauth/` 目錄**，重寫成正規 `Module`，由 `Application` 管理其依賴
-   （Redis、HTTP server、discord `Client`）與生命週期。藉此消除：
+2. **OAuth 模組化（物件導向）**：把現有散落於 `src/discord/oauth/`（`state.ts` 的全域
+   client、`callback.ts` 的純函式 handler、`discord-bot.ts` 內的路由註冊與 provider
+   純函式）的 OAuth 流程**整個移到 `src/modules/oauth/` 目錄**，重寫成 `OAuthModule` +
+   `GoogleProvider` / `DiscordProvider` class，由 `Application` 管理其依賴（Redis、HTTP
+   server、discord `Client`）與生命週期。藉此消除：
    - `initOAuthStateStore` 把 Redis client 塞進模組層全域變數的反模式；
-   - 在 `discord-bot.ts` 以 `{ ...realDeps, sendBindingDm }` 閉包把 discord client
-     逐一注入 callback handler 的接線。
+   - callback handler 靠外部傳入 deps 物件取得 state store / provider / discord
+     client 的接線——改由 `OAuthModule` 以 `this` 自然取得。
 3. **指令可見性**：`/youtube-dm` 的 `bind` 維持臨時（ephemeral）回覆；`list` /
    `unbind` 的主回覆改為非 ephemeral（在 bot DM 中留存於對話歷史，便於日後翻閱）；
    install-hint 的 followUp 維持 ephemeral。並把保留 ephemeral 的呼叫從已 deprecated
@@ -79,11 +80,10 @@ boolean` 標記 `@deprecated`，建議改用 `flags: MessageFlags.Ephemeral`（�
   source `findOneAndUpdate({ new: true })` 成功後才呼叫 `transformYoutubeDmBinding`；
   transform 失敗才包成 `BindingTransformPendingError`。故 saved-pending 時 source
   **已寫入**，完整 `channelIds` 可由 `findOne({ discordUserId })` 讀到。
-- **OAuth provider 純函式**（現於 `src/discord/oauth/google.ts`、`discord.ts`）：
-  `buildGoogleAuthUrl` / `fetchGoogleChannels` 與 `buildDiscordAuthUrl` /
-  `exchangeDiscordCode` / `fetchDiscordUserId` / `fetchVerifiedYoutubeChannels`
-  皆為讀 `constants` 的純函式，不依賴 Redis / Client，已有測試。本設計**整檔移入
-  `src/modules/oauth/`、行為不改**，由 `OAuthModule` 匯入組合。
+- **OAuth provider 既有邏輯**（現於 `src/discord/oauth/google.ts`、`discord.ts`）：
+  authUrl 組裝、token 交換、channel 取得皆為讀 `constants` 的邏輯，不依賴 Redis /
+  Client。本設計把兩者**改寫成 `GoogleProvider` / `DiscordProvider` class**（行為
+  不改、只重組為物件導向），移入 `src/modules/oauth/`。
 - **module 目錄無 index.ts**（既有 `src/modules/webhook/` 慣例）：各檔以具名路徑
   直接 import（例：`../modules/webhook/partition.js`）。`src/modules/oauth/` 比照。
 
@@ -118,37 +118,50 @@ runDiscordBot()  ──組合──▶ Application
 
 ## 元件變更
 
-### A. 共用頻道清單渲染：`renderBoundChannelLines`
+### A. 共用頻道清單渲染：`Channel.renderBoundChannelLines` static
 
-新檔 `src/discord/commands/youtube-dm/render.ts`，匯出：
+在 `src/models/Channel.ts` 的 `Channel` model 新增 static（沿用既有 `findByChannelId`
+static 風格 `this: ReturnModelType<typeof Channel>`）：
 
 ```ts
-export async function renderBoundChannelLines(
+public static async renderBoundChannelLines(
+  this: ReturnModelType<typeof Channel>,
   channelIds: string[]
 ): Promise<string[]>;
 ```
 
-行為：對每個 id 以 `ChannelModel.findByChannelId(id)` 取 `name`，產出
+行為：對每個 id 以 `this.findByChannelId(id)` 取 `name`，產出
 `` `• ${channel?.name ?? "Unknown channel"} (${id})` ``，順序與輸入一致。
 
 兩處使用、消除重複（符合「重用 util、勿重造」慣例）：`/youtube-dm list` 與確認 DM
-內容組裝。此 helper 持有實際邏輯（Channel join + 缺檔 fallback + 格式化），非
-logic-free 包裝。
+內容組裝皆呼叫 `ChannelModel.renderBoundChannelLines(...)`。放在 Channel model 是因
+它本質是「以 channelId 渲染頻道顯示字串」，屬 Channel 的領域邏輯（Channel join + 缺檔
+fallback + 格式化），非 logic-free 包裝。
 
-### B. `src/modules/oauth/` 目錄與 `OAuthModule`
+### B. `src/modules/oauth/` 目錄與物件導向 `OAuthModule`
 
-目錄佈局（無 index.ts，具名 import）：
+OAuth 流程採物件導向：`OAuthModule` 持有 `OAuthStateStore`、兩個 provider 與
+discord `Client`，callback 編排與確認 DM 都是它的方法，**依賴一律以 `this` 取得、
+不傳 `deps` 物件**。目錄佈局（無 index.ts，具名 import）：
 
-- `oauth.ts` — `OAuthModule`（Module 類別）。
-- `state-store.ts` — `OAuthStateStore` 類別 + `randomState()` + 型別 `OAuthMethod` /
+- `oauth.ts` — `OAuthModule`（Module 類別；route handler、`applyBinding`、`beginAuth`、
+  `sendBindingDm` 皆為方法）。
+- `state-store.ts` — `OAuthStateStore` class + `randomState()` + 型別 `OAuthMethod` /
   `OAuthState`（折入舊 `state.ts`，**移除全域 `let client` 與 `initOAuthStateStore`**）。
-- `callback.ts` — callback 編排純函式（`handleGoogleCallback` / `handleDiscordCallback`
-  / `applyBinding`），移自 `src/discord/oauth/callback.ts`。
-- `google.ts` / `discord.ts` — provider 純函式，移自 `src/discord/oauth/`，行為不改。
-- 各檔對應 `*.spec.ts` 一併移入；`src/discord/oauth/` 目錄整個移除。
+- `provider.ts` — `OAuthChannel` 型別、`OAuthProvider` 介面、`IdentityMismatchError`。
+- `google.ts` — `GoogleProvider`（authUrl / getToken / `youtube.channels.list`）。
+- `discord.ts` — `DiscordProvider`（authUrl / token 交換 / 身分核對 / verified
+  connections）；`listChannels` 內身分不符丟 `IdentityMismatchError`。
+- 各檔對應 `*.spec.ts`；舊 `src/discord/oauth/callback.ts`（純函式編排）**折入
+  `OAuthModule` 後刪除**，`src/discord/oauth/` 整個移除。
 
-（`renderBoundChannelLines` 不屬 oauth，留在 `src/discord/commands/youtube-dm/render.ts`
-供 `/list` 與本模組的 `sendBindingDm` 共用。）
+（`renderBoundChannelLines` 已移到 Channel model（見 A），由 `/list` 與本模組的
+`sendBindingDm` 共用。）
+
+**`OAuthProvider` 介面**：`readonly method`、`readonly emptyMessage`（無可綁頻道時
+的使用者訊息）、`buildAuthUrl(state)`、`listChannels(code, state): Promise<OAuthChannel[]>`
+（Discord 在此核對授權者身分，不符丟 `IdentityMismatchError`）。`beginAuth` 與 callback
+route handler 依 `method` 選對應 provider。
 
 `OAuthModule implements Module`，`name = "oauth"`。比照 `src/modules/webhook/` 風格，
 **建構子收 `app` + `client`**（`client` 非 Module、由 inline discord-bot service 持有，
@@ -171,18 +184,26 @@ constructor(
   this.stateStore = new OAuthStateStore(redisModule.redis);
 
   // 路由必須早於 HttpServerModule.init() 的 listen()，故在建構子註冊；
-  // 此時 stateStore 已就緒。
+  // 此時 stateStore 已就緒。handler 委派到統一的 this.handleCallback(provider, …)。
   const server = this.app.http.server;
   server.get("/oauth/youtube-dm/google/callback", (req, reply) =>
-    this.handleGoogleCallback(req, reply)
+    this.handleCallback(this.google, req, reply)
   );
   server.get("/oauth/youtube-dm/discord/callback", (req, reply) =>
-    this.handleDiscordCallback(req, reply)
+    this.handleCallback(this.discord, req, reply)
   );
 }
 
+public readonly google = new GoogleProvider();
+public readonly discord = new DiscordProvider();
 private readonly stateStore: OAuthStateStore;
 ```
+
+`handleCallback(provider, req, reply)`（私有方法，兩條路由共用）：檢查 `code`/`state`
+存在 → 讀 state 並驗 `data.method === provider.method` → **刪 state（讀後即刪）** →
+`provider.listChannels(code, data)`（空清單 → `page(400, provider.emptyMessage)`）→
+`this.applyBinding(...)`。catch 內 `IdentityMismatchError` → `page(403, …)`，其餘 →
+`page(500, …)`。
 
 - **`OAuthStateStore`**（取代 `state.ts` 的全域 `let client` + `initOAuthStateStore`）：
   持有 `redis`，方法 `put(state, data)` / `get(state)` / `del(state)` 封裝 key
@@ -204,29 +225,29 @@ private readonly stateStore: OAuthStateStore;
 async beginAuth(method: OAuthMethod, discordUserId: string): Promise<string>;
 ```
 
-行為：`randomState()` → `this.stateStore.put(state, { discordUserId, method })` →
-`method === "google" ? buildGoogleAuthUrl(state) : buildDiscordAuthUrl(state)` → 回傳
-URL。
+行為：選 `provider = method === "google" ? this.google : this.discord` →
+`randomState()` → `this.stateStore.put(state, { discordUserId, method })` →
+`provider.buildAuthUrl(state)` → 回傳 URL。
 
 **生命週期**：依賴全部在建構子解析，故 `OAuthModule` **無 `init()`**；`close()` 為
 no-op（或省略）——路由隨 `HttpServerModule.close()` 一併關閉，state store 僅持有
 `redis` 參照（連線由 `RedisModule` 擁有），DM sender 隨 `client` 失效。它仍以 Module
 形態註冊，取得 `app.get("oauth")` 可發現性、與 LIFO 關閉次序中的正確位置。
 
-**callback 編排的可測試性**：`callback.ts` 的 `handleGoogleCallback` /
-`handleDiscordCallback` / `applyBinding` 維持為**可注入 collaborator 的純函式**，
-collaborator 包含 state store 的 `get`/`del`、provider 函式（`fetchGoogleChannels` /
-`exchangeDiscordCode` / `fetchDiscordUserId` / `fetchVerifiedYoutubeChannels`）、與
-`sendBindingDm`。`OAuthModule`（`oauth.ts`）的路由 handler 只負責把**已接線的真實
-collaborator** 傳入這些純函式。測試直接呼叫純函式並傳入 fake（沿用既有 `deps()`
-風格），不需建構整個 module；client 耦合不外洩到測試。
+**可測試性（OO，不靠 deps 注入）**：`OAuthModule` 以 fake `app`（`app.http.server` =
+spy fastify、`app.get("redis")` 回 fake RedisModule 含 fake redis）+ fake `client`
+建構；測試透過建構子捕獲的 route handler 驅動 callback，並 spy 公開的協作點——
+`mod.google.listChannels` / `mod.discord.listChannels`（回頻道或丟
+`IdentityMismatchError`）與 `mod.sendBindingDm`（回 true/false）——即可覆蓋整條
+callback 編排與 `applyBinding`，無需 deps 物件。provider class 自身另以 unit test
+驗證（spy `listOwnedChannels` / axios）。
 
 ### C. `sendBindingDm` + `applyBinding` 頁面分支
 
-`sendBindingDm(discordUserId, channelIds): Promise<boolean>`（`OAuthModule` 內，
-closure over `client`）：
+`sendBindingDm(discordUserId, channelIds): Promise<boolean>`（`OAuthModule` 方法，
+用 `this.client`）：
 
-1. `const lines = await renderBoundChannelLines(channelIds)`。
+1. `const lines = await ChannelModel.renderBoundChannelLines(channelIds)`。
 2. 組純文字內容：標頭 + 清單，例如
    `` `✅ 已完成 YouTube → Discord 私訊綁定。目前綁定的頻道：\n${lines.join("\n")}` ``。
 3. `const user = await client.users.fetch(discordUserId); await user.send({ content })`。
@@ -235,8 +256,8 @@ closure over `client`）：
    預期的可達性失敗；其餘錯誤額外 `console.warn` 後同樣回 `false`（確認 DM 不重試、
    不阻斷 callback 回頁）。
 
-`applyBinding`（純函式，collaborator 含 `sendBindingDm`）流程，沿用 base 設計、僅在其後
-接上讀回清單 + 送 DM：
+`applyBinding`（`OAuthModule` 私有方法，呼叫 `this.sendBindingDm`）流程，沿用 base
+設計、僅在其後接上讀回清單 + 送 DM：
 
 1. **seed Channel 文件**（沿用原版：對每個授權 channelId `findByChannelId ?? create`）。
 2. `try { await YoutubeDmBindingModel.bindChannels(...) }`：
@@ -247,8 +268,8 @@ closure over `client`）：
    - 無例外 → `pending = false`。
 3. 讀回完整清單：`const binding = await YoutubeDmBindingModel.findOne({ discordUserId });
 const channelIds = binding?.channelIds ?? [];`
-4. `const delivered = await sendBindingDm(discordUserId, channelIds);`（`sendBindingDm`
-   永不 throw）。
+4. `const delivered = await this.sendBindingDm(discordUserId, channelIds);`
+   （`sendBindingDm` 永不 throw）。
 5. 依 `(pending, delivered)` 寫頁（皆 HTTP 200，綁定本身已成立）：
 
    | pending | delivered | 頁面訊息                                                                                                        |
@@ -273,7 +294,7 @@ constructor(private oauth: { beginAuth(method: OAuthMethod, userId: string): Pro
   （不再 import 模組層 `putOAuthState` / `randomState` / `buildXAuthUrl`）。上限訊息
   與授權連結兩個 `reply` → `flags: MessageFlags.Ephemeral`。
 - **`list`**：空清單訊息與清單回覆 → **移除 ephemeral**；清單組裝改用
-  `renderBoundChannelLines`。
+  `ChannelModel.renderBoundChannelLines`。
 - **`unbind`**：all / 單一頻道兩個 `reply` → **移除 ephemeral**。
 - **install-hint followUp**（`execute()` 末端）→ `flags: MessageFlags.Ephemeral`。
 - **約束**：`execute()` 維持「先 `reply()` → 後 `followUp()`」，**不得改用
@@ -345,34 +366,38 @@ await app.init();
 
 ## 測試重點
 
-- **`renderBoundChannelLines`**：多 id 依序 join 出 `name`；缺 Channel 退回
+- **`Channel.renderBoundChannelLines`**：多 id 依序 join 出 `name`；缺 Channel 退回
   "Unknown channel"；輸出順序與輸入對應（`toEqual` 整陣列）。
 - **`OAuthStateStore`**：`put` 後 `get` 取回同物件（stateful fake redis）、`del` 後
   `get` 回 `null`；`put` 用 `PX: OAUTH_STATE_TTL_MS`（斷言 set 選項）。
+- **`GoogleProvider`**：`buildAuthUrl` 含 scope/state/access_type/redirect；
+  `listChannels`（spy `listOwnedChannels`）映射所有 channel、丟棄無 id 者。
+- **`DiscordProvider`**：`buildAuthUrl` 含 scope/state/redirect；`listChannels`（spy
+  axios）身分相符 → 只回 `verified === true` 的 youtube 連結；身分不符 → 丟
+  `IdentityMismatchError`。
+- **`OAuthModule` 建構**：以 fake `app`（`app.http.server` = spy fastify、
+  `app.get("redis")` 回 fake RedisModule）+ fake client 建構 → 斷言建構子建好
+  `stateStore` 並註冊兩條 `GET` 路由於正確路徑；`app.get("redis")` 回 `undefined` 時
+  建構子 throw（guard）。
 - **`beginAuth`**：寫入 state（斷言 `stateStore.put` 收到 `{ discordUserId, method }`）
   並回傳對應 provider 的授權 URL（含 `state`）。
-- **`applyBinding` × DM 結果矩陣**（fake `sendBindingDm`）：成功 / saved-pending ×
-  delivered true/false → 四種頁面字串與 status 200；`BindingLimitError` → 400 頁、
-  **`sendBindingDm` 零呼叫**；pre-write 例外 → 500 頁、零呼叫；DM 收到的 `channelIds`
-  = 綁定後**完整**清單（含先前已綁 + 本次新增）。
+- **callback 編排 × DM 結果矩陣**（透過捕獲的 route handler 驅動；seed state 於 fake
+  redis；spy `mod.<provider>.listChannels` 與 `mod.sendBindingDm`）：成功 /
+  saved-pending × delivered true/false → 四種頁面字串與 status 200；`BindingLimitError`
+  → 400 頁、**`sendBindingDm` 零呼叫**；pre-write 例外 → 500 頁、零呼叫；空清單 →
+  400 + `provider.emptyMessage`；缺 `code` → 400 且 `del` 未被呼叫；Discord
+  `IdentityMismatchError` → 403；DM 收到的 `channelIds` = 綁定後**完整**清單。
 - **Channel seed**：成功 / saved-pending → 對授權 channelId 呼叫 `findByChannelId ??
 create`（已存在則不重建）。（不為 orphan / 並行等極罕見邊界寫補強測試。）
 - **`sendBindingDm`**：正常 → `client.users.fetch` + `user.send` 被呼叫、內容含
-  `renderBoundChannelLines` 行、回 `true`；`user.send` 拋 `{ code: 50007 }` → 回
-  `false`、不 throw、不 `console.warn`；拋其他錯誤 → 回 `false`、不 throw、有
+  `Channel.renderBoundChannelLines` 行、回 `true`；`user.send` 拋 `{ code: 50007 }` →
+  回 `false`、不 throw、不 `console.warn`；拋其他錯誤 → 回 `false`、不 throw、有
   `console.warn`。
-- **callback 純函式注入**：`handleGoogleCallback` / `handleDiscordCallback` 把接線的
-  `sendBindingDm` 與 provider 函式傳入 `applyBinding`（spy 斷言透傳）；缺 `code` 的
-  prefetch 不碰 state；Discord 授權者 id 與 state 不符時拒絕。
-- **`OAuthModule` 建構**：以 fake `app`（`app.http.server` = spy fastify、
-  `app.get("redis")` 回 fake RedisModule）建構 → 斷言建構子建好 `stateStore` 並在 spy
-  fastify 註冊兩條 `GET` 路由於正確路徑（不需 listen）；`app.get("redis")` 回
-  `undefined` 時建構子 throw（guard）。
-- **`/youtube-dm` 回覆 flags**（mock interaction）：`bind` 兩個 reply 帶
-  `flags: MessageFlags.Ephemeral`；`list` 空清單與清單 reply、`unbind` 兩個 reply
-  **不帶** ephemeral flag；install-hint followUp 帶 `flags: MessageFlags.Ephemeral`；
-  `bind` 透過注入的 `beginAuth` 取得 URL（spy 斷言呼叫參數）；`list` 內容由
-  `renderBoundChannelLines` 產出。
+- **`/youtube-dm` 回覆 flags**（mock interaction，注入 stub `oauth.beginAuth`）：`bind`
+  兩個 reply 帶 `flags: MessageFlags.Ephemeral`；`list` 空清單與清單 reply、`unbind`
+  all/單一兩個 reply **不帶** ephemeral flag；install-hint followUp 帶
+  `flags: MessageFlags.Ephemeral`；`bind` 透過注入的 `beginAuth` 取得 URL（spy 斷言
+  呼叫參數）；`list` 內容由 `ChannelModel.renderBoundChannelLines` 產出。
 
 ## 計畫階段待確認（不臆測）
 
