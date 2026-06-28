@@ -77,15 +77,3 @@ export class DiscordProvider implements OAuthProvider {
     return this.fetchVerifiedChannels(token);
   }
 }
-
-// Temporary compatibility exports for callers still importing the old
-// function API; kept until every caller uses DiscordProvider directly.
-const _discord = new DiscordProvider();
-export const buildDiscordAuthUrl = (state: string) =>
-  _discord.buildAuthUrl(state);
-export const exchangeDiscordCode = (code: string) =>
-  _discord.exchangeCode(code);
-export const fetchDiscordUserId = (token: string) =>
-  _discord.fetchUserId(token);
-export const fetchVerifiedYoutubeChannels = (token: string) =>
-  _discord.fetchVerifiedChannels(token);

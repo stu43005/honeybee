@@ -34,18 +34,3 @@ export class OAuthStateStore {
     await this.redis.del(key(state));
   }
 }
-
-// Temporary compatibility shims for callers still importing the old module
-// function API; kept until every caller uses an OAuthStateStore instance.
-let _default: OAuthStateStore | null = null;
-export function initOAuthStateStore(redis: RedisClientType): void {
-  _default = new OAuthStateStore(redis);
-}
-function def(): OAuthStateStore {
-  if (!_default) throw new Error("OAuth state store not initialized");
-  return _default;
-}
-export const putOAuthState = (state: string, data: OAuthState) =>
-  def().put(state, data);
-export const getOAuthState = (state: string) => def().get(state);
-export const delOAuthState = (state: string) => def().del(state);

@@ -68,11 +68,3 @@ export class GoogleProvider implements OAuthProvider {
       }));
   }
 }
-
-// Temporary compatibility exports for callers still importing the old
-// function API; kept until every caller uses GoogleProvider directly.
-const _google = new GoogleProvider();
-export const buildGoogleAuthUrl = (state: string) =>
-  _google.buildAuthUrl(state);
-export const fetchGoogleChannels = (code: string) =>
-  _google.listChannels(code, { discordUserId: "", method: "google" });

@@ -1,13 +1,6 @@
 /// <reference types="jest" />
 import { afterEach, describe, expect, it, jest } from "@jest/globals";
-import {
-  OAuthStateStore,
-  delOAuthState,
-  getOAuthState,
-  initOAuthStateStore,
-  putOAuthState,
-  randomState,
-} from "./state-store.js";
+import { OAuthStateStore, randomState } from "./state-store.js";
 
 function fakeRedis() {
   const store = new Map<string, string>();
@@ -55,17 +48,5 @@ describe("OAuthStateStore", () => {
 
   it("randomState returns a long hex string", () => {
     expect(randomState()).toMatch(/^[0-9a-f]{32,}$/);
-  });
-
-  it("legacy module functions delegate to the initialised default instance", async () => {
-    const redis = fakeRedis();
-    initOAuthStateStore(redis as any);
-    await putOAuthState("st3", { discordUserId: "d9", method: "google" });
-    expect(await getOAuthState("st3")).toEqual({
-      discordUserId: "d9",
-      method: "google",
-    });
-    await delOAuthState("st3");
-    expect(await getOAuthState("st3")).toBeNull();
   });
 });
