@@ -60,6 +60,9 @@ git mv src/discord/oauth/google.ts        src/modules/oauth/google.ts
 git mv src/discord/oauth/google.spec.ts   src/modules/oauth/google.spec.ts
 git mv src/discord/oauth/discord.ts       src/modules/oauth/discord.ts
 git mv src/discord/oauth/discord.spec.ts  src/modules/oauth/discord.spec.ts
+# git doesn't track empty dirs, but git mv leaves the now-empty source dir on
+# disk; remove it so the final-state directory check passes.
+rmdir src/discord/oauth
 ```
 
 - [ ] **Step 2: 修 `discord-bot.ts` 的兩條匯入路徑**
