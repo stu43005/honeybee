@@ -10,17 +10,17 @@ import {
   Routes,
   type Interaction,
 } from "discord.js";
-import { commands } from "../discord/commands/index.js";
 import type { AppCommand } from "../discord/commands/command.js";
+import { CrawlCommand } from "../discord/commands/mod/crawl.js";
+import { SetChannelCommand } from "../discord/commands/mod/set-channel.js";
+import { SetVideoCommand } from "../discord/commands/mod/set-video.js";
+import { TrackCommand } from "../discord/commands/track/track.js";
+import { YoutubeDmCommand } from "../discord/commands/youtube-dm/youtube-dm.js";
 import {
   isDevGuildCommandAllowed,
   partitionCommandsByScope,
 } from "../discord/commands/registration.js";
-import {
-  handleDiscordCallback,
-  handleGoogleCallback,
-} from "../modules/oauth/callback.js";
-import { initOAuthStateStore } from "../modules/oauth/state-store.js";
+import { OAuthModule } from "../modules/oauth/oauth.js";
 import { DISCORD_DEV_GUILD_ID } from "../constants.js";
 import { Application } from "../modules/application.js";
 import { MongodbModule } from "../modules/db.js";
@@ -84,16 +84,22 @@ export async function runDiscordBot() {
 
   const app = new Application();
   app.use(new MongodbModule());
-  const redisModule = app.use(new RedisModule());
-  initOAuthStateStore(redisModule.redis);
-
-  const { server: fastify } = app.http;
-  fastify.get("/oauth/youtube-dm/google/callback", handleGoogleCallback);
-  fastify.get("/oauth/youtube-dm/discord/callback", handleDiscordCallback);
+  app.use(new RedisModule());
 
   const client = new Client({
     intents: [GatewayIntentBits.Guilds],
   });
+  const oauth = app.use(new OAuthModule(app, client));
+
+  const commands: AppCommand[] = [
+    new CrawlCommand(),
+    new SetChannelCommand(),
+    new SetVideoCommand(),
+    new TrackCommand(),
+    new YoutubeDmCommand(oauth),
+  ];
+  commands.sort((a, b) => (a.metadata.name > b.metadata.name ? 1 : -1));
+
   app.use({
     name: "discord-bot",
     async init() {

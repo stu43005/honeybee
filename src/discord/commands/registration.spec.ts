@@ -5,16 +5,29 @@ import {
   InteractionContextType,
   PermissionsBitField,
 } from "discord.js";
-import { commands } from "./index.js";
+import type { AppCommand } from "./command.js";
+import { CrawlCommand } from "./mod/crawl.js";
+import { SetChannelCommand } from "./mod/set-channel.js";
+import { SetVideoCommand } from "./mod/set-video.js";
+import { TrackCommand } from "./track/track.js";
+import { YoutubeDmCommand } from "./youtube-dm/youtube-dm.js";
 import {
   isDevGuildCommandAllowed,
   partitionCommandsByScope,
 } from "./registration.js";
 
+const commands: AppCommand[] = [
+  new CrawlCommand(),
+  new SetChannelCommand(),
+  new SetVideoCommand(),
+  new TrackCommand(),
+  new YoutubeDmCommand({ beginAuth: async () => "" }),
+].sort((a, b) => (a.metadata.name > b.metadata.name ? 1 : -1));
+
 describe("partitionCommandsByScope", () => {
   it("splits mod commands into devGuild and the rest into global, preserving input order", () => {
     const { global, devGuild } = partitionCommandsByScope(commands);
-    // `commands` is sorted by name in index.ts; partition preserves that order.
+    // the fixture above is sorted by name; partition preserves that order.
     // Assert exact ordered arrays (no sort) to verify both membership AND order.
     expect(devGuild.map((c) => c.metadata.name)).toEqual([
       "crawl",
