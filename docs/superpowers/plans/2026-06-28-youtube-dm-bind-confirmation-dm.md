@@ -46,7 +46,7 @@
 **Files:**
 
 - Move: `src/discord/oauth/{state,callback,google,discord}.ts` 及對應 `*.spec.ts` → `src/modules/oauth/`
-- Modify: `src/commands/discord-bot.ts`、`src/discord/commands/youtube-dm/youtube-dm.ts`（匯入路徑）
+- Modify: `src/commands/discord-bot.ts`、`src/discord/commands/youtube-dm/youtube-dm.ts`、`src/discord/commands/youtube-dm/youtube-dm.spec.ts`（匯入路徑）
 
 - [ ] **Step 1: 用 git mv 搬移 8 個檔案**
 
@@ -64,15 +64,57 @@ git mv src/discord/oauth/discord.spec.ts  src/modules/oauth/discord.spec.ts
 
 - [ ] **Step 2: 修 `discord-bot.ts` 的兩條匯入路徑**
 
-`src/commands/discord-bot.ts` 把 `../discord/oauth/callback.js` 與 `../discord/oauth/state.js` 改為 `../modules/oauth/callback.js` 與 `../modules/oauth/state.js`。
+`src/commands/discord-bot.ts`：
+
+```ts
+// before
+import {
+  handleDiscordCallback,
+  handleGoogleCallback,
+} from "../discord/oauth/callback.js";
+import { initOAuthStateStore } from "../discord/oauth/state.js";
+// after
+import {
+  handleDiscordCallback,
+  handleGoogleCallback,
+} from "../modules/oauth/callback.js";
+import { initOAuthStateStore } from "../modules/oauth/state.js";
+```
 
 - [ ] **Step 3: 修 `youtube-dm.ts` 的三條匯入路徑**
 
-`src/discord/commands/youtube-dm/youtube-dm.ts` 把 `../../oauth/discord.js`、`../../oauth/google.js`、`../../oauth/state.js` 三條改為 `../../../modules/oauth/discord.js`、`../../../modules/oauth/google.js`、`../../../modules/oauth/state.js`。
+`src/discord/commands/youtube-dm/youtube-dm.ts`：
+
+```ts
+// before
+import { buildDiscordAuthUrl } from "../../oauth/discord.js";
+import { buildGoogleAuthUrl } from "../../oauth/google.js";
+import {
+  putOAuthState,
+  randomState,
+  type OAuthMethod,
+} from "../../oauth/state.js";
+// after
+import { buildDiscordAuthUrl } from "../../../modules/oauth/discord.js";
+import { buildGoogleAuthUrl } from "../../../modules/oauth/google.js";
+import {
+  putOAuthState,
+  randomState,
+  type OAuthMethod,
+} from "../../../modules/oauth/state.js";
+```
 
 - [ ] **Step 4: 修 `youtube-dm.spec.ts` 的匯入路徑**
 
-`src/discord/commands/youtube-dm/youtube-dm.spec.ts` 目前 `import { initOAuthStateStore } from "../../oauth/state.js";`，搬移後該路徑失效。改為 `from "../../../modules/oauth/state.js"`。（此 spec 於 Task 7 整檔覆寫；此處只修路徑以維持綠燈。）
+`src/discord/commands/youtube-dm/youtube-dm.spec.ts`（此 spec 於 Task 7 整檔覆寫；此處
+只修路徑以維持綠燈）：
+
+```ts
+// before
+import { initOAuthStateStore } from "../../oauth/state.js";
+// after
+import { initOAuthStateStore } from "../../../modules/oauth/state.js";
+```
 
 - [ ] **Step 5: 型別檢查 + 全測試（純搬移，行為不變）**
 
@@ -239,12 +281,25 @@ export const getOAuthState = (state: string) => def().get(state);
 export const delOAuthState = (state: string) => def().del(state);
 ```
 
-- [ ] **Step 5: 修匯入檔名 `state.js` → `state-store.js`（4 處）**
+- [ ] **Step 5: 修匯入檔名 `state.js` → `state-store.js`（4 處，僅改檔名段）**
 
-- `src/modules/oauth/callback.ts`：`from "./state.js"` → `from "./state-store.js"`
-- `src/commands/discord-bot.ts`：`from "../modules/oauth/state.js"` → `from "../modules/oauth/state-store.js"`
-- `src/discord/commands/youtube-dm/youtube-dm.ts`：`from "../../../modules/oauth/state.js"` → `from "../../../modules/oauth/state-store.js"`
-- `src/discord/commands/youtube-dm/youtube-dm.spec.ts`：`from "../../../modules/oauth/state.js"` → `from "../../../modules/oauth/state-store.js"`
+```ts
+// src/modules/oauth/callback.ts
+- } from "./state.js";
++ } from "./state-store.js";
+
+// src/commands/discord-bot.ts
+- import { initOAuthStateStore } from "../modules/oauth/state.js";
++ import { initOAuthStateStore } from "../modules/oauth/state-store.js";
+
+// src/discord/commands/youtube-dm/youtube-dm.ts
+- } from "../../../modules/oauth/state.js";
++ } from "../../../modules/oauth/state-store.js";
+
+// src/discord/commands/youtube-dm/youtube-dm.spec.ts
+- import { initOAuthStateStore } from "../../../modules/oauth/state.js";
++ import { initOAuthStateStore } from "../../../modules/oauth/state-store.js";
+```
 
 - [ ] **Step 6: Run tests + build**
 
@@ -343,7 +398,7 @@ git commit -m "feat(channel): add renderBoundChannelLines static for display lin
 
 ## Task 4: `provider.ts` 介面 + `GoogleProvider` class
 
-把 `google.ts` 改成 `GoogleProvider`；新增 `provider.ts`（`OAuthChannel` / `OAuthProvider` / `IdentityMismatchError`）。暫留 `buildGoogleAuthUrl` / `fetchGoogleChannels` 薄相容函式（委派預設實例），讓 `callback.ts` / `youtube-dm.ts` 維持可編譯，Task 9 移除。
+把 `google.ts` 改成 `GoogleProvider`；新增 `provider.ts`（`OAuthChannel` / `OAuthProvider` / `IdentityMismatchError`）。暫留 `buildGoogleAuthUrl` / `fetchGoogleChannels` 薄相容函式（委派預設實例），讓 `callback.ts` / `youtube-dm.ts` 維持可編譯，Task 8（cleanup）移除。
 
 **Files:**
 
@@ -524,7 +579,7 @@ git commit -m "refactor(oauth): convert google helper into GoogleProvider class"
 
 ## Task 5: `DiscordProvider` class
 
-把 `discord.ts` 改成 `DiscordProvider`，`listChannels` 內做身分核對（不符丟 `IdentityMismatchError`）。暫留 `buildDiscordAuthUrl` / `exchangeDiscordCode` / `fetchDiscordUserId` / `fetchVerifiedYoutubeChannels` 相容函式，Task 9 移除。
+把 `discord.ts` 改成 `DiscordProvider`，`listChannels` 內做身分核對（不符丟 `IdentityMismatchError`）。暫留 `buildDiscordAuthUrl` / `exchangeDiscordCode` / `fetchDiscordUserId` / `fetchVerifiedYoutubeChannels` 相容函式，Task 8（cleanup）移除。
 
 **Files:**
 
@@ -1273,12 +1328,16 @@ git commit -m "feat(oauth): add Application-managed OAuthModule (OO callback + D
 
 ---
 
-## Task 7: `YoutubeDmCommand` 改建構子注入 + ephemeral→flags
+## Task 7: `YoutubeDmCommand` 建構子注入 + `discord-bot` 接線 + 移除 index.ts
+
+合併「指令建構子簽名變更」與「組裝端接線 + 刪除 index.ts」於同一 commit，避免出現
+「constructor 已變但 index.ts 仍 `new YoutubeDmCommand()`／用空 stub」的破壞性中間狀態。
 
 **Files:**
 
-- Modify: `src/discord/commands/youtube-dm/youtube-dm.ts`
-- Test: `src/discord/commands/youtube-dm/youtube-dm.spec.ts`
+- Modify: `src/discord/commands/youtube-dm/youtube-dm.ts`、`src/discord/commands/youtube-dm/youtube-dm.spec.ts`
+- Modify: `src/commands/discord-bot.ts`、`src/discord/commands/registration.spec.ts`
+- Delete: `src/discord/commands/index.ts`
 
 - [ ] **Step 1: 覆寫 `youtube-dm.spec.ts`**
 
@@ -1492,41 +1551,10 @@ import { buildUserInstallHint } from "./install-hint.js";
 
 （`autocomplete` 不變。）
 
-- [ ] **Step 4: 修 `index.ts` 的建構呼叫（暫時 stub，保持可編譯）**
+- [ ] **Step 4: `registration.spec.ts` 改用本地 fixture**
 
-`YoutubeDmCommand` 現在需要建構子參數，但 `src/discord/commands/index.ts` 仍以
-`new YoutubeDmCommand()` 建構，會編譯失敗。把該行改為注入一個暫時 stub（此 `index.ts`
-於 Task 8 整檔刪除，stub 隨之消失）：
-
-```ts
-  new YoutubeDmCommand({ beginAuth: async () => "" }),
-```
-
-- [ ] **Step 5: Run tests + build to verify they pass**
-
-Run: `npm run build && npm run test -- src/discord/commands/youtube-dm/youtube-dm.spec.ts`
-Expected: build 無錯；PASS。
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add src/discord/commands/youtube-dm/youtube-dm.ts src/discord/commands/youtube-dm/youtube-dm.spec.ts src/discord/commands/index.ts
-git commit -m "feat(youtube-dm): inject oauth.beginAuth; non-ephemeral list/unbind via flags"
-```
-
----
-
-## Task 8: `discord-bot.ts` 接線 OAuthModule + 命令陣列內聯 + 移除 index.ts
-
-**Files:**
-
-- Modify: `src/commands/discord-bot.ts`
-- Delete: `src/discord/commands/index.ts`
-- Modify: `src/discord/commands/registration.spec.ts`
-
-- [ ] **Step 1: `registration.spec.ts` 改用本地 fixture**
-
-把開頭 `import { commands } from "./index.js";` 改為自建已排序 fixture：
+`index.ts` 即將刪除，把 `registration.spec.ts` 開頭 `import { commands } from
+"./index.js";` 改為自建已排序 fixture（測試用 stub `beginAuth`；測試不跑真實 bind）：
 
 ```ts
 import type { AppCommand } from "./command.js";
@@ -1545,15 +1573,17 @@ const commands: AppCommand[] = [
 ].sort((a, b) => (a.metadata.name > b.metadata.name ? 1 : -1));
 ```
 
-（其餘斷言不變。）
+並更新該檔內既有那句「`commands` is sorted by name in index.ts; partition preserves
+that order.」的註解——`index.ts` 已不存在，排序改由此 fixture 在本檔處理（例如改為
+「the fixture above is sorted by name; partition preserves that order.」）。其餘斷言不變。
 
-- [ ] **Step 2: 刪除 `index.ts`**
+- [ ] **Step 5: 刪除 `index.ts`**
 
 ```bash
 git rm src/discord/commands/index.ts
 ```
 
-- [ ] **Step 3: 改 `discord-bot.ts`**
+- [ ] **Step 6: 改 `discord-bot.ts`**
 
 1. 移除這幾行 import：
 
@@ -1639,23 +1669,23 @@ app.use({
 
 （`AppCommand` 型別已在 `discord-bot.ts` 既有 import；`InteractionCreate` 內 `commands.find(...)` 現引用此區域 `commands`。）
 
-- [ ] **Step 4: 型別檢查 + registration 測試**
+- [ ] **Step 7: 型別檢查 + 相關測試**
 
-Run: `npm run build && npm run test -- src/discord/commands/registration.spec.ts`
+Run: `npm run build && npm run test -- src/discord/commands/youtube-dm/youtube-dm.spec.ts src/discord/commands/registration.spec.ts`
 Expected: build 無錯；PASS。
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 8: Commit**
 
-`index.ts` 的刪除已於 Step 2 以 `git rm` 暫存，這裡只加其餘變更後一起 commit：
+`index.ts` 的刪除已於 Step 5 以 `git rm` 暫存，這裡把其餘變更一起 commit：
 
 ```bash
-git add src/commands/discord-bot.ts src/discord/commands/registration.spec.ts
-git commit -m "refactor(discord-bot): wire OAuthModule; inline command list with injected oauth"
+git add src/discord/commands/youtube-dm/youtube-dm.ts src/discord/commands/youtube-dm/youtube-dm.spec.ts src/commands/discord-bot.ts src/discord/commands/registration.spec.ts
+git commit -m "feat(youtube-dm): inject oauth.beginAuth; non-ephemeral list/unbind; wire OAuthModule"
 ```
 
 ---
 
-## Task 9: 刪除舊 `callback.ts` + 移除相容包裝 + 全量驗證
+## Task 8: 刪除舊 `callback.ts` + 移除相容包裝 + 全量驗證
 
 `OAuthModule` 已接管 callback 與 state；舊 `callback.ts`、provider 相容函式、state-store 相容包裝都不再被引用，移除以收斂回 OO 設計（無全域、無純函式編排）。
 
@@ -1678,12 +1708,27 @@ git rm src/modules/oauth/callback.ts src/modules/oauth/callback.spec.ts
 
 - [ ] **Step 3: 移除 provider 相容函式**
 
-- `src/modules/oauth/google.ts`：刪掉檔尾「TEMP back-compat」整段（`_google` 與 `buildGoogleAuthUrl` / `fetchGoogleChannels`）。
-- `src/modules/oauth/discord.ts`：刪掉檔尾「TEMP back-compat」整段（`_discord` 與四個 export）。
+刪掉兩個 provider 檔尾那段「Temporary compatibility exports …」（含其下方的
+`const _google` / `const _discord` 與所有 `export const buildGoogleAuthUrl` /
+`fetchGoogleChannels` / `buildDiscordAuthUrl` / `exchangeDiscordCode` /
+`fetchDiscordUserId` / `fetchVerifiedYoutubeChannels`）。刪除後：
+
+- `src/modules/oauth/google.ts` 的最後一個宣告是 `export class GoogleProvider { … }`。
+- `src/modules/oauth/discord.ts` 的最後一個宣告是 `export class DiscordProvider { … }`。
 
 - [ ] **Step 4: 移除 state-store 相容包裝**
 
-刪掉 `src/modules/oauth/state-store.ts` 檔尾「TEMP back-compat shims」整段（`_default` / `initOAuthStateStore` / `def` / `putOAuthState` / `getOAuthState` / `delOAuthState`），只保留 `randomState`、型別與 `OAuthStateStore`。並刪除 `state-store.spec.ts` 的 `"legacy module functions delegate…"` 案例與其對相容函式的 import（只留 `OAuthStateStore` 與 `randomState`）。
+刪掉 `src/modules/oauth/state-store.ts` 檔尾那段「Temporary compatibility shims …」
+（`let _default` / `initOAuthStateStore` / `def` / `putOAuthState` / `getOAuthState` /
+`delOAuthState`）。刪除後檔案只剩 `randomState`、型別與 `OAuthStateStore`，最後一個
+宣告是 `export class OAuthStateStore { … }`。
+
+並把 `state-store.spec.ts` 還原為只測 class 的版本：刪掉 `"legacy module functions
+delegate…"` 案例，import 改為僅：
+
+```ts
+import { OAuthStateStore, randomState } from "./state-store.js";
+```
 
 - [ ] **Step 5: 全量型別檢查 + 全測試 + lint**
 
