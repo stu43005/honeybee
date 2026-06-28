@@ -1698,9 +1698,12 @@ git commit -m "feat(youtube-dm): inject oauth.beginAuth; non-ephemeral list/unbi
 - Modify: `src/modules/oauth/google.ts`、`src/modules/oauth/discord.ts`、`src/modules/oauth/state-store.ts`（移除相容區段）
 - Modify: `src/modules/oauth/state-store.spec.ts`（移除相容案例）
 
-- [ ] **Step 1: 確認沒有生產碼還引用待移除符號**
+- [ ] **Step 1: 確認沒有「待移除以外」的生產碼還引用這些符號**
 
-Run: `grep -rn "from \"./callback\|/oauth/callback\|initOAuthStateStore\|putOAuthState\|getOAuthState\|delOAuthState\|buildGoogleAuthUrl\|fetchGoogleChannels\|buildDiscordAuthUrl\|exchangeDiscordCode\|fetchDiscordUserId\|fetchVerifiedYoutubeChannels" src --include=*.ts | grep -v ".spec.ts" | grep -vE "src/modules/oauth/(google|discord|state-store)\.ts"`
+排除即將刪除的 `callback.ts`（其 realDeps 仍引用這些符號，於 Step 2 刪除）與相容區段
+所在的 `google|discord|state-store.ts`，以及 spec：
+
+Run: `grep -rn "from \"./callback\|/oauth/callback\|initOAuthStateStore\|putOAuthState\|getOAuthState\|delOAuthState\|buildGoogleAuthUrl\|fetchGoogleChannels\|buildDiscordAuthUrl\|exchangeDiscordCode\|fetchDiscordUserId\|fetchVerifiedYoutubeChannels" src --include=*.ts | grep -v ".spec.ts" | grep -vE "src/modules/oauth/(callback|google|discord|state-store)\.ts"`
 Expected: 無輸出。若有，回到對應 Task 修正後再續。
 
 - [ ] **Step 2: 刪除舊 callback 檔**
