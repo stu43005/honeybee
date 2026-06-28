@@ -1,56 +1,60 @@
 /// <reference types="jest" />
 import { afterEach, describe, expect, it, jest } from "@jest/globals";
 import axios from "axios";
-import {
-  buildDiscordAuthUrl,
-  exchangeDiscordCode,
-  fetchDiscordUserId,
-  fetchVerifiedYoutubeChannels,
-} from "./discord.js";
+import { DiscordProvider } from "./discord.js";
+import { IdentityMismatchError } from "./provider.js";
 
-describe("discord oauth helper", () => {
+describe("DiscordProvider", () => {
   afterEach(() => jest.restoreAllMocks());
 
-  it("buildDiscordAuthUrl includes scope, state and redirect", () => {
-    const url = buildDiscordAuthUrl("st1");
-    const u = new URL(url);
+  it("buildAuthUrl includes scope, state and redirect", () => {
+    const u = new URL(new DiscordProvider().buildAuthUrl("st1"));
     expect(u.hostname).toBe("discord.com");
     expect(u.searchParams.get("state")).toBe("st1");
-    // URLSearchParams decodes "+" back to a space here.
     expect(u.searchParams.get("scope")).toBe("identify connections");
     expect(u.searchParams.get("redirect_uri")).toContain(
       "/oauth/youtube-dm/discord/callback"
     );
   });
 
-  it("exchangeDiscordCode posts the form and returns the access token", async () => {
-    const post = jest
+  it("listChannels returns verified youtube connections when identity matches", async () => {
+    const provider = new DiscordProvider();
+    jest
       .spyOn(axios, "post")
       .mockResolvedValue({ data: { access_token: "tok-1" } } as any);
-
-    const token = await exchangeDiscordCode("code-1");
-    expect(token).toBe("tok-1");
-    expect((post.mock.calls[0] as any)[0]).toContain("/oauth2/token");
-  });
-
-  it("fetchDiscordUserId returns the /users/@me id", async () => {
     jest
       .spyOn(axios, "get")
-      .mockResolvedValue({ data: { id: "discord-1" } } as any);
-    expect(await fetchDiscordUserId("tok-1")).toBe("discord-1");
+      .mockResolvedValueOnce({ data: { id: "d1" } } as any)
+      .mockResolvedValueOnce({
+        data: [
+          { type: "youtube", id: "UCa", name: "Chan A", verified: true },
+          { type: "youtube", id: "UCb", name: "Chan B", verified: false },
+          { type: "twitch", id: "tw1", name: "T", verified: true },
+        ],
+      } as any);
+
+    expect(
+      await provider.listChannels("code-1", {
+        discordUserId: "d1",
+        method: "discord",
+      })
+    ).toEqual([{ channelId: "UCa", title: "Chan A" }]);
   });
 
-  it("fetchVerifiedYoutubeChannels keeps only verified youtube connections", async () => {
-    jest.spyOn(axios, "get").mockResolvedValue({
-      data: [
-        { type: "youtube", id: "UCa", name: "Chan A", verified: true },
-        { type: "youtube", id: "UCb", name: "Chan B", verified: false },
-        { type: "twitch", id: "tw1", name: "T", verified: true },
-      ],
-    } as any);
+  it("listChannels throws IdentityMismatchError when authorizer != state user", async () => {
+    const provider = new DiscordProvider();
+    jest
+      .spyOn(axios, "post")
+      .mockResolvedValue({ data: { access_token: "tok-1" } } as any);
+    jest
+      .spyOn(axios, "get")
+      .mockResolvedValue({ data: { id: "OTHER" } } as any);
 
-    expect(await fetchVerifiedYoutubeChannels("tok-1")).toEqual([
-      { channelId: "UCa", title: "Chan A" },
-    ]);
+    await expect(
+      provider.listChannels("code-1", {
+        discordUserId: "d1",
+        method: "discord",
+      })
+    ).rejects.toBeInstanceOf(IdentityMismatchError);
   });
 });
