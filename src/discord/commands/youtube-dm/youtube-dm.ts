@@ -14,7 +14,7 @@ import {
   putOAuthState,
   randomState,
   type OAuthMethod,
-} from "../../../modules/oauth/state.js";
+} from "../../../modules/oauth/state-store.js";
 import type { Command } from "../command.js";
 import { buildUserInstallHint } from "./install-hint.js";
 

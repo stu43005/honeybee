@@ -20,7 +20,7 @@ import {
   handleDiscordCallback,
   handleGoogleCallback,
 } from "../modules/oauth/callback.js";
-import { initOAuthStateStore } from "../modules/oauth/state.js";
+import { initOAuthStateStore } from "../modules/oauth/state-store.js";
 import { DISCORD_DEV_GUILD_ID } from "../constants.js";
 import { Application } from "../modules/application.js";
 import { MongodbModule } from "../modules/db.js";

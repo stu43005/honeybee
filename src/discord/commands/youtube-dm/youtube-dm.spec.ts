@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, jest } from "@jest/globals";
 import { ApplicationIntegrationType } from "discord.js";
 import ChannelModel from "../../../models/Channel.js";
 import YoutubeDmBindingModel from "../../../models/YoutubeDmBinding.js";
-import { initOAuthStateStore } from "../../../modules/oauth/state.js";
+import { initOAuthStateStore } from "../../../modules/oauth/state-store.js";
 import { YoutubeDmCommand } from "./youtube-dm.js";
 
 function fakeRedis() {

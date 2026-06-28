@@ -15,7 +15,7 @@ import {
   getOAuthState,
   type OAuthMethod,
   type OAuthState,
-} from "./state.js";
+} from "./state-store.js";
 
 type Channel = { channelId: string; title: string };
 type Query = { code?: string; state?: string };
