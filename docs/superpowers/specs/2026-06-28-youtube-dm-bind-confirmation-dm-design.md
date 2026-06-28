@@ -235,23 +235,20 @@ closure over `client`）：
    預期的可達性失敗；其餘錯誤額外 `console.warn` 後同樣回 `false`（確認 DM 不重試、
    不阻斷 callback 回頁）。
 
-`applyBinding`（純函式，collaborator 含 `sendBindingDm`）流程。**不變量：只有實際綁定
-成功 / saved-pending 才寫入 Channel seed**——seeding 移到 bind 決定「之後」，避免被拒
-（上限）或失敗（pre-write 例外）時留下 orphan Channel 記錄：
+`applyBinding`（純函式，collaborator 含 `sendBindingDm`）流程，沿用 base 設計、僅在其後
+接上讀回清單 + 送 DM：
 
-1. `try { await YoutubeDmBindingModel.bindChannels(...) }`（**不先 seed**）：
+1. **seed Channel 文件**（沿用原版：對每個授權 channelId `findByChannelId ?? create`）。
+2. `try { await YoutubeDmBindingModel.bindChannels(...) }`：
    - `BindingLimitError` → `page(400, "超過上限、未綁定。請先解除部分頻道後再試。")`，
-     **return**（不 seed、不送 DM）。
+     **return**（不送 DM）。
    - `BindingTransformPendingError` → 標記 `pending = true`（source 已寫入，續行）。
-   - 其他（pre-write 例外）→ `page(500, "綁定處理失敗，請重新發起。")`，**return**
-     （不 seed、不送 DM）。
+   - 其他（pre-write 例外）→ `page(500, "綁定處理失敗，請重新發起。")`，**return**。
    - 無例外 → `pending = false`。
-2. （成功 / pending）**seed 本次授權的 Channel 文件**：對每個 channelId
-   `findByChannelId ?? create`（冪等：已存在則不重建；OAuth state 單次使用，重複
-   callback 會在 state 解析階段被擋下，不會重複 seed）。
 3. 讀回完整清單：`const binding = await YoutubeDmBindingModel.findOne({ discordUserId });
 const channelIds = binding?.channelIds ?? [];`
-4. `const delivered = await sendBindingDm(discordUserId, channelIds);`
+4. `const delivered = await sendBindingDm(discordUserId, channelIds);`（`sendBindingDm`
+   永不 throw）。
 5. 依 `(pending, delivered)` 寫頁（皆 HTTP 200，綁定本身已成立）：
 
    | pending | delivered | 頁面訊息                                                                                                        |
@@ -335,13 +332,16 @@ await app.init();
   失敗而回 500。
 - **list/unbind 非 ephemeral 的可見性**：僅在使用者自己的 bot DM 顯示，非公開；屬
   已接受的 UX 取捨。
-- **路由時序 / 無啟動競態**：`OAuthModule` 建構子**先**解析 redis、建 `stateStore`，
-  **再**註冊路由，且全在 `app.init()`（含 HttpServer `listen()`）之前完成。故 socket
-  開始 listen 時 `stateStore` 已是 final 欄位，callback handler 不可能讀到 undefined；
-  與既有 `/healthz` 註冊時機一致，避免 fastify「listen 後加路由」失敗。
-- **Channel seed 不變量**：seeding 在 bind 決定之後，僅成功 / saved-pending 才寫入；
-  上限被拒 / pre-write 例外不留 orphan Channel 記錄。`findByChannelId ?? create` 冪等，
-  OAuth state 單次使用擋下重複 callback，故無重複 seed。
+- **路由註冊時序**：`OAuthModule` 在建構子註冊路由（早於 `HttpServerModule.init()` 的
+  `listen()`），並在建構子先解析 redis、建好 `stateStore`，與既有 `/healthz` 註冊
+  時機一致——這是把 stateStore 建在建構子的自然位置，非額外補強。
+- **OAuth state / callback 的極罕見邊界，刻意不補強（已接受的取捨）**：state 沿用原版
+  「讀後即刪」單次使用；任何失敗（token 交換 / fetch / pre-write 例外 / 啟動瞬間
+  連線未就緒 / 並行踩同一新 Channel / post-commit 罕見失敗）一律走「`page(500)`、
+  使用者重跑 `/youtube-dm bind`」這條簡單路徑——綁定的唯一 durable commit 點是
+  `bindChannels`，失敗前無 partial、重跑為冪等。**這些只在極極少數例外才觸發的情況
+  不值得為其增加大量補強程式碼**（與 deploy/rollback 同類判斷）；殘餘風險（如 orphan
+  Channel 參考文件、罕見重複確認 DM）無害且由既有 crawl / TTL 收斂。
 
 ## 測試重點
 
@@ -355,9 +355,8 @@ await app.init();
   delivered true/false → 四種頁面字串與 status 200；`BindingLimitError` → 400 頁、
   **`sendBindingDm` 零呼叫**；pre-write 例外 → 500 頁、零呼叫；DM 收到的 `channelIds`
   = 綁定後**完整**清單（含先前已綁 + 本次新增）。
-- **Channel seed 順序 / 不變量**：`BindingLimitError` 與 pre-write 例外 → **Channel
-  `create` 零呼叫**（不留 orphan，stateful fake 斷言）；成功 / saved-pending → 對本次
-  channelId 呼叫 `findByChannelId ?? create`（已存在則不重建）。
+- **Channel seed**：成功 / saved-pending → 對授權 channelId 呼叫 `findByChannelId ??
+create`（已存在則不重建）。（不為 orphan / 並行等極罕見邊界寫補強測試。）
 - **`sendBindingDm`**：正常 → `client.users.fetch` + `user.send` 被呼叫、內容含
   `renderBoundChannelLines` 行、回 `true`；`user.send` 拋 `{ code: 50007 }` → 回
   `false`、不 throw、不 `console.warn`；拋其他錯誤 → 回 `false`、不 throw、有
@@ -365,12 +364,10 @@ await app.init();
 - **callback 純函式注入**：`handleGoogleCallback` / `handleDiscordCallback` 把接線的
   `sendBindingDm` 與 provider 函式傳入 `applyBinding`（spy 斷言透傳）；缺 `code` 的
   prefetch 不碰 state；Discord 授權者 id 與 state 不符時拒絕。
-- **`OAuthModule` 建構（無啟動競態）**：以 fake `app`（`app.http.server` = spy
-  fastify、`app.get("redis")` 回 fake RedisModule）建構 → 斷言**建構子已建好
-  `stateStore`**（路由 handler 立即可用，**不需呼叫 `init()`**）且在 spy fastify
-  註冊兩條 `GET` 路由於正確路徑（不需 listen）；`app.get("redis")` 回 `undefined`
-  時**建構子** throw（guard）。模擬「建構後立刻觸發已註冊的 callback handler」→
-  `stateStore` 已可用、不為 undefined。
+- **`OAuthModule` 建構**：以 fake `app`（`app.http.server` = spy fastify、
+  `app.get("redis")` 回 fake RedisModule）建構 → 斷言建構子建好 `stateStore` 並在 spy
+  fastify 註冊兩條 `GET` 路由於正確路徑（不需 listen）；`app.get("redis")` 回
+  `undefined` 時建構子 throw（guard）。
 - **`/youtube-dm` 回覆 flags**（mock interaction）：`bind` 兩個 reply 帶
   `flags: MessageFlags.Ephemeral`；`list` 空清單與清單 reply、`unbind` 兩個 reply
   **不帶** ephemeral flag；install-hint followUp 帶 `flags: MessageFlags.Ephemeral`；
