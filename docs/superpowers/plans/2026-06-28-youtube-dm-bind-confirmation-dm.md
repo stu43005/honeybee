@@ -1711,29 +1711,71 @@ git rm src/modules/oauth/callback.ts src/modules/oauth/callback.spec.ts
 
 - [ ] **Step 3: 移除 provider 相容函式**
 
-刪掉兩個 provider 檔尾那段「Temporary compatibility exports …」（含其下方的
-`const _google` / `const _discord` 與所有 `export const buildGoogleAuthUrl` /
-`fetchGoogleChannels` / `buildDiscordAuthUrl` / `exchangeDiscordCode` /
-`fetchDiscordUserId` / `fetchVerifiedYoutubeChannels`）。刪除後：
+從 `src/modules/oauth/google.ts` 檔尾刪掉這整段（刪除後最後一個宣告為
+`export class GoogleProvider`）：
 
-- `src/modules/oauth/google.ts` 的最後一個宣告是 `export class GoogleProvider { … }`。
-- `src/modules/oauth/discord.ts` 的最後一個宣告是 `export class DiscordProvider { … }`。
+```ts
+// Temporary compatibility exports for callers still importing the old
+// function API; kept until every caller uses GoogleProvider directly.
+const _google = new GoogleProvider();
+export const buildGoogleAuthUrl = (state: string) =>
+  _google.buildAuthUrl(state);
+export const fetchGoogleChannels = (code: string) =>
+  _google.listChannels(code, { discordUserId: "", method: "google" });
+```
+
+從 `src/modules/oauth/discord.ts` 檔尾刪掉這整段（刪除後最後一個宣告為
+`export class DiscordProvider`）：
+
+```ts
+// Temporary compatibility exports for callers still importing the old
+// function API; kept until every caller uses DiscordProvider directly.
+const _discord = new DiscordProvider();
+export const buildDiscordAuthUrl = (state: string) =>
+  _discord.buildAuthUrl(state);
+export const exchangeDiscordCode = (code: string) =>
+  _discord.exchangeCode(code);
+export const fetchDiscordUserId = (token: string) =>
+  _discord.fetchUserId(token);
+export const fetchVerifiedYoutubeChannels = (token: string) =>
+  _discord.fetchVerifiedChannels(token);
+```
 
 - [ ] **Step 4: 移除 state-store 相容包裝**
 
-刪掉 `src/modules/oauth/state-store.ts` 檔尾那段「Temporary compatibility shims …」
-（`let _default` / `initOAuthStateStore` / `def` / `putOAuthState` / `getOAuthState` /
-`delOAuthState`）。刪除後檔案只剩 `randomState`、型別與 `OAuthStateStore`，最後一個
-宣告是 `export class OAuthStateStore { … }`。
+從 `src/modules/oauth/state-store.ts` 檔尾刪掉這整段（刪除後最後一個宣告為
+`export class OAuthStateStore`，檔案只剩 `randomState`、型別與該 class）：
 
-並把 `state-store.spec.ts` 還原為只測 class 的版本：刪掉 `"legacy module functions
+```ts
+// Temporary compatibility shims for callers still importing the old module
+// function API; kept until every caller uses an OAuthStateStore instance.
+let _default: OAuthStateStore | null = null;
+export function initOAuthStateStore(redis: RedisClientType): void {
+  _default = new OAuthStateStore(redis);
+}
+function def(): OAuthStateStore {
+  if (!_default) throw new Error("OAuth state store not initialized");
+  return _default;
+}
+export const putOAuthState = (state: string, data: OAuthState) =>
+  def().put(state, data);
+export const getOAuthState = (state: string) => def().get(state);
+export const delOAuthState = (state: string) => def().del(state);
+```
+
+把 `state-store.spec.ts` 還原為只測 class 的版本：刪掉 `"legacy module functions
 delegate…"` 案例，import 改為僅：
 
 ```ts
 import { OAuthStateStore, randomState } from "./state-store.js";
 ```
 
-- [ ] **Step 5: 全量型別檢查 + 全測試 + lint**
+- [ ] **Step 5: 全量型別檢查 + 全測試 + lint（含移除符號的 grep 防呆）**
+
+先確認被移除的 export 名稱在全專案（含 spec）已無殘留引用：
+
+Run: `grep -rn "initOAuthStateStore\|putOAuthState\|getOAuthState\|delOAuthState\|buildGoogleAuthUrl\|fetchGoogleChannels\|buildDiscordAuthUrl\|exchangeDiscordCode\|fetchDiscordUserId\|fetchVerifiedYoutubeChannels" src --include=*.ts`
+Expected: 無輸出。
 
 Run: `npm run build && npm run test && npm run lint`
 Expected: 全部 PASS、無 lint 錯誤。
