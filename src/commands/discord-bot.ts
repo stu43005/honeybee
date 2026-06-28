@@ -19,8 +19,8 @@ import {
 import {
   handleDiscordCallback,
   handleGoogleCallback,
-} from "../discord/oauth/callback.js";
-import { initOAuthStateStore } from "../discord/oauth/state.js";
+} from "../modules/oauth/callback.js";
+import { initOAuthStateStore } from "../modules/oauth/state.js";
 import { DISCORD_DEV_GUILD_ID } from "../constants.js";
 import { Application } from "../modules/application.js";
 import { MongodbModule } from "../modules/db.js";

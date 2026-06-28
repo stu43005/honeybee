@@ -8,13 +8,13 @@ import {
 import { YOUTUBE_DM_MAX_CHANNELS_PER_USER } from "../../../constants.js";
 import ChannelModel from "../../../models/Channel.js";
 import YoutubeDmBindingModel from "../../../models/YoutubeDmBinding.js";
-import { buildDiscordAuthUrl } from "../../oauth/discord.js";
-import { buildGoogleAuthUrl } from "../../oauth/google.js";
+import { buildDiscordAuthUrl } from "../../../modules/oauth/discord.js";
+import { buildGoogleAuthUrl } from "../../../modules/oauth/google.js";
 import {
   putOAuthState,
   randomState,
   type OAuthMethod,
-} from "../../oauth/state.js";
+} from "../../../modules/oauth/state.js";
 import type { Command } from "../command.js";
 import { buildUserInstallHint } from "./install-hint.js";
 
