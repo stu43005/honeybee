@@ -70,15 +70,19 @@ git mv src/discord/oauth/discord.spec.ts  src/modules/oauth/discord.spec.ts
 
 `src/discord/commands/youtube-dm/youtube-dm.ts` 把 `../../oauth/discord.js`、`../../oauth/google.js`、`../../oauth/state.js` 三條改為 `../../../modules/oauth/discord.js`、`../../../modules/oauth/google.js`、`../../../modules/oauth/state.js`。
 
-- [ ] **Step 4: 型別檢查 + 全測試（純搬移，行為不變）**
+- [ ] **Step 4: 修 `youtube-dm.spec.ts` 的匯入路徑**
 
-Run: `npm run build && npm run test -- src/modules/oauth`
-Expected: build 無錯；既有 `state/callback/google/discord` 測試全 PASS。
+`src/discord/commands/youtube-dm/youtube-dm.spec.ts` 目前 `import { initOAuthStateStore } from "../../oauth/state.js";`，搬移後該路徑失效。改為 `from "../../../modules/oauth/state.js"`。（此 spec 於 Task 7 整檔覆寫；此處只修路徑以維持綠燈。）
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: 型別檢查 + 全測試（純搬移，行為不變）**
+
+Run: `npm run build && npm run test -- src/modules/oauth src/discord/commands/youtube-dm`
+Expected: build 無錯；既有 oauth 與 youtube-dm 測試全 PASS。
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/modules/oauth src/commands/discord-bot.ts src/discord/commands/youtube-dm/youtube-dm.ts
+git add src/modules/oauth src/commands/discord-bot.ts src/discord/commands/youtube-dm/youtube-dm.ts src/discord/commands/youtube-dm/youtube-dm.spec.ts
 git commit -m "refactor(oauth): relocate src/discord/oauth to src/modules/oauth"
 ```
 
@@ -219,8 +223,8 @@ export class OAuthStateStore {
   }
 }
 
-// TEMP back-compat shims so existing consumers compile during the migration;
-// removed in the cleanup task once OAuthModule owns the instance.
+// Temporary compatibility shims for callers still importing the old module
+// function API; kept until every caller uses an OAuthStateStore instance.
 let _default: OAuthStateStore | null = null;
 export function initOAuthStateStore(redis: RedisClientType): void {
   _default = new OAuthStateStore(redis);
@@ -235,21 +239,22 @@ export const getOAuthState = (state: string) => def().get(state);
 export const delOAuthState = (state: string) => def().del(state);
 ```
 
-- [ ] **Step 5: 修匯入檔名 `state.js` → `state-store.js`（3 處）**
+- [ ] **Step 5: 修匯入檔名 `state.js` → `state-store.js`（4 處）**
 
 - `src/modules/oauth/callback.ts`：`from "./state.js"` → `from "./state-store.js"`
 - `src/commands/discord-bot.ts`：`from "../modules/oauth/state.js"` → `from "../modules/oauth/state-store.js"`
 - `src/discord/commands/youtube-dm/youtube-dm.ts`：`from "../../../modules/oauth/state.js"` → `from "../../../modules/oauth/state-store.js"`
+- `src/discord/commands/youtube-dm/youtube-dm.spec.ts`：`from "../../../modules/oauth/state.js"` → `from "../../../modules/oauth/state-store.js"`
 
 - [ ] **Step 6: Run tests + build**
 
-Run: `npm run test -- src/modules/oauth/state-store.spec.ts && npm run build`
+Run: `npm run test -- src/modules/oauth/state-store.spec.ts src/discord/commands/youtube-dm && npm run build`
 Expected: PASS；build 無錯。
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/modules/oauth/state-store.ts src/modules/oauth/state-store.spec.ts src/modules/oauth/callback.ts src/commands/discord-bot.ts src/discord/commands/youtube-dm/youtube-dm.ts
+git add src/modules/oauth/state-store.ts src/modules/oauth/state-store.spec.ts src/modules/oauth/callback.ts src/commands/discord-bot.ts src/discord/commands/youtube-dm/youtube-dm.ts src/discord/commands/youtube-dm/youtube-dm.spec.ts
 git commit -m "refactor(oauth): introduce OAuthStateStore class (legacy shims kept)"
 ```
 
@@ -273,13 +278,13 @@ describe("renderBoundChannelLines", () => {
   afterEach(() => jest.restoreAllMocks());
 
   it("joins channel name + id in input order, falling back to Unknown channel", async () => {
+    // findByChannelId returns a Mongoose query type; cast the fake impl to any
+    // so per-id resolution typechecks (existing specs use mockResolvedValue for
+    // the single-value case).
     jest
       .spyOn(ChannelModel, "findByChannelId")
-      .mockImplementation((id: string) =>
-        Promise.resolve(
-          id === "UCa" ? ({ name: "Chan A" } as any) : (null as any)
-        )
-      );
+      .mockImplementation(((id: string) =>
+        Promise.resolve(id === "UCa" ? { name: "Chan A" } : null)) as any);
     expect(await ChannelModel.renderBoundChannelLines(["UCa", "UCb"])).toEqual([
       "• Chan A (UCa)",
       "• Unknown channel (UCb)",
@@ -494,8 +499,8 @@ export class GoogleProvider implements OAuthProvider {
   }
 }
 
-// TEMP back-compat (removed in cleanup task) so callback.ts / youtube-dm.ts
-// compile until they migrate to OAuthModule.
+// Temporary compatibility exports for callers still importing the old
+// function API; kept until every caller uses GoogleProvider directly.
 const _google = new GoogleProvider();
 export const buildGoogleAuthUrl = (state: string) =>
   _google.buildAuthUrl(state);
@@ -679,7 +684,8 @@ export class DiscordProvider implements OAuthProvider {
   }
 }
 
-// TEMP back-compat (removed in cleanup task).
+// Temporary compatibility exports for callers still importing the old
+// function API; kept until every caller uses DiscordProvider directly.
 const _discord = new DiscordProvider();
 export const buildDiscordAuthUrl = (state: string) =>
   _discord.buildAuthUrl(state);
@@ -724,6 +730,7 @@ import { afterEach, describe, expect, it, jest } from "@jest/globals";
 import ChannelModel from "../../models/Channel.js";
 import YoutubeDmBindingModel, {
   BindingLimitError,
+  BindingTransformPendingError,
 } from "../../models/YoutubeDmBinding.js";
 import { OAuthModule } from "./oauth.js";
 import { IdentityMismatchError } from "./provider.js";
@@ -937,7 +944,99 @@ describe("OAuthModule", () => {
     expect(reply.code).toHaveBeenCalledWith(403);
   });
 
-  it("sendBindingDm returns true on success, false (no warn) on 50007", async () => {
+  it("google callback: saved-pending + DM delivered → 200 saved-pending copy", async () => {
+    const { app, client, routes } = setup({
+      redisSeed: [
+        [
+          "youtube-dm-oauth:st1",
+          JSON.stringify({ discordUserId: "d1", method: "google" }),
+        ],
+      ],
+    });
+    const mod = new OAuthModule(app, client);
+    jest
+      .spyOn(mod.google, "listChannels")
+      .mockResolvedValue([{ channelId: "UCa", title: "A" }]);
+    jest.spyOn(ChannelModel, "findByChannelId").mockResolvedValue({} as any);
+    jest
+      .spyOn(YoutubeDmBindingModel, "bindChannels")
+      .mockRejectedValue(new BindingTransformPendingError("db down"));
+    jest
+      .spyOn(YoutubeDmBindingModel, "findOne")
+      .mockResolvedValue({ channelIds: ["UCa"] } as any);
+    const dm = jest.spyOn(mod, "sendBindingDm").mockResolvedValue(true);
+    const reply = fakeReply();
+
+    await routes[GOOGLE]({ query: { code: "c1", state: "st1" } }, reply);
+
+    expect(dm).toHaveBeenCalledWith("d1", ["UCa"]);
+    expect(reply.code).toHaveBeenCalledWith(200);
+    expect(reply.send).toHaveBeenCalledWith(expect.stringContaining("已儲存"));
+  });
+
+  it("google callback: pre-write error → 500 and no DM", async () => {
+    const { app, client, routes } = setup({
+      redisSeed: [
+        [
+          "youtube-dm-oauth:st1",
+          JSON.stringify({ discordUserId: "d1", method: "google" }),
+        ],
+      ],
+    });
+    const mod = new OAuthModule(app, client);
+    jest
+      .spyOn(mod.google, "listChannels")
+      .mockResolvedValue([{ channelId: "UCa", title: "A" }]);
+    jest.spyOn(ChannelModel, "findByChannelId").mockResolvedValue({} as any);
+    jest
+      .spyOn(YoutubeDmBindingModel, "bindChannels")
+      .mockRejectedValue(new Error("write failed"));
+    const dm = jest.spyOn(mod, "sendBindingDm");
+    const reply = fakeReply();
+
+    await routes[GOOGLE]({ query: { code: "c1", state: "st1" } }, reply);
+
+    expect(reply.code).toHaveBeenCalledWith(500);
+    expect(dm).not.toHaveBeenCalled();
+  });
+
+  it("google callback: seeds only channels not already present", async () => {
+    const { app, client, routes } = setup({
+      redisSeed: [
+        [
+          "youtube-dm-oauth:st1",
+          JSON.stringify({ discordUserId: "d1", method: "google" }),
+        ],
+      ],
+    });
+    const mod = new OAuthModule(app, client);
+    jest.spyOn(mod.google, "listChannels").mockResolvedValue([
+      { channelId: "UCnew", title: "New" },
+      { channelId: "UCold", title: "Old" },
+    ]);
+    jest
+      .spyOn(ChannelModel, "findByChannelId")
+      .mockImplementation(((id: string) =>
+        Promise.resolve(id === "UCold" ? {} : null)) as any);
+    const create = jest
+      .spyOn(ChannelModel, "create")
+      .mockResolvedValue({} as any);
+    jest
+      .spyOn(YoutubeDmBindingModel, "bindChannels")
+      .mockResolvedValue({} as any);
+    jest
+      .spyOn(YoutubeDmBindingModel, "findOne")
+      .mockResolvedValue({ channelIds: ["UCnew", "UCold"] } as any);
+    jest.spyOn(mod, "sendBindingDm").mockResolvedValue(true);
+    const reply = fakeReply();
+
+    await routes[GOOGLE]({ query: { code: "c1", state: "st1" } }, reply);
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledWith({ id: "UCnew", name: "New" });
+  });
+
+  it("sendBindingDm returns true on success, false (no warn) on 50007, false (warn) otherwise", async () => {
     const { app, client, send } = setup();
     const mod = new OAuthModule(app, client);
     jest.spyOn(ChannelModel, "findByChannelId").mockResolvedValue(null as any);
@@ -945,12 +1044,17 @@ describe("OAuthModule", () => {
     expect(await mod.sendBindingDm("d1", [])).toBe(true);
     expect(send).toHaveBeenCalledTimes(1);
 
-    send.mockRejectedValueOnce({ code: 50007 });
     const warn = jest
       .spyOn(console, "warn")
       .mockImplementation(() => undefined);
+
+    send.mockRejectedValueOnce({ code: 50007 });
     expect(await mod.sendBindingDm("d1", [])).toBe(false);
     expect(warn).not.toHaveBeenCalled();
+
+    send.mockRejectedValueOnce(new Error("boom"));
+    expect(await mod.sendBindingDm("d1", [])).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 });
 ```
@@ -1055,8 +1159,8 @@ export class OAuthModule implements Module {
       page(reply, 400, "授權連結已失效或不正確，請重新發起。");
       return;
     }
-    // Single-use: read-then-delete (base design). On any later failure the user
-    // simply re-runs /youtube-dm bind for a fresh state.
+    // Single-use state: read, validate, then delete. On any later failure the
+    // user re-runs /youtube-dm bind to obtain a fresh state.
     await this.stateStore.del(state);
     try {
       const channels = await provider.listChannels(code, data);
@@ -1153,10 +1257,10 @@ export class OAuthModule implements Module {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 4: Run tests + build to verify they pass**
 
-Run: `npm run test -- src/modules/oauth/oauth.spec.ts`
-Expected: PASS。
+Run: `npm run test -- src/modules/oauth/oauth.spec.ts && npm run build`
+Expected: PASS；build 無錯（本任務新增的 `oauth.ts` 供後續任務匯入）。
 
 > 註：`RESTJSONErrorCodes.CannotSendMessagesToThisUser` 即數值 `50007`（discord.js 既有列舉，`discord-bot.ts` 既有 `IGNORED_ERRORS` 已使用）。
 
@@ -1388,15 +1492,25 @@ import { buildUserInstallHint } from "./install-hint.js";
 
 （`autocomplete` 不變。）
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 4: 修 `index.ts` 的建構呼叫（暫時 stub，保持可編譯）**
 
-Run: `npm run test -- src/discord/commands/youtube-dm/youtube-dm.spec.ts`
-Expected: PASS。
+`YoutubeDmCommand` 現在需要建構子參數，但 `src/discord/commands/index.ts` 仍以
+`new YoutubeDmCommand()` 建構，會編譯失敗。把該行改為注入一個暫時 stub（此 `index.ts`
+於 Task 8 整檔刪除，stub 隨之消失）：
 
-- [ ] **Step 5: Commit**
+```ts
+  new YoutubeDmCommand({ beginAuth: async () => "" }),
+```
+
+- [ ] **Step 5: Run tests + build to verify they pass**
+
+Run: `npm run build && npm run test -- src/discord/commands/youtube-dm/youtube-dm.spec.ts`
+Expected: build 無錯；PASS。
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/discord/commands/youtube-dm/youtube-dm.ts src/discord/commands/youtube-dm/youtube-dm.spec.ts
+git add src/discord/commands/youtube-dm/youtube-dm.ts src/discord/commands/youtube-dm/youtube-dm.spec.ts src/discord/commands/index.ts
 git commit -m "feat(youtube-dm): inject oauth.beginAuth; non-ephemeral list/unbind via flags"
 ```
 
@@ -1532,9 +1646,10 @@ Expected: build 無錯；PASS。
 
 - [ ] **Step 5: Commit**
 
+`index.ts` 的刪除已於 Step 2 以 `git rm` 暫存，這裡只加其餘變更後一起 commit：
+
 ```bash
 git add src/commands/discord-bot.ts src/discord/commands/registration.spec.ts
-git rm src/discord/commands/index.ts
 git commit -m "refactor(discord-bot): wire OAuthModule; inline command list with injected oauth"
 ```
 
@@ -1582,9 +1697,11 @@ Expected: 目錄不存在（`exit` 非 0）。
 
 - [ ] **Step 7: Commit**
 
+`callback.ts` / `callback.spec.ts` 的刪除已於 Step 2 以 `git rm` 暫存，這裡只加修改過的
+檔案後一起 commit：
+
 ```bash
 git add src/modules/oauth/state-store.ts src/modules/oauth/state-store.spec.ts src/modules/oauth/google.ts src/modules/oauth/discord.ts
-git rm src/modules/oauth/callback.ts src/modules/oauth/callback.spec.ts
 git commit -m "refactor(oauth): drop legacy callback pure-functions and migration shims"
 ```
 
