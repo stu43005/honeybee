@@ -114,6 +114,23 @@ export class Channel extends TimeStamps {
     return this.findOne({ id: channelId });
   }
 
+  /**
+   * Renders one display line per channel id, joining the channel name (falling
+   * back to "Unknown channel" when not yet crawled), preserving input order.
+   * Shared by `/youtube-dm list` and the binding-confirmation DM.
+   */
+  public static async renderBoundChannelLines(
+    this: ReturnModelType<typeof Channel>,
+    channelIds: string[]
+  ): Promise<string[]> {
+    return Promise.all(
+      channelIds.map(async (id) => {
+        const channel = await this.findByChannelId(id);
+        return `• ${channel?.name ?? "Unknown channel"} (${id})`;
+      })
+    );
+  }
+
   public static findByHandle(
     this: ReturnModelType<typeof Channel>,
     handle: string

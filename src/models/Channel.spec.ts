@@ -100,3 +100,25 @@ describe("Channel.waitForCrawl", () => {
     await expect(promise).rejects.toThrow(/abort/i);
   });
 });
+
+describe("renderBoundChannelLines", () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it("joins channel name + id in input order, falling back to Unknown channel", async () => {
+    // findByChannelId returns a Mongoose query type; cast the fake impl to any
+    // so per-id resolution typechecks (existing specs use mockResolvedValue for
+    // the single-value case).
+    jest
+      .spyOn(ChannelModel, "findByChannelId")
+      .mockImplementation(((id: string) =>
+        Promise.resolve(id === "UCa" ? { name: "Chan A" } : null)) as any);
+    expect(await ChannelModel.renderBoundChannelLines(["UCa", "UCb"])).toEqual([
+      "• Chan A (UCa)",
+      "• Unknown channel (UCb)",
+    ]);
+  });
+
+  it("returns an empty array for no channels", async () => {
+    expect(await ChannelModel.renderBoundChannelLines([])).toEqual([]);
+  });
+});
