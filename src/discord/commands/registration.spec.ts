@@ -21,7 +21,7 @@ const commands: AppCommand[] = [
   new SetChannelCommand(),
   new SetVideoCommand(),
   new TrackCommand(),
-  new YoutubeDmCommand({ beginAuth: async () => "" }),
+  new YoutubeDmCommand({ beginAuth: () => Promise.resolve("") }),
 ].sort((a, b) => (a.metadata.name > b.metadata.name ? 1 : -1));
 
 describe("partitionCommandsByScope", () => {
