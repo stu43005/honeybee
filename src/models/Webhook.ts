@@ -98,6 +98,17 @@ export class Webhook extends TimeStamps {
 
   // template config
 
+  /**
+   * Encoding for the outgoing request body. Defaults to JSON.
+   *
+   * Set to `"form"` to serialize the rendered template as
+   * `application/x-www-form-urlencoded` — each top-level template field becomes a
+   * form field (read server-side via e.g. Flask `request.form`). Only applies to
+   * the generic (non-Discord) delivery path.
+   */
+  @prop()
+  public bodyType?: string;
+
   @prop()
   public templatePreset?: string;
 

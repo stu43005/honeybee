@@ -250,10 +250,14 @@ async function sendWebhook(
 
   try {
     const timeout = AbortSignal.timeout(10000);
+    const isForm = webhook.bodyType === "form";
     const res = await axiosInstance.request({
       method,
       url,
-      data: body,
+      data: isForm ? new URLSearchParams(body).toString() : body,
+      headers: isForm
+        ? { "Content-Type": "application/x-www-form-urlencoded" }
+        : undefined,
       signal: timeout,
     });
 
