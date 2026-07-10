@@ -75,6 +75,22 @@ was never populated omits the key entirely. This function is used by
 (channel-index), and the new realtime/upcoming/leaderboard builders, so
 all five outputs share one shape.
 
+**Reader compatibility for root-index / channel-index.** Because the
+shared summary feeds root-index and channel-index, those two existing
+files gain the four fields too. This is a purely additive change under
+the data-contract's Path A (all four fields optional; no rename, type,
+semantic, encoding, unit, or ordering change), so it is a new revision
+within version 1, not a version bump. The existing `root-index` and
+`channel-index` reader-guidance sections already instruct readers to
+**ignore unknown extra fields (forward compatibility)**, which is the
+contract every consumer (only `vchat-web`) is built against; a strict
+reader that rejected unknown keys would already be violating the
+published contract. No reader migration, dual-writer, or shape audit is
+therefore required beyond the contract's standard two-version
+coexistence window during regeneration. Rollback is symmetric and needs
+no special handling: reverting the writer simply stops emitting the four
+optional keys, which readers already tolerate as absent.
+
 The resulting summary interface (superset, all four new fields optional):
 
 ```ts
@@ -134,9 +150,22 @@ interface UpcomingIndex {
 
 - Shares one `findLiveVideos(48)` query pass with realtime (see §7): the
   48h upper bound is applied via the `maxUpcomingHours` argument, which
-  bounds `availableAt`. The same fetched document list and the same
-  `snapshotAt` feed both realtime and upcoming so the two files are a
-  consistent snapshot.
+  bounds `availableAt`. Sharing the fetch is purely an efficiency measure
+  (one DB round-trip instead of two); each file carries its **own**
+  `snapshotAt`.
+- **Cross-file consistency is explicitly not guaranteed.** The two files
+  are published independently (each via its own tmp+rename in §7), so a
+  reader may momentarily observe `realtime.json` from one generation and
+  `upcoming.json` from the previous one if a run is interrupted between
+  the two renames. This is acceptable and requires no cross-file publish
+  protocol: the frontend consumes the two files on separate views (a
+  "now live" view vs. an "upcoming / just started" view), and the only
+  overlap — a stream appearing in both `realtime.live` and
+  `upcoming.recentlyStarted` for up to a minute during the live
+  transition — is harmless and self-correcting on the next run. Readers
+  must therefore treat each file's `snapshotAt` as authoritative for
+  that file only and must not join the two files assuming a shared
+  instant.
 - `upcoming`: `status === Upcoming`. The 48h bound (matching the existing
   root-index behaviour) keeps far-future standing free-chat rooms out of
   the list.
@@ -164,12 +193,26 @@ interface Leaderboard {
 }
 ```
 
-**Day attribution**
+**Day attribution and leaderboard semantics**
 
-- A stream belongs to the JST day its `availableAt` falls in. For a date
-  `D`, the query range is
+- This is a **start-date leaderboard ranked by lifetime metric**, not a
+  per-day activity leaderboard. Each stream is attributed to exactly one
+  JST day — the day its `availableAt` falls in — and is ranked by its
+  full-lifetime `maxViewers` / `likes` value as stored on the `Video`
+  model (peak concurrent viewers, cumulative likes). The ranked metric is
+  **not** re-scoped to the calendar day.
+- Consequence, stated deliberately: a stream that starts just before JST
+  midnight and reaches its peak viewers or most likes after midnight
+  stays only in the start day's file with its whole-lifetime metric; it
+  does not also appear in the next day's leaderboard. This is intended —
+  honeybee stores only the running lifetime peak/count per stream, not a
+  time-bucketed series, so a true per-day-windowed metric is not
+  computable from existing data and is out of scope. The data-contract
+  document and reader guidance describe the file as start-date +
+  lifetime-metric so consumers do not read it as same-day activity.
+- Query range for a date `D`:
   `[D 00:00 Asia/Tokyo, (D+1) 00:00 Asia/Tokyo)` converted to UTC via
-  `moment-timezone`.
+  `moment-timezone`, matched against `availableAt`.
 
 **Qualification and ordering**
 
@@ -206,13 +249,31 @@ current `chats archive` and `chats archive index` jobs):
 
 - `chats archive realtime` — `agenda.every("1 minutes", ...)`. One job
   invocation performs a single `findLiveVideos(48)` query and writes both
-  `realtime.json` and `upcoming.json` from that one fetch + one
-  `snapshotAt`.
+  `realtime.json` and `upcoming.json` (each file stamped with its own
+  `snapshotAt` at write time).
 - `chats archive leaderboard` — `agenda.every("10 minutes", ...)`.
   Refreshes today + yesterday × both metrics.
 
 All writes use the existing atomic pattern: write to `<path>.tmp`, then
 `rename` into place; `mkdir -p` the parent directory first.
+
+**Concurrency and stale-write safety.** These jobs inherit the same
+guarantees as the existing `chats archive` (1 min) and `chats archive
+index` (10 min) jobs, which already run at these cadences without extra
+locking. Agenda registers each `every(...)` name as a single Mongo-backed
+job document and holds a per-job lock (default `lockLifetime` 10 minutes)
+while a run is in flight, so a slow invocation of a given job is not
+re-dispatched until it finishes or its lock expires — the same job never
+runs two overlapping invocations. `manager` runs these periodics as a
+single instance. Consequently, for any one output file there is at most
+one writer at a time and invocations of the same job are serialized in
+schedule order, so a newer generation cannot be overwritten by an older
+one. (The realtime job and the leaderboard job write disjoint file sets,
+so they never contend for the same path.) No additional per-file lock or
+monotonic `snapshotAt` guard is introduced; adding one would duplicate a
+guarantee Agenda already provides for the existing jobs. If `manager` is
+ever scaled to multiple replicas, Agenda's Mongo job lock still prevents
+concurrent execution of the same named job across instances.
 
 The `isMain(import.meta)` direct-run block in `chats-archive.ts` is
 extended to invoke the realtime/upcoming generator and the leaderboard
