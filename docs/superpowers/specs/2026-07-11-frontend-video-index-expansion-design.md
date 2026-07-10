@@ -131,8 +131,9 @@ interface RealtimeIndex {
 - Query: `VideoModel.findLiveVideos(48)` (already excludes `hbIgnore`),
   populate `channel`, `readPreference: "secondaryPreferred"`.
 - Filter to `status === Live`.
-- Sort descending by `viewers ?? 0`; ties and missing viewer counts keep
-  a stable order (streams with no reported viewers sink to the bottom).
+- Sort descending by `viewers ?? 0`, breaking ties by ascending `id` so
+  the order is deterministic across runs; streams with no reported
+  viewers sink to the bottom.
 - `snapshotAt` is the generation wall-clock time (ISO 8601).
 - No top-N cap: the concurrently-live set is naturally bounded.
 
@@ -220,7 +221,8 @@ interface Leaderboard {
 - Exclude `uploadedVideo === true` and `hbIgnore === true`.
 - Status is not filtered (any stream available that day qualifies if its
   metric is positive).
-- Sort descending by the metric; take the first 50.
+- Sort descending by the metric, breaking ties by ascending `id` so the
+  top-50 cut and ordering are deterministic across runs; take the first 50.
 - Populate `channel`; entries reuse the shared summary shape.
 
 **Core function and scheduling**
@@ -254,26 +256,30 @@ current `chats archive` and `chats archive index` jobs):
 - `chats archive leaderboard` — `agenda.every("10 minutes", ...)`.
   Refreshes today + yesterday × both metrics.
 
-All writes use the existing atomic pattern: write to `<path>.tmp`, then
-`rename` into place; `mkdir -p` the parent directory first.
+**Atomic write.** Every output file is written with the existing
+tmp+rename pattern: `mkdir -p` parent → write `<path>.tmp` → `rename`
+into place. `rename` is atomic, so a reader never observes a torn file.
+No cross-file or compare-before-rename protocol is layered on top —
+each file simply publishes its latest generation.
 
-**Concurrency and stale-write safety.** These jobs inherit the same
-guarantees as the existing `chats archive` (1 min) and `chats archive
-index` (10 min) jobs, which already run at these cadences without extra
-locking. Agenda registers each `every(...)` name as a single Mongo-backed
-job document and holds a per-job lock (default `lockLifetime` 10 minutes)
-while a run is in flight, so a slow invocation of a given job is not
-re-dispatched until it finishes or its lock expires — the same job never
-runs two overlapping invocations. `manager` runs these periodics as a
-single instance. Consequently, for any one output file there is at most
-one writer at a time and invocations of the same job are serialized in
-schedule order, so a newer generation cannot be overwritten by an older
-one. (The realtime job and the leaderboard job write disjoint file sets,
-so they never contend for the same path.) No additional per-file lock or
-monotonic `snapshotAt` guard is introduced; adding one would duplicate a
-guarantee Agenda already provides for the existing jobs. If `manager` is
-ever scaled to multiple replicas, Agenda's Mongo job lock still prevents
-concurrent execution of the same named job across instances.
+**Concurrency — single writer per job.** Correctness relies on Agenda
+never running two overlapping invocations of the same named job.
+Agenda registers each `every(...)` name as a single Mongo-backed job
+document and takes a per-job lock before dispatching a run, so a
+scheduled run is not re-dispatched while a prior run of that name is
+still in flight. `manager` runs these periodics as a single instance;
+even if it were scaled, Agenda's Mongo job lock prevents concurrent
+execution of the same named job across instances. Each run is a full,
+idempotent regeneration from current DB state, and the realtime job and
+the leaderboard job write disjoint file sets, so at any moment there is
+exactly one writer per file and successive runs of a job publish in
+schedule order — an older generation can never overwrite a newer one.
+These runs are sub-second (a handful of indexed Mongo queries plus small
+JSON writes; the leaderboard job does four), so the default per-job lock
+never lapses mid-run. Should a run ever iterate long enough to approach
+the lock lifetime, it renews the lock with `job.touch()` — the same
+lock-renewal pattern the existing `chats archive` job already uses — so
+the single-writer property holds without a separate stale-write guard.
 
 The `isMain(import.meta)` direct-run block in `chats-archive.ts` is
 extended to invoke the realtime/upcoming generator and the leaderboard
@@ -289,6 +295,9 @@ manual CLI run regenerates the full family.
 - `gen-leaderboard-file.ts` — exports `genLeaderboardFile(date, metric)`
   (single file) and a driver that refreshes today + yesterday × both
   metrics.
+
+All four new files use the same tmp+rename write path as the existing
+`gen-index-file.ts` / `gen-channel-index-file.ts` writers.
 
 ## 8. Data source justification (data-contract §8.1)
 
@@ -357,9 +366,9 @@ anti-leak rule).
   (a stream at `snapshotAt - 10min + ε` included, one just outside
   excluded); ordering asserted.
 - leaderboard — JST day attribution across a stream whose `availableAt`
-  is near JST midnight (belongs to the correct day); top-50 truncation;
-  `metric > 0` filter; `uploadedVideo`/`hbIgnore` exclusion; empty-day
-  emits `entries: []`.
+  is near JST midnight (belongs to the correct day); top-50 truncation
+  and deterministic tie-break by `id`; `metric > 0` filter;
+  `uploadedVideo`/`hbIgnore` exclusion; empty-day emits `entries: []`.
 
 Tests use `jest.mock` on the model module and stateful fakes where DB
 state transitions are observed, per project test conventions.
