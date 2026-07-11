@@ -231,18 +231,37 @@ selects, with `readPreference: "secondaryPreferred"`, streams that have an
 
 - `status === Live` AND `availableAt < startOfYesterday` (JST) — a stream still
   live whose start day already fell out of the 10-minute today+yesterday window;
-  its lifetime metrics keep growing and would otherwise freeze.
-- `status === Past` AND `actualEnd >= now − 12h` — a stream that ended within the
-  last 12h; one refresh captures its final metrics.
-- `status === Missing` AND `detectedDeletionAt >= now − 12h` — a stream detected
-  deleted within the last 12h; it will get no further metric updates, so its day
-  file is finalized at the last known values.
+  its lifetime metrics keep growing and would otherwise freeze. No time
+  lower-bound: every still-live stream is caught on every run regardless of how
+  long since the last one.
+- `status === Past` AND `actualEnd >= now − 48h` — a stream that ended recently;
+  one refresh captures its final metrics.
+- `status === Missing` AND `detectedDeletionAt >= now − 48h` — a stream detected
+  deleted recently; it will get no further metric updates, so its day file is
+  finalized at the last known values.
+
+**The Past/Missing lower bound is 48h, not the 12h run interval, to give an
+overlap budget for missed or delayed runs.** A terminal stream (ended / deleted)
+is only ever eligible for finalize during this trailing window; unlike the Live
+branch it is never revisited afterwards. Selecting a window 4× the run interval
+means the finalize job can be delayed, skipped, or fail for up to ~36h and still
+re-pick a stream that ended/was-deleted just after the last successful run. Each
+run is a full, idempotent regeneration, so the overlapping re-selection across
+consecutive runs is harmless; the only cost is regenerating a few extra
+recently-terminated dates. Downtime beyond ~36h is an accepted residual (§9),
+recoverable with a manual single-date regeneration.
 
 Each matched stream maps to its JST start date; the pass regenerates the
 **distinct** set of those dates **minus today and yesterday** (owned by the
 10-minute job). This keeps the two scheduled jobs' written file sets disjoint.
-The finalize query runs twice a day over a small result set and reuses the
-existing `status` / `availableAt` indexes; no new index is added.
+The `status === Past` branch is served by the existing `actualEnd` partial index
+(`status: Past`) and the `status === Live` branch by the existing partial
+`availableAt` index (`status ∈ LiveStatus`). The `status === Missing` branch
+filters on `detectedDeletionAt`, which no current index covers, so this design
+**adds** a partial index `{ detectedDeletionAt: 1 }` with
+`partialFilterExpression: { status: "missing" }` (mirroring the existing
+`actualEnd`/`hbEnd` partial indexes) so the branch does not degrade to a full
+scan of all historical missing videos as they accumulate.
 
 **Deletion timestamp (`detectedDeletionAt`) — `Video` model + `youtube.ts`.**
 The finalize pass's "recently deleted" branch needs to know _when_ a video was
@@ -309,6 +328,11 @@ daily-videos issues the same JST-day `availableAt` range query and depends on it
 Only its explanatory comment is updated to describe the daily-videos day-range
 scan instead of the leaderboard.
 
+**Added index.** A partial index `{ detectedDeletionAt: 1 }` with
+`partialFilterExpression: { status: "missing" }` is added to the `Video` model to
+serve the finalize job's recently-deleted branch (§5), so it stays fast as
+historical missing videos accumulate.
+
 ## 7. Data-contract paperwork (`docs/data-contract/`)
 
 **New file-type document (version 1, revision r0):**
@@ -372,12 +396,13 @@ state transitions are observed):
 - Empty day: zero qualifying streams emits `{ ..., videos: [] }`, not a 404 /
   missing file.
 - Finalize date selection: given streams across the three branches (live before
-  yesterday; ended within 12h; detected-deleted within 12h) plus non-matching
-  controls (live within today/yesterday; ended >12h ago; missing without a recent
+  yesterday; ended within 48h; detected-deleted within 48h) plus non-matching
+  controls (live within today/yesterday; ended >48h ago; missing without a recent
   `detectedDeletionAt`; `uploadedVideo`/`hbIgnore`; no `actualStart`), the pass
   regenerates exactly the distinct JST start dates of the matched streams **minus
   today and yesterday** — asserted structurally on the set of dates passed to
-  `genDailyVideosFile`.
+  `genDailyVideosFile`. Include a boundary case at exactly `now − 48h` for the
+  ended/deleted branches.
 
 `youtube.spec.ts` (or the existing youtube module test) covers `detectedDeletionAt`
 via a stateful fake `Video`: a first missing-from-response crawl sets
@@ -435,6 +460,22 @@ observed DB state transition, per project test conventions.
   run; and a cross-process publication guard would be disproportionate to this
   bounded, self-correcting effect and inconsistent with every other generator's
   lock-free writer.
+
+- **Concern:** the finalize pass selects terminal (ended/deleted) streams by a
+  fixed trailing time window (`now − 48h`), with no durable
+  `lastSuccessfulFinalizeAt` checkpoint. If the finalize job is down or delayed
+  for longer than the window's overlap budget (~36h beyond one run), a stream
+  that ended or was detected deleted during the outage can fall out of the window
+  before the next run and never get its final metric refresh.
+  **Decision:** accepted; the 48h window (4× the 12h interval) is the only
+  recovery buffer — no persisted checkpoint / advance-on-success machinery is
+  added.
+  **Rationale:** the still-live branch has no lower bound and always self-heals on
+  the next run; only terminal streams are exposed, and only under a finalize
+  outage exceeding ~36h — a rare, operationally visible event — after which a
+  single-date manual regeneration recovers the affected file. A durable
+  checkpoint would be disproportionate to this residual and matches the project's
+  standing preference against hardening rare-outage edges.
 
 ## 10. Open questions
 
