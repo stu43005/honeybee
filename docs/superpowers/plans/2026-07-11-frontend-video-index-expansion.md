@@ -87,13 +87,22 @@ describe("buildVideoSummary new fields", () => {
     expect("likes" in summary).toBe(false);
     expect("premiere" in summary).toBe(false);
   });
+
+  it("emits the new fields on the channel-less summary too", async () => {
+    const summary = await buildVideoSummary(
+      makeVideo({ maxViewers: 500, likes: 12 }),
+      { includeChannel: false }
+    );
+    expect("channel" in summary).toBe(false);
+    expect(summary).toMatchObject({ maxViewers: 500, likes: 12 });
+  });
 });
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `npm run test -- src/components/chats-archive/build-video-summary.spec.ts`
-Expected: the first test FAILS (summary lacks `viewers`/`maxViewers`/`likes`/`premiere`).
+Expected: the `viewers`/`maxViewers`/`likes`/`premiere` tests FAIL (summary lacks those fields).
 
 - [ ] **Step 3: Extend the key tuple**
 
@@ -128,7 +137,7 @@ Leave the loop body (`const val = video[key]; if (val !== undefined && val !== n
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `npm run test -- src/components/chats-archive/build-video-summary.spec.ts`
-Expected: PASS (3 tests).
+Expected: PASS (4 tests).
 
 - [ ] **Step 5: Verify build + lint**
 
@@ -256,7 +265,7 @@ git commit -m "refactor(chats-archive): add atomic data-file write helper"
 - Create: `src/components/chats-archive/gen-realtime-file.ts`
 - Test: `src/components/chats-archive/gen-realtime-file.spec.ts` (create)
 
-`buildRealtimeIndex` and `buildUpcomingIndex` are pure functions over an array of `Video` documents plus a snapshot instant — these hold all the filter/sort/partition logic and are the unit-tested surface. `genRealtimeAndUpcomingFiles` is thin glue: one `findLiveVideos(48)` query, both builders, two atomic writes sharing the same snapshot instant. Realtime keeps only `live` status sorted by viewers desc (id asc tiebreak); upcoming splits `upcoming` status (soonest first) from streams that went live in the last 10 minutes (newest first).
+`buildRealtimeIndex` and `buildUpcomingIndex` are pure functions over an array of `Video` documents plus a snapshot instant — these hold all the filter/sort/partition logic and are the unit-tested surface. `queryLiveVideos` is the model-touching fetch (unit-tested by spying `VideoModel.findLiveVideos`). `genRealtimeAndUpcomingFiles` is thin glue: one `queryLiveVideos()` fetch shared by both builders, but each file is stamped with **its own** `snapshotAt` taken immediately before that file is built/written and published via its own atomic write — the two files are not a joined snapshot. Realtime keeps only `live` status sorted by viewers desc (id asc tiebreak); upcoming splits `upcoming` status (soonest first) from streams that went live in the last 10 minutes (newest first). Explicit return-type interfaces on the builders describe each output shape inline.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -264,9 +273,14 @@ Create `src/components/chats-archive/gen-realtime-file.spec.ts`:
 
 ```ts
 /// <reference types="jest" />
-import { describe, expect, it } from "@jest/globals";
+import { afterEach, describe, expect, it, jest } from "@jest/globals";
 import { VideoStatus } from "holodex.js";
-import { buildRealtimeIndex, buildUpcomingIndex } from "./gen-realtime-file.js";
+import VideoModel from "../../models/Video.js";
+import {
+  buildRealtimeIndex,
+  buildUpcomingIndex,
+  queryLiveVideos,
+} from "./gen-realtime-file.js";
 
 function v(overrides: Record<string, unknown>) {
   return {
@@ -280,6 +294,18 @@ function v(overrides: Record<string, unknown>) {
     getChannel: async () => ({ id: "UCc", name: "C" }),
     ...overrides,
   } as any;
+}
+
+// A stand-in for a mongoose Query: chainable and async-iterable.
+function fakeQuery(docs: unknown[]) {
+  const q: any = {
+    populate: () => q,
+    setOptions: () => q,
+    async *[Symbol.asyncIterator]() {
+      for (const d of docs) yield d;
+    },
+  };
+  return q;
 }
 
 const SNAP = new Date("2026-07-11T09:00:00.000Z");
@@ -337,6 +363,24 @@ describe("buildUpcomingIndex", () => {
     expect(out.recentlyStarted.map((s) => s.id)).toEqual(["r_new", "r_in"]); // newest first
   });
 });
+
+describe("queryLiveVideos", () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it("fetches the live/upcoming set within a 48h window and returns them", async () => {
+    const docs = [v({ id: "a" }), v({ id: "b" })];
+    const spy = jest
+      .spyOn(VideoModel, "findLiveVideos")
+      .mockReturnValue(fakeQuery(docs) as any);
+
+    const result = await queryLiveVideos();
+
+    expect(spy).toHaveBeenCalledWith(48);
+    expect(result.map((d) => d.id)).toEqual(["a", "b"]);
+  });
+});
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -361,6 +405,19 @@ const RECENTLY_STARTED_WINDOW_MS = 10 * 60 * 1000;
 
 type VideoDoc = DocumentType<Video>;
 
+// Each entry is a video summary (see build-video-summary.ts) with a shared base
+// of always-present keys plus optional fields including viewers/maxViewers/likes.
+interface RealtimeIndex {
+  snapshotAt: string; // ISO 8601 instant this file was generated
+  live: Record<string, unknown>[]; // status "live", sorted desc by viewers
+}
+
+interface UpcomingIndex {
+  snapshotAt: string; // ISO 8601 instant this file was generated
+  upcoming: Record<string, unknown>[]; // status "upcoming", soonest first
+  recentlyStarted: Record<string, unknown>[]; // status "live", started <10 min ago, newest first
+}
+
 function byIdAsc(a: VideoDoc, b: VideoDoc): number {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
@@ -373,14 +430,20 @@ async function summarize(
   return out;
 }
 
-export async function buildRealtimeIndex(videos: VideoDoc[], snapshotAt: Date) {
+export async function buildRealtimeIndex(
+  videos: VideoDoc[],
+  snapshotAt: Date
+): Promise<RealtimeIndex> {
   const live = videos
     .filter((video) => video.status === VideoStatus.Live)
     .sort((a, b) => (b.viewers ?? 0) - (a.viewers ?? 0) || byIdAsc(a, b));
   return { snapshotAt: snapshotAt.toISOString(), live: await summarize(live) };
 }
 
-export async function buildUpcomingIndex(videos: VideoDoc[], snapshotAt: Date) {
+export async function buildUpcomingIndex(
+  videos: VideoDoc[],
+  snapshotAt: Date
+): Promise<UpcomingIndex> {
   const cutoff = snapshotAt.getTime() - RECENTLY_STARTED_WINDOW_MS;
   const upcomingDocs = videos
     .filter((video) => video.status === VideoStatus.Upcoming)
@@ -405,23 +468,28 @@ export async function buildUpcomingIndex(videos: VideoDoc[], snapshotAt: Date) {
   };
 }
 
-/**
- * Fetch the current live/upcoming set once and publish `realtime.json` and
- * `upcoming.json` from that single snapshot. The two files are published
- * independently (each via its own atomic write); readers must treat each
- * file's `snapshotAt` as authoritative for that file only.
- */
-export async function genRealtimeAndUpcomingFiles(): Promise<void> {
-  const snapshotAt = new Date();
+/** Fetch the current live + upcoming set (bounded to the next 48h). */
+export async function queryLiveVideos(): Promise<VideoDoc[]> {
   const videos: VideoDoc[] = [];
   for await (const video of VideoModel.findLiveVideos(48)
     .populate("channel")
     .setOptions({ readPreference: "secondaryPreferred" })) {
     videos.push(video);
   }
-  const realtime = await buildRealtimeIndex(videos, snapshotAt);
-  const upcoming = await buildUpcomingIndex(videos, snapshotAt);
+  return videos;
+}
+
+/**
+ * Fetch the current live/upcoming set once, then publish `realtime.json` and
+ * `upcoming.json` independently. Each file gets its own `snapshotAt` taken just
+ * before it is built, and its own atomic write; readers must treat each file's
+ * `snapshotAt` as authoritative for that file only and must not join the two.
+ */
+export async function genRealtimeAndUpcomingFiles(): Promise<void> {
+  const videos = await queryLiveVideos();
+  const realtime = await buildRealtimeIndex(videos, new Date());
   await writeDataFile(dataFilePath("realtime.json"), realtime);
+  const upcoming = await buildUpcomingIndex(videos, new Date());
   await writeDataFile(dataFilePath("upcoming.json"), upcoming);
 }
 ```
@@ -429,7 +497,7 @@ export async function genRealtimeAndUpcomingFiles(): Promise<void> {
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `npm run test -- src/components/chats-archive/gen-realtime-file.spec.ts`
-Expected: PASS (2 tests).
+Expected: PASS (3 tests).
 
 - [ ] **Step 5: Verify build + lint**
 
@@ -452,7 +520,16 @@ git commit -m "feat(chats-archive): generate realtime and upcoming index files"
 - Create: `src/components/chats-archive/gen-leaderboard-file.ts`
 - Test: `src/components/chats-archive/gen-leaderboard-file.spec.ts` (create)
 
-`jstDayRangeUtc(date)` maps a `YYYY-MM-DD` JST day to its UTC `[start, end)` bounds; `buildLeaderboard(date, metric, videos, snapshotAt)` sorts by the metric desc (id asc tiebreak), caps at 50, and builds summaries — both are pure and unit-tested. `genLeaderboardFile(date, metric)` runs the Mongo filter (metric `> 0`, exclude uploaded/ignored, availableAt in range) and writes one file; `genDailyLeaderboards` refreshes today + yesterday × both metrics. `moment-timezone` is imported directly (not `moment`) to guarantee the `Asia/Tokyo` zone is loaded.
+The query-shape logic and the ranking logic are both extracted into pure, unit-tested functions so nothing important lives only in an un-tested Mongo call:
+
+- `jstDayRangeUtc(date)` maps a `YYYY-MM-DD` JST day to its UTC `[start, end)` bounds (pure).
+- `leaderboardFilter(date, metric)` builds the Mongo filter (metric `> 0`, exclude `uploadedVideo`/`hbIgnore`, `availableAt` in the JST-day range) — pure, so the `metric > 0` and exclusion rules are asserted directly without a DB.
+- `buildLeaderboard(date, metric, videos, snapshotAt)` sorts by the metric desc (id asc tiebreak), caps at 50, and builds summaries (pure).
+- `queryLeaderboardVideos(date, metric)` runs `VideoModel.find(leaderboardFilter(...))` and is unit-tested by spying `VideoModel.find`.
+- `genLeaderboardFile(date, metric)` = query → build → atomic write of one file.
+- `genDailyLeaderboards` refreshes today + yesterday × both metrics, deriving **both** dates from a single captured `now` so it cannot straddle JST midnight between two clock reads.
+
+`moment-timezone` is imported directly (not `moment`) to guarantee the `Asia/Tokyo` zone data is loaded. An explicit `Leaderboard` return-type interface describes the output shape inline.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -460,9 +537,15 @@ Create `src/components/chats-archive/gen-leaderboard-file.spec.ts`:
 
 ```ts
 /// <reference types="jest" />
-import { describe, expect, it } from "@jest/globals";
+import { afterEach, describe, expect, it, jest } from "@jest/globals";
 import { VideoStatus } from "holodex.js";
-import { buildLeaderboard, jstDayRangeUtc } from "./gen-leaderboard-file.js";
+import VideoModel from "../../models/Video.js";
+import {
+  buildLeaderboard,
+  jstDayRangeUtc,
+  leaderboardFilter,
+  queryLeaderboardVideos,
+} from "./gen-leaderboard-file.js";
 
 function v(overrides: Record<string, unknown>) {
   return {
@@ -478,6 +561,18 @@ function v(overrides: Record<string, unknown>) {
   } as any;
 }
 
+// A stand-in for a mongoose Query: chainable and async-iterable.
+function fakeQuery(docs: unknown[]) {
+  const q: any = {
+    populate: () => q,
+    setOptions: () => q,
+    async *[Symbol.asyncIterator]() {
+      for (const d of docs) yield d;
+    },
+  };
+  return q;
+}
+
 const SNAP = new Date("2026-07-11T09:00:00.000Z");
 
 describe("jstDayRangeUtc", () => {
@@ -485,6 +580,26 @@ describe("jstDayRangeUtc", () => {
     const { start, end } = jstDayRangeUtc("2026-07-11");
     expect(start.toISOString()).toBe("2026-07-10T15:00:00.000Z");
     expect(end.toISOString()).toBe("2026-07-11T15:00:00.000Z");
+  });
+});
+
+describe("leaderboardFilter", () => {
+  it("filters by JST-day range, positive metric, and excludes uploaded/ignored", () => {
+    expect(leaderboardFilter("2026-07-11", "maxViewers")).toEqual({
+      availableAt: {
+        $gte: new Date("2026-07-10T15:00:00.000Z"),
+        $lt: new Date("2026-07-11T15:00:00.000Z"),
+      },
+      uploadedVideo: { $ne: true },
+      hbIgnore: { $ne: true },
+      maxViewers: { $gt: 0 },
+    });
+  });
+
+  it("uses the likes field when metric is likes", () => {
+    expect(leaderboardFilter("2026-07-11", "likes")).toMatchObject({
+      likes: { $gt: 0 },
+    });
   });
 });
 
@@ -521,6 +636,26 @@ describe("buildLeaderboard", () => {
     expect(out.entries).toEqual([]);
   });
 });
+
+describe("queryLeaderboardVideos", () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it("queries VideoModel.find with the leaderboard filter and returns the docs", async () => {
+    const docs = [v({ id: "a", maxViewers: 5 }), v({ id: "b", maxViewers: 9 })];
+    const spy = jest
+      .spyOn(VideoModel, "find")
+      .mockReturnValue(fakeQuery(docs) as any);
+
+    const result = await queryLeaderboardVideos("2026-07-11", "maxViewers");
+
+    expect(spy).toHaveBeenCalledWith(
+      leaderboardFilter("2026-07-11", "maxViewers")
+    );
+    expect(result.map((d) => d.id)).toEqual(["a", "b"]);
+  });
+});
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -554,6 +689,15 @@ const METRIC_DIR: Record<LeaderboardMetric, string> = {
 
 type VideoDoc = DocumentType<Video>;
 
+// Each entry is a video summary (see build-video-summary.ts); the ranked metric
+// field (maxViewers or likes) is always present and > 0 for entries.
+interface Leaderboard {
+  date: string; // "YYYY-MM-DD" in JST — the day this file ranks
+  snapshotAt: string; // ISO 8601 instant this file was generated
+  metric: LeaderboardMetric; // which field entries are ranked by
+  entries: Record<string, unknown>[]; // top 50, sorted desc by metric
+}
+
 /** UTC `[start, end)` instants covering the given `YYYY-MM-DD` JST calendar day. */
 export function jstDayRangeUtc(date: string): { start: Date; end: Date } {
   const startOfDay = moment.tz(date, "YYYY-MM-DD", JST).startOf("day");
@@ -563,12 +707,30 @@ export function jstDayRangeUtc(date: string): { start: Date; end: Date } {
   };
 }
 
+/**
+ * Mongo filter for the streams eligible for one JST day + metric: available
+ * that day, a positive metric value, and not an uploaded or ignored video.
+ */
+export function leaderboardFilter(
+  date: string,
+  metric: LeaderboardMetric
+): FilterQuery<Video> {
+  const { start, end } = jstDayRangeUtc(date);
+  const filter: FilterQuery<Video> = {
+    availableAt: { $gte: start, $lt: end },
+    uploadedVideo: { $ne: true },
+    hbIgnore: { $ne: true },
+  };
+  filter[metric] = { $gt: 0 };
+  return filter;
+}
+
 export async function buildLeaderboard(
   date: string,
   metric: LeaderboardMetric,
   videos: VideoDoc[],
   snapshotAt: Date
-) {
+): Promise<Leaderboard> {
   const ranked = [...videos]
     .sort(
       (a, b) =>
@@ -581,25 +743,26 @@ export async function buildLeaderboard(
   return { date, snapshotAt: snapshotAt.toISOString(), metric, entries };
 }
 
+/** Fetch the streams eligible for one JST day + metric. */
+export async function queryLeaderboardVideos(
+  date: string,
+  metric: LeaderboardMetric
+): Promise<VideoDoc[]> {
+  const videos: VideoDoc[] = [];
+  for await (const video of VideoModel.find(leaderboardFilter(date, metric))
+    .populate("channel")
+    .setOptions({ readPreference: "secondaryPreferred" })) {
+    videos.push(video);
+  }
+  return videos;
+}
+
 /** Regenerate one leaderboard file for a single JST date + metric. */
 export async function genLeaderboardFile(
   date: string,
   metric: LeaderboardMetric
 ): Promise<void> {
-  const { start, end } = jstDayRangeUtc(date);
-  const filter: FilterQuery<Video> = {
-    availableAt: { $gte: start, $lt: end },
-    uploadedVideo: { $ne: true },
-    hbIgnore: { $ne: true },
-  };
-  filter[metric] = { $gt: 0 };
-
-  const videos: VideoDoc[] = [];
-  for await (const video of VideoModel.find(filter)
-    .populate("channel")
-    .setOptions({ readPreference: "secondaryPreferred" })) {
-    videos.push(video);
-  }
+  const videos = await queryLeaderboardVideos(date, metric);
   const leaderboard = await buildLeaderboard(date, metric, videos, new Date());
   await writeDataFile(
     dataFilePath("leaderboard", METRIC_DIR[metric], `${date}.json`),
@@ -609,8 +772,9 @@ export async function genLeaderboardFile(
 
 /** Refresh today + yesterday (JST) for both metrics. */
 export async function genDailyLeaderboards(): Promise<void> {
-  const today = moment.tz(JST).format("YYYY-MM-DD");
-  const yesterday = moment.tz(JST).subtract(1, "day").format("YYYY-MM-DD");
+  const now = moment.tz(JST);
+  const today = now.clone().format("YYYY-MM-DD");
+  const yesterday = now.clone().subtract(1, "day").format("YYYY-MM-DD");
   for (const date of [today, yesterday]) {
     for (const metric of METRICS) {
       await genLeaderboardFile(date, metric);
@@ -622,7 +786,7 @@ export async function genDailyLeaderboards(): Promise<void> {
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `npm run test -- src/components/chats-archive/gen-leaderboard-file.spec.ts`
-Expected: PASS (5 tests).
+Expected: PASS (7 tests).
 
 - [ ] **Step 5: Verify build + lint**
 
@@ -1046,8 +1210,8 @@ interface VideoSummaryWithChannel {
 
 - [ ] **Step 4: Verify the docs are well-formed**
 
-Run: `npm run format:check`
-Expected: passes, or reports formatting to apply. If it reports issues on the three new files, run `npm run format` and re-check.
+Run: `npx prettier --check "docs/data-contract/realtime.md" "docs/data-contract/upcoming.md" "docs/data-contract/daily-leaderboard.md"`
+Expected: reports all three files. If any is flagged, run `npx prettier --write` on the same three paths and re-check. (The `format:check` npm script only covers `src/`, so it will not inspect these docs.)
 
 - [ ] **Step 5: Commit**
 
@@ -1066,7 +1230,9 @@ git commit -m "docs(data-contract): add realtime, upcoming, daily-leaderboard fi
 - Modify: `docs/data-contract/channel-index.md`
 - Modify: `docs/data-contract/README.md`
 
-The shared summary now carries four new optional fields, so `root-index` and `channel-index` get an additive revision r1 (version stays 1). The README file-type index gains the three new rows from Task 6. Keep every existing r0 section intact — only add r1 material.
+The shared summary now carries four new optional fields, so `root-index` and `channel-index` get an additive revision r1 (version stays 1). The README file-type index gains the three new rows from Task 6.
+
+Frozen-section rule for this task: the `### Base shape (r0)` interface and the r0 reader-guidance bullets are frozen — do **not** alter existing field names, types, optionality, or ordering there. What you **do** change is additive: add the new r1 revision-history row, add an `### Additive fields (r1)` subsection, append the four new fields to the reader guidance's "may be absent" bullet (annotated "since r1"), and regenerate the single cumulative JSON example to reflect r1 (adding the new optional fields and relabelling its heading `(r1)`). Regenerating the cumulative example is required by the contract's revision rules — the example is the current/rolling example for the version chapter, not frozen r0 text — so this is not a frozen-section violation.
 
 - [ ] **Step 1: Add r1 to `root-index.md`**
 
@@ -1182,12 +1348,20 @@ In the `## 2. File type index` table, after the existing
 | [daily-leaderboard.md](./daily-leaderboard.md)   | `data/leaderboard/{metric}/{YYYY-MM-DD}.json` | 1                            |
 ```
 
-- [ ] **Step 4: Verify formatting**
+- [ ] **Step 4: Record the data-source justification for the PR**
 
-Run: `npm run format:check`
-Expected: passes (or run `npm run format` then re-check for the three edited files).
+No new data source is introduced — the four fields are already populated on the `Video` model. When opening the PR, include this justification in the PR description (it satisfies the data-contract's data-source requirement by citing existing writers; it is not written into the contract markdown):
 
-- [ ] **Step 5: Commit**
+> Data source: no new source. `viewers` / `maxViewers` are set by `Video.updateFromHolodex` (Holodex `liveViewers`) and `Video.updateFromMasterchat` (watch-page `viewCount`); `likes` by `Video.updateFromMasterchat` (watch-page `likes`); `premiere` from Holodex stream metadata. This PR only surfaces already-populated model fields into index output.
+
+(No file is edited in this step; it records the required PR-description content.)
+
+- [ ] **Step 5: Verify formatting**
+
+Run: `npx prettier --check "docs/data-contract/root-index.md" "docs/data-contract/channel-index.md" "docs/data-contract/README.md"`
+Expected: reports all three files. If any is flagged, run `npx prettier --write` on the same three paths and re-check. (The `format:check` npm script only covers `src/`.)
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add docs/data-contract/root-index.md docs/data-contract/channel-index.md docs/data-contract/README.md
