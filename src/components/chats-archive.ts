@@ -15,6 +15,8 @@ import type { AgendaModule } from "../modules/schedule.js";
 import { isMain } from "../utils/esm.js";
 import { archiveVideo } from "./chats-archive/archive-video.js";
 import { genIndexFile } from "./chats-archive/gen-index-file.js";
+import { genRealtimeAndUpcomingFiles } from "./chats-archive/gen-realtime-file.js";
+import { genDailyLeaderboards } from "./chats-archive/gen-leaderboard-file.js";
 
 export default function chatsArchive(app: Application) {
   const { agenda } = app.get<AgendaModule>("agenda") ?? {};
@@ -26,6 +28,16 @@ export default function chatsArchive(app: Application) {
 
     agenda.define("chats archive index", () => genIndexFile());
     void agenda.every("10 minutes", "chats archive index");
+
+    agenda.define("chats archive realtime", (job) =>
+      genRealtimeAndUpcomingFiles(job)
+    );
+    void agenda.every("1 minutes", "chats archive realtime");
+
+    agenda.define("chats archive leaderboard", (job) =>
+      genDailyLeaderboards(job)
+    );
+    void agenda.every("10 minutes", "chats archive leaderboard");
   }
 }
 
@@ -82,6 +94,8 @@ if (isMain(import.meta)) {
     assert(MONGO_URI, "MONGO_URI should be defined.");
     await mongoose.connect(MONGO_URI);
     await genIndexFile({ isDirect: true });
+    await genRealtimeAndUpcomingFiles();
+    await genDailyLeaderboards();
     await mongoose.disconnect();
     process.exit(0);
   })();
