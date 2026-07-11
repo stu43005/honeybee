@@ -15,12 +15,15 @@ other document.
 
 ## 2. File type index
 
-| Document                               | File path pattern                 | Current active version       |
-| -------------------------------------- | --------------------------------- | ---------------------------- |
-| [video-meta.md](./video-meta.md)       | `data/videos/{videoId}.meta.json` | 2                            |
-| [video-chats.md](./video-chats.md)     | `data/videos/{videoId}.jsonl`     | 2 (shared with `video-meta`) |
-| [root-index.md](./root-index.md)       | `data/index.json`                 | 1                            |
-| [channel-index.md](./channel-index.md) | `data/channels/{channelId}.json`  | 1                            |
+| Document                                       | File path pattern                             | Current active version       |
+| ---------------------------------------------- | --------------------------------------------- | ---------------------------- |
+| [video-meta.md](./video-meta.md)               | `data/videos/{videoId}.meta.json`             | 2                            |
+| [video-chats.md](./video-chats.md)             | `data/videos/{videoId}.jsonl`                 | 2 (shared with `video-meta`) |
+| [root-index.md](./root-index.md)               | `data/index.json`                             | 1                            |
+| [channel-index.md](./channel-index.md)         | `data/channels/{channelId}.json`              | 1                            |
+| [realtime.md](./realtime.md)                   | `data/realtime.json`                          | 1                            |
+| [upcoming.md](./upcoming.md)                   | `data/upcoming.json`                          | 1                            |
+| [daily-leaderboard.md](./daily-leaderboard.md) | `data/leaderboard/{metric}/{YYYY-MM-DD}.json` | 1                            |
 
 ## 3. Versioning policy summary
 

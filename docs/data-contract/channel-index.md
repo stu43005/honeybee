@@ -10,13 +10,14 @@ field.)
 defensively as `(json.version ?? 1)`. A future bump will introduce a
 `version: number` field at the root; until then the field's absence
 implies version 1.
-**Current writer emits:** version 1, revision r0
+**Current writer emits:** version 1, revision r1
 
 ## Revision history
 
-| Version | Revision | Date       | PR  | Summary                                                                 |
-| ------- | -------- | ---------- | --- | ----------------------------------------------------------------------- |
-| 1       | r0       | 2026-05-30 | —   | Initial documentation of the existing pre-versioned format (bootstrap). |
+| Version | Revision | Date       | PR  | Summary                                                                          |
+| ------- | -------- | ---------- | --- | -------------------------------------------------------------------------------- |
+| 1       | r0       | 2026-05-30 | —   | Initial documentation of the existing pre-versioned format (bootstrap).          |
+| 1       | r1       | 2026-07-11 | —   | Add optional `viewers`, `maxViewers`, `likes`, `premiere` to each video summary. |
 
 ## version 1
 
@@ -49,13 +50,27 @@ interface VideoSummaryNoChannel {
 }
 ```
 
+### Additive fields (r1)
+
+Since r1, each `VideoSummaryNoChannel` entry may also carry these optional
+fields; all are absent when the underlying value was never populated:
+
+```ts
+interface VideoSummaryNoChannel {
+  viewers?: number; // live concurrent viewers; 0 after the stream finishes
+  maxViewers?: number; // peak concurrent viewers; persists after finish
+  likes?: number; // like count; persists after finish
+  premiere?: boolean; // true for YouTube premieres
+}
+```
+
 Reader version detection — treat absence of the `version` key as v1:
 
 ```ts
 const version = (json.version ?? 1) as number;
 ```
 
-### Cumulative JSON example (r0)
+### Cumulative JSON example (r1)
 
 ```json
 {
@@ -74,7 +89,9 @@ const version = (json.version ?? 1) as number;
       "scheduledStart": "2026-05-30T08:00:00.000Z",
       "actualStart": "2026-05-30T08:01:00.000Z",
       "actualEnd": "2026-05-30T10:01:00.000Z",
-      "publishedAt": "2026-05-30T07:00:00.000Z"
+      "publishedAt": "2026-05-30T07:00:00.000Z",
+      "maxViewers": 6000,
+      "likes": 900
     }
   ]
 }
@@ -97,8 +114,9 @@ const version = (json.version ?? 1) as number;
 - **Always present per video summary:** `id`, `title`, `status`,
   `duration`, `availableAt`, `archiveVersion`, `stats.*`.
 - **May be absent per video summary:** `scheduledStart`, `actualStart`,
-  `actualEnd`, `publishedAt`. The entry has **no** `channel` field — to
-  identify the channel, use the root `id` / `name` of the index file.
+  `actualEnd`, `publishedAt`; and, since r1, `viewers`, `maxViewers`,
+  `likes`, `premiere`. The entry has **no** `channel` field — to identify
+  the channel, use the root `id` / `name` of the index file.
 - **Embedded `archiveVersion`:** the corresponding video's archived data
   version. Values currently observed in production are `1` (legacy,
   pre-v2 archive on S3 with the old shape; will not be re-archived) and
