@@ -24,6 +24,14 @@ The already-shipped `data/leaderboard/**` output is treated as unused: its
 writer, tests, data-contract document, scheduled job, and README index row are
 removed outright. No consumer migration is needed.
 
+This new file also completes the replacement of `root-index` (`data/index.json`)
+by the newer per-purpose index files: its `live` array is superseded by
+`realtime.json` + `upcoming.json`, and its `past` array is superseded by the
+per-day `daily-videos/{date}.json` files. Accordingly, `root-index`'s
+**data-contract document is marked deprecated** here, while its **writer code is
+kept unchanged for now** (no output or shape change) so existing readers keep
+working during the frontend transition.
+
 ## 2. Goals / non-goals
 
 **Goals**
@@ -33,14 +41,18 @@ removed outright. No consumer migration is needed.
 - Refresh today + yesterday (JST) every 10 minutes.
 - Remove the daily leaderboard writer, its tests, its Agenda job, its
   data-contract document, and its README index row.
+- Mark the `root-index` data-contract document deprecated (superseded by
+  realtime/upcoming/daily-videos), keeping its writer code and output unchanged.
 - Document the new output in `docs/data-contract/`.
 
 **Non-goals**
 
-- No change to `realtime.json`, `upcoming.json`, `root-index`, `channel-index`,
-  or `buildVideoSummary`. The four summary fields the previous revision added
-  stay exactly as they are; this design reuses them and adds no new summary
-  field.
+- No change to `realtime.json`, `upcoming.json`, `channel-index`, or
+  `buildVideoSummary`. The four summary fields the previous revision added stay
+  exactly as they are; this design reuses them and adds no new summary field.
+- No change to the `root-index` **writer or its `data/index.json` output** — the
+  code stays as-is (its removal is out of scope for this design). Only its
+  data-contract document is annotated deprecated (§7).
 - No change to the per-video `video-meta.json` / `.jsonl` writer.
 - No new data source. Every field surfaced is already populated on the `Video`
   model.
@@ -159,6 +171,19 @@ schedule order. These runs are sub-second (two indexed range queries plus two
 small JSON writes); `job.touch()` after each file renews the lock so a slow run
 cannot let its lock lapse mid-run.
 
+**Direct-run is outside the Agenda lock — a manual-only path.** The
+`isMain(import.meta)` direct-run invocation is a developer/operator regeneration
+tool, not a second scheduled writer, and it shares the same fixed-`<path>.tmp`
+writer (`writeDataFile`) as every other generator in this component
+(`gen-index-file`, `gen-realtime-file`, …). Two writers targeting one file's
+temp path concurrently could corrupt that temp or fail the rename, so the
+single-writer property is an **operational invariant**: the direct-run path must
+not be executed while the scheduled `chats archive daily-videos` job is enabled
+(i.e. against a live `manager`). This constraint is not new to daily-videos — it
+is the established convention for the existing generators, which use the same
+shared writer and the same direct-run block; daily-videos introduces no
+per-writer lock or unique-temp machinery, to stay consistent with them.
+
 ## 6. Removed leaderboard assets
 
 - `src/components/chats-archive/gen-leaderboard-file.ts` and its
@@ -193,13 +218,23 @@ scan instead of the leaderboard.
 
 - `daily-leaderboard.md` — deleted (§6).
 
+**Deprecated file-type document (doc-only annotation, no shape/version change):**
+
+- `root-index.md` — add a **Deprecated** status banner at the top explaining
+  that `data/index.json` is superseded (`live` → `realtime.json` +
+  `upcoming.json`; `past` → `daily-videos/{date}.json`) and that the writer is
+  retained for now so existing readers keep working. Add one revision-history
+  row recording the deprecation as a documentation-only change (no field, shape,
+  or version change; the writer still emits version 1). No edits to the shape,
+  example, or reader-guidance beyond the banner + history row.
+
 **Index update:**
 
 - `README.md` §2 file-type index — replace the daily-leaderboard row with a
-  daily-videos row at active version 1.
+  daily-videos row at active version 1, and mark the root-index row deprecated.
 
-**No change** to `realtime.md`, `upcoming.md`, `root-index.md`, or
-`channel-index.md`: the shared summary shape is unchanged by this design.
+**No change** to `realtime.md`, `upcoming.md`, or `channel-index.md`: the shared
+summary shape is unchanged by this design.
 
 Writer source, JSDoc, and commit messages must describe field shapes inline and
 must not reference the contract documents (data-contract §8.1 anti-leak rule).
@@ -234,6 +269,20 @@ observed DB state transition, per project test conventions.
   **Rationale:** the user confirmed the leaderboard output was never wired into
   the frontend, so the stale files are inert — no reader observes them, and a
   storage-cleanup mechanism would be disproportionate to the impact.
+
+- **Concern:** removing the leaderboard writer, Agenda job, and its data-contract
+  document outright skips the standard two-version coexistence/deprecation window
+  — a still-deployed or rolled-back reader expecting `data/leaderboard/**` would
+  lose future refreshes and its contract doc simultaneously.
+  **Decision:** removed outright, with no coexistence window or deprecation
+  period for the leaderboard output.
+  **Rationale:** the user confirmed the leaderboard output was never consumed by
+  any reader (frontend or external), so there is no reader whose contract the
+  removal could break; keeping a deprecated writer/job/doc alive purely to honour
+  a coexistence window for an output nobody reads would be disproportionate. This
+  is scoped to the leaderboard output specifically — the actively-read
+  `root-index` is instead only deprecated with its writer retained (§1, §7), not
+  removed.
 
 ## 10. Open questions
 
