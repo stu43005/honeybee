@@ -1280,16 +1280,14 @@ Frozen-section rule for this task: the `### Base shape (r0)` interface and the r
 | 1       | r1       | 2026-07-11 | —   | Add optional `viewers`, `maxViewers`, `likes`, `premiere` to each video summary. |
 ```
 
-3. Directly after the existing `### Base shape (r0)` fenced `ts` block (before `Reader version detection`), insert:
+3. Directly after the existing `### Base shape (r0)` fenced `ts` block (before `Reader version detection`), insert the subsection below. (Editor note, not for the doc: the `ts` block deliberately re-declares the same interface name `VideoSummaryWithChannel` — TypeScript declaration merging makes that valid and keeps the frozen r0 base shape untouched. Do not write this rationale into the doc; the doc is reader-facing.)
 
 ````markdown
 ### Additive fields (r1)
 
 Since r1, each `VideoSummaryWithChannel` entry may also carry these
 optional fields; all are absent when the underlying value was never
-populated. TypeScript interface declarations merge, so re-declaring
-`VideoSummaryWithChannel` here augments the r0 base shape without editing
-it:
+populated:
 
 ```ts
 interface VideoSummaryWithChannel {
@@ -1333,15 +1331,13 @@ Apply the same five edits as Step 1, adapted to this file:
 | 1       | r1       | 2026-07-11 | —   | Add optional `viewers`, `maxViewers`, `likes`, `premiere` to each video summary. |
 ```
 
-3. After the `### Base shape (r0)` `ts` block, insert:
+3. After the `### Base shape (r0)` `ts` block, insert the subsection below. (Editor note, not for the doc: the `ts` block deliberately re-declares the same interface name `VideoSummaryNoChannel` — declaration merging makes that valid and keeps the frozen r0 base shape untouched. Do not write this rationale into the doc.)
 
 ````markdown
 ### Additive fields (r1)
 
 Since r1, each `VideoSummaryNoChannel` entry may also carry these optional
-fields; all are absent when the underlying value was never populated.
-TypeScript interface declarations merge, so re-declaring
-`VideoSummaryNoChannel` here augments the r0 base shape without editing it:
+fields; all are absent when the underlying value was never populated:
 
 ```ts
 interface VideoSummaryNoChannel {
