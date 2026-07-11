@@ -70,6 +70,11 @@ export const IsNotShortQuery = Object.freeze({
     },
   }
 )
+// Non-partial companion to the partial availableAt index above: serves
+// availableAt range queries that are NOT restricted to live/upcoming (the
+// daily leaderboard scans a JST-day availableAt window across all statuses).
+// The partial index cannot serve those, so this one covers every status.
+@index({ availableAt: 1 }, { name: "availableAt_all" })
 @index(
   { actualEnd: 1 },
   {
