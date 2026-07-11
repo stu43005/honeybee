@@ -34,6 +34,10 @@ export async function buildVideoSummary(
     "actualStart",
     "actualEnd",
     "publishedAt",
+    "viewers",
+    "maxViewers",
+    "likes",
+    "premiere",
   ] as const) {
     const val = video[key];
     if (val !== undefined && val !== null) summary[key] = val;
