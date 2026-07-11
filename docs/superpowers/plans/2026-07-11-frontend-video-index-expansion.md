@@ -1035,7 +1035,7 @@ defensively as `(json.version ?? 1)`.
 ```ts
 interface UpcomingIndex {
   snapshotAt: string; // ISO 8601
-  upcoming: VideoSummaryWithChannel[]; // status "upcoming", within 48h, soonest first
+  upcoming: VideoSummaryWithChannel[]; // status "upcoming", availableAt before now+48h, soonest first
   recentlyStarted: VideoSummaryWithChannel[]; // status "live", availableAt within last 10 min, newest first
 }
 
@@ -1107,8 +1107,10 @@ interface VideoSummaryWithChannel {
   `actualStart`, `actualEnd`, `publishedAt`, `viewers`, `maxViewers`,
   `likes`, `premiere`.
 - **`upcoming`:** streams with status `"upcoming"` whose `availableAt` is
-  within the next 48 hours, sorted ascending by `availableAt` (soonest
-  first).
+  earlier than 48 hours from now. This is an upper bound only — there is no
+  lower bound, so a stream whose scheduled time has already passed but is
+  still marked `"upcoming"` can also appear. Sorted ascending by
+  `availableAt` (soonest first).
 - **`recentlyStarted`:** streams with status `"live"` whose `availableAt`
   is within the last 10 minutes (a grace window so a stream that just
   transitioned upcoming→live still shows here), sorted descending by
