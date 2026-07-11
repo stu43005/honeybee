@@ -361,13 +361,20 @@ historical missing videos accumulate.
 
 **Deprecated file-type document (doc-only annotation, no shape/version change):**
 
-- `root-index.md` — add a **Deprecated** status banner at the top explaining
-  that `data/index.json` is superseded (`live` → `realtime.json` +
-  `upcoming.json`; `past` → `daily-videos/{date}.json`) and that the writer is
-  retained for now so existing readers keep working. Add one revision-history
-  row recording the deprecation as a documentation-only change (no field, shape,
-  or version change; the writer still emits version 1). No edits to the shape,
-  example, or reader-guidance beyond the banner + history row.
+- `root-index.md` — add a **Deprecated** status banner at the top. The banner
+  states that `data/index.json` is superseded by the newer per-purpose files —
+  `live` by `realtime.json` + `upcoming.json`, and the per-day started-videos
+  purpose of `past` by `daily-videos/{date}.json` — **but must not present
+  `past → daily-videos` as a mechanical 1:1 swap**: it explicitly warns that
+  `daily-videos` is start-day-bucketed and does **not** preserve `past`'s
+  "recently-ended within 48h" semantics (a long-running stream that started
+  before yesterday but ended recently is in `past` but not in the scheduled
+  today/yesterday `daily-videos` files), that composing an equivalent recent-past
+  view is a frontend concern out of scope here, and that the `root-index` writer
+  is retained so readers needing the recently-ended set keep working. Add one
+  revision-history row recording the deprecation as a documentation-only change
+  (no field, shape, or version change; the writer still emits version 1). No
+  edits to the shape, example, or reader-guidance beyond the banner + history row.
 
 **Index update:**
 
