@@ -14,7 +14,7 @@
 
 - ESM source imports use `.js` extensions even for `.ts` files.
 - Tests: `/// <reference types="jest" />` + imports from `@jest/globals`; place `*.spec.ts` beside the implementation.
-- Model interactions are mocked with `jest.spyOn(VideoModel, "<staticMethod>")` (restored via `jest.restoreAllMocks()` in `afterEach`). This matches the repo's established model-test pattern (see `src/models/Channel.spec.ts`, which spies `ChannelModel.findByChannelId`); it mocks the model object's own static, so it is ESM-safe where module-namespace spying is not.
+- Model interactions are mocked with `jest.spyOn(VideoModel, "<staticMethod>")` (restored via `jest.restoreAllMocks()` in `afterEach`). This is a deliberate, repo-aligned deviation from the design's "`jest.mock` the model module" wording: it matches the repo's established model-test pattern (see `src/models/Channel.spec.ts`, which spies `ChannelModel.findByChannelId`) and mocks the model object's own static, so it is ESM-safe where module-namespace mocking/spying is not.
 - Video summaries are typed `Record<string, unknown>` throughout, matching `buildVideoSummary`'s existing return type and the existing `gen-index-file.ts` / `gen-channel-index-file.ts` writers; the concrete field set is owned by `buildVideoSummary`, and the data-contract docs are the normative field-shape reference for consumers.
 - Final verification per task runs `npm run build` (tsc type-check) and `npm run lint`, plus the task's own Jest file. All three must pass before the commit step.
 - Commit each task separately. Use `git add <explicit paths>` — never `git add -A`.
@@ -268,6 +268,8 @@ git commit -m "refactor(chats-archive): add atomic data-file write helper"
 - Test: `src/components/chats-archive/gen-realtime-file.spec.ts` (create)
 
 `buildRealtimeIndex` and `buildUpcomingIndex` are pure functions over an array of `Video` documents plus a snapshot instant — these hold all the filter/sort/partition logic and are the unit-tested surface. `queryLiveVideos` is the model-touching fetch (unit-tested by spying `VideoModel.findLiveVideos`). `genRealtimeAndUpcomingFiles` is thin glue: one `queryLiveVideos()` fetch shared by both builders, but each file is stamped with **its own** `snapshotAt` taken immediately before that file is built/written and published via its own atomic write — the two files are not a joined snapshot. Realtime keeps only `live` status sorted by viewers desc (id asc tiebreak); upcoming splits `upcoming` status (soonest first) from streams that went live in the last 10 minutes (newest first). Explicit return-type interfaces on the builders describe each output shape inline.
+
+The 48h upper bound on the `upcoming` list is enforced **at the fetch** — `findLiveVideos(48)` already bounds `availableAt` — so `buildUpcomingIndex` deliberately does **not** re-filter by 48h; it trusts its input is already window-bounded and only partitions by status / the 10-minute recently-started window. The builder tests therefore assert status partitioning and the 10-minute boundary, not the 48h cut (which belongs to `queryLiveVideos`, covered by its own spy test).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1378,24 +1380,18 @@ In the `## 2. File type index` table, after the existing
 | [daily-leaderboard.md](./daily-leaderboard.md)   | `data/leaderboard/{metric}/{YYYY-MM-DD}.json` | 1                            |
 ```
 
-- [ ] **Step 4: Record the data-source justification for the PR**
-
-No new data source is introduced — the four fields are already populated on the `Video` model. When opening the PR, include this justification in the PR description (it satisfies the data-contract's data-source requirement by citing existing writers; it is not written into the contract markdown):
-
-> Data source: no new source. `viewers` / `maxViewers` are set by `Video.updateFromHolodex` (Holodex `liveViewers`) and `Video.updateFromMasterchat` (watch-page `viewCount`); `likes` by `Video.updateFromMasterchat` (watch-page `likes`); `premiere` from Holodex stream metadata. This PR only surfaces already-populated model fields into index output.
-
-(No file is edited in this step; it records the required PR-description content.)
-
-- [ ] **Step 5: Verify formatting**
+- [ ] **Step 4: Verify formatting**
 
 Run: `npx prettier --check "docs/data-contract/root-index.md" "docs/data-contract/channel-index.md" "docs/data-contract/README.md"`
-Expected: reports all three files. If any is flagged, run `npx prettier --write` on the same three paths and re-check. (The `format:check` npm script only covers `src/`.)
+Expected: all three pass. If any is flagged, run `npx prettier --write` on the same three paths and re-check. (The `format:check` npm script only covers `src/`.)
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit (with the data-source justification in the message body)**
+
+No new data source is introduced — the four fields are already populated on the `Video` model — so the data-contract's data-source requirement is satisfied by citing the existing writers. Because this change lands on `dev` with no PR, that citation lives durably in the commit message **body** (it cites data sources, not the contract documents, so it does not trip the anti-leak rule):
 
 ```bash
 git add docs/data-contract/root-index.md docs/data-contract/channel-index.md docs/data-contract/README.md
-git commit -m "docs(data-contract): revise root/channel index for new summary fields"
+git commit -m "docs(data-contract): revise root/channel index for new summary fields" -m "Data source: no new source. viewers/maxViewers are set by Video.updateFromHolodex (Holodex liveViewers) and Video.updateFromMasterchat (watch-page viewCount); likes by Video.updateFromMasterchat (watch-page likes); premiere from Holodex stream metadata. This change only surfaces already-populated model fields into index output."
 ```
 
 ---
