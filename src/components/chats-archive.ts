@@ -37,7 +37,7 @@ export default function chatsArchive(app: Application) {
     agenda.define("chats archive leaderboard", (job) =>
       genDailyLeaderboards(job)
     );
-    void agenda.every("10 minutes", "chats archive leaderboard");
+    void agenda.every("1 hours", "chats archive leaderboard");
   }
 }
 
