@@ -56,9 +56,10 @@ Deep-history backfill of arbitrary past dates also stays out of scope (§2).
   started, non-upcoming stream of that day (full list, no ranking, no cap).
 - Refresh today + yesterday (JST) every 10 minutes.
 - Add a second, every-12h "finalize" pass that re-refreshes the start-day files
-  of streams that are still live from before yesterday, ended in the last 12h, or
-  were detected deleted in the last 12h — so long-running / late-finalizing
-  streams' lifetime metrics do not freeze stale in an out-of-window day file.
+  of streams that are still live from before yesterday, or that ended / were
+  detected deleted within the trailing finalize window (48h — the overlap budget
+  is explained in §5) — so long-running / late-finalizing streams' lifetime
+  metrics do not freeze stale in an out-of-window day file.
 - Add a `detectedDeletionAt` timestamp to the `Video` model, set once when a
   video is first detected deleted and cleared when it reappears, to drive the
   finalize pass's "recently deleted" branch.
@@ -348,10 +349,11 @@ historical missing videos accumulate.
   `availableAt`-descending default order (with the note that consumers may
   re-sort client-side), and the metric-freshness contract (§3): a day file is
   refreshed every 10 min while it is today/yesterday, then at least every 12h
-  while it still contains a live stream and once more after such a stream ends or
-  is detected deleted, so `viewers`/`maxViewers`/`likes` are a periodically
-  refreshed snapshot — `realtime.json` is authoritative for a currently-live
-  stream's instantaneous value.
+  while it still contains a live stream and typically once more shortly after such
+  a stream ends or is detected deleted (barring an extended finalize outage — §9),
+  so `viewers`/`maxViewers`/`likes` are a periodically refreshed snapshot —
+  `realtime.json` is authoritative for a currently-live stream's instantaneous
+  value.
 
 **Removed file-type document:**
 
