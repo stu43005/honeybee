@@ -32,6 +32,18 @@ per-day `daily-videos/{date}.json` files. Accordingly, `root-index`'s
 kept unchanged for now** (no output or shape change) so existing readers keep
 working during the frontend transition.
 
+**"Superseded" is a forward-preference marker, not an immediate backend cutover,
+and needs no historical backfill.** `root-index` is not a historical archive: its
+`live`/`past` arrays come from `findLiveVideos(48)` / `findRecentlyEndedVideos(48)`,
+i.e. a rolling ~48h window of currently-live and recently-ended streams, not
+arbitrary past dates. The `daily-videos` today+yesterday refresh covers a
+comparable recent window, so nothing a `root-index` reader could previously see
+is lost. Because the `root-index` writer is retained (not removed), both outputs
+are published simultaneously and the frontend migrates at its own pace — there is
+no forced switch that could produce 404s. Deep-history backfill of arbitrary past
+dates stays out of scope (§2); it was never a `root-index` capability either, so
+deprecating `root-index` introduces no historical-coverage gap.
+
 ## 2. Goals / non-goals
 
 **Goals**
@@ -65,7 +77,8 @@ working during the frontend transition.
   refreshes today + yesterday only; the single-date core serves manual/CLI
   regeneration.
 - No deployment/rollback/mixed-version orchestration beyond the data-contract's
-  standard two-version coexistence window.
+  standard two-version coexistence window — **except** the leaderboard removal,
+  which deliberately skips that window because its output is unused (§9).
 
 ## 3. Output file (`data/daily-videos/{YYYY-MM-DD}.json`)
 
@@ -143,9 +156,21 @@ true }`, `hbIgnore: { $ne: true }`.
   reads, calls `genDailyVideosFile` for each, and renews the Agenda lock with
   `job?.touch()` after each file.
 
-All writes reuse the shared `writeDataFile` / `dataFilePath` atomic writer
-(`mkdir -p` parent → write `<path>.tmp` → atomic `rename`), identical to the
-existing index writers.
+All writes reuse the shared `writeDataFile` / `dataFilePath` atomic writer.
+
+**Shared-writer hardening (`write-data-file.ts`).** `writeDataFile` currently
+writes to a fixed `<path>.tmp` sibling before the atomic `rename`. A fixed temp
+name is unsafe if two processes ever write the same output path concurrently
+(the direct-run path vs. the scheduled job — see §5): their interleaved writes to
+the one shared temp file could publish a corrupt file, or one `rm`/`rename` could
+race the other. This design changes `writeDataFile` to write to a **per-call
+unique temp name** (`<path>.<pid>.<random>.tmp`) and `rename` that into place, so
+each writer owns its own temp file and the final `rename` is the only contended
+step. `rename` is atomic and both writers produce byte-identical content from the
+same DB snapshot, so the last rename wins harmlessly — no torn or corrupt file is
+ever observable. This is a pure robustness change to the shared helper (all
+generators — `gen-index-file`, `gen-realtime-file`, this one — benefit); the
+published output bytes are unchanged. It adds no cross-process lock.
 
 ## 5. Scheduling (`src/components/chats-archive.ts`)
 
@@ -171,18 +196,16 @@ schedule order. These runs are sub-second (two indexed range queries plus two
 small JSON writes); `job.touch()` after each file renews the lock so a slow run
 cannot let its lock lapse mid-run.
 
-**Direct-run is outside the Agenda lock — a manual-only path.** The
+**Direct-run vs. the scheduled job — safe by construction.** The
 `isMain(import.meta)` direct-run invocation is a developer/operator regeneration
-tool, not a second scheduled writer, and it shares the same fixed-`<path>.tmp`
-writer (`writeDataFile`) as every other generator in this component
-(`gen-index-file`, `gen-realtime-file`, …). Two writers targeting one file's
-temp path concurrently could corrupt that temp or fail the rename, so the
-single-writer property is an **operational invariant**: the direct-run path must
-not be executed while the scheduled `chats archive daily-videos` job is enabled
-(i.e. against a live `manager`). This constraint is not new to daily-videos — it
-is the established convention for the existing generators, which use the same
-shared writer and the same direct-run block; daily-videos introduces no
-per-writer lock or unique-temp machinery, to stay consistent with them.
+tool that shares the same `writeDataFile` as the scheduled job. It runs outside
+the Agenda lock, so a manual regeneration can overlap a scheduled run and both
+may write the same `daily-videos/{date}.json`. With the unique-temp hardening
+above, this is harmless: each run writes its own temp file, both derive
+byte-identical content from the same DB state, and the two atomic `rename`s
+simply publish in arbitrary order with the last one winning — no torn, corrupt,
+or missing file is ever observable. No cross-process lock is therefore required,
+and the direct-run path stays consistent with every other generator's writer.
 
 ## 6. Removed leaderboard assets
 
@@ -208,7 +231,9 @@ scan instead of the leaderboard.
 - `daily-videos.md` — path pattern `data/daily-videos/{YYYY-MM-DD}.json`, writer
   `src/components/chats-archive/gen-daily-videos-file.ts`, shape from §3.
   Includes: path pattern, writer, version field policy, a revision-history table
-  (one r0 row with concrete Date/PR), the TypeScript interface, a cumulative
+  (one r0 row; Date is the implementation date, PR is the merging PR number or
+  the `—` placeholder if not known at authoring time — matching the existing
+  bootstrap docs), the TypeScript interface, a cumulative
   JSON example, and a reader-guidance section documenting `date` and
   `snapshotAt` as always-present, `videos: []` for a computed-empty day, and the
   `availableAt`-descending default order (with the note that consumers may
@@ -256,6 +281,12 @@ state transitions are observed):
   `availableAt`.
 - Empty day: zero qualifying streams emits `{ ..., videos: [] }`, not a 404 /
   missing file.
+
+`write-data-file.spec.ts` is updated for the unique-temp change (§4): assert the
+published file still lands atomically with the exact content, and that the temp
+sibling no longer uses a fixed `<path>.tmp` name (so any existing assertion on
+the literal temp filename is relaxed to match the `<path>.<pid>.<random>.tmp`
+pattern). No behavioral change to the published bytes is expected.
 
 Each `it` carries at least one structural assertion (`toEqual` / ordering /
 snapshot), awaits the async summary build, and uses stateful fakes for any
