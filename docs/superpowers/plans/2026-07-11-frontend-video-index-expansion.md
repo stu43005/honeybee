@@ -14,6 +14,8 @@
 
 - ESM source imports use `.js` extensions even for `.ts` files.
 - Tests: `/// <reference types="jest" />` + imports from `@jest/globals`; place `*.spec.ts` beside the implementation.
+- Model interactions are mocked with `jest.spyOn(VideoModel, "<staticMethod>")` (restored via `jest.restoreAllMocks()` in `afterEach`). This matches the repo's established model-test pattern (see `src/models/Channel.spec.ts`, which spies `ChannelModel.findByChannelId`); it mocks the model object's own static, so it is ESM-safe where module-namespace spying is not.
+- Video summaries are typed `Record<string, unknown>` throughout, matching `buildVideoSummary`'s existing return type and the existing `gen-index-file.ts` / `gen-channel-index-file.ts` writers; the concrete field set is owned by `buildVideoSummary`, and the data-contract docs are the normative field-shape reference for consumers.
 - Final verification per task runs `npm run build` (tsc type-check) and `npm run lint`, plus the task's own Jest file. All three must pass before the commit step.
 - Commit each task separately. Use `git add <explicit paths>` — never `git add -A`.
 
@@ -393,6 +395,7 @@ Expected: FAIL — cannot find module `./gen-realtime-file.js`.
 Create `src/components/chats-archive/gen-realtime-file.ts`:
 
 ```ts
+import type { Job } from "agenda";
 import type { DocumentType } from "@typegoose/typegoose";
 import { VideoStatus } from "holodex.js";
 import VideoModel, { type Video } from "../../models/Video.js";
@@ -484,11 +487,14 @@ export async function queryLiveVideos(): Promise<VideoDoc[]> {
  * `upcoming.json` independently. Each file gets its own `snapshotAt` taken just
  * before it is built, and its own atomic write; readers must treat each file's
  * `snapshotAt` as authoritative for that file only and must not join the two.
+ * The optional `job` renews the Agenda lock between the two writes so a slow
+ * run cannot let its lock lapse mid-run.
  */
-export async function genRealtimeAndUpcomingFiles(): Promise<void> {
+export async function genRealtimeAndUpcomingFiles(job?: Job): Promise<void> {
   const videos = await queryLiveVideos();
   const realtime = await buildRealtimeIndex(videos, new Date());
   await writeDataFile(dataFilePath("realtime.json"), realtime);
+  await job?.touch();
   const upcoming = await buildUpcomingIndex(videos, new Date());
   await writeDataFile(dataFilePath("upcoming.json"), upcoming);
 }
@@ -581,6 +587,17 @@ describe("jstDayRangeUtc", () => {
     expect(start.toISOString()).toBe("2026-07-10T15:00:00.000Z");
     expect(end.toISOString()).toBe("2026-07-11T15:00:00.000Z");
   });
+
+  it("attributes a near-JST-midnight stream to the correct day", () => {
+    const { start, end } = jstDayRangeUtc("2026-07-11");
+    const lateOn11 = new Date("2026-07-11T14:30:00.000Z"); // 23:30 JST on 2026-07-11
+    const earlyOn12 = new Date("2026-07-11T15:30:00.000Z"); // 00:30 JST on 2026-07-12
+    // late-on-the-11th falls inside the 11th's [start, end) range...
+    expect(lateOn11.getTime()).toBeGreaterThanOrEqual(start.getTime());
+    expect(lateOn11.getTime()).toBeLessThan(end.getTime());
+    // ...while just-past-midnight belongs to the next day (>= end), excluded here.
+    expect(earlyOn12.getTime()).toBeGreaterThanOrEqual(end.getTime());
+  });
 });
 
 describe("leaderboardFilter", () => {
@@ -668,6 +685,7 @@ Expected: FAIL — cannot find module `./gen-leaderboard-file.js`.
 Create `src/components/chats-archive/gen-leaderboard-file.ts`:
 
 ```ts
+import type { Job } from "agenda";
 import type { DocumentType } from "@typegoose/typegoose";
 import moment from "moment-timezone";
 import type { FilterQuery } from "mongoose";
@@ -770,14 +788,20 @@ export async function genLeaderboardFile(
   );
 }
 
-/** Refresh today + yesterday (JST) for both metrics. */
-export async function genDailyLeaderboards(): Promise<void> {
+/**
+ * Refresh today + yesterday (JST) for both metrics. Both dates derive from one
+ * captured `now` so the pair cannot straddle JST midnight between two reads.
+ * The optional `job` renews the Agenda lock after each file so a slow run
+ * cannot let its lock lapse mid-run.
+ */
+export async function genDailyLeaderboards(job?: Job): Promise<void> {
   const now = moment.tz(JST);
   const today = now.clone().format("YYYY-MM-DD");
   const yesterday = now.clone().subtract(1, "day").format("YYYY-MM-DD");
   for (const date of [today, yesterday]) {
     for (const metric of METRICS) {
       await genLeaderboardFile(date, metric);
+      await job?.touch();
     }
   }
 }
@@ -786,7 +810,7 @@ export async function genDailyLeaderboards(): Promise<void> {
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `npm run test -- src/components/chats-archive/gen-leaderboard-file.spec.ts`
-Expected: PASS (7 tests).
+Expected: PASS (8 tests).
 
 - [ ] **Step 5: Verify build + lint**
 
@@ -808,7 +832,7 @@ git commit -m "feat(chats-archive): generate daily maxviewers/likes leaderboards
 
 - Modify: `src/components/chats-archive.ts`
 
-Register two Agenda jobs in the existing `if (CHAT_ARCHIVE_DIR)` block and invoke both generators once in the `isMain` direct-run block. The job callbacks mirror the existing `chats archive index` job (`() => genX()`). No `job.touch()` call is added: neither generator has a long per-item loop to renew a lock inside — each is a single query pass (or four short queries) that completes well within the default lock lifetime.
+Register two Agenda jobs in the existing `if (CHAT_ARCHIVE_DIR)` block and invoke both generators once in the `isMain` direct-run block. The job callbacks pass the Agenda `job` into each generator (`(job) => genX(job)`) so the generators can renew the lock via `job.touch()` between writes — the same lock-renewal pattern the existing `chats archive` job uses. The direct-run block calls the generators without a `job` (the `job?.touch()` calls become no-ops there).
 
 - [ ] **Step 1: Add the generator imports**
 
@@ -832,10 +856,12 @@ void agenda.every("10 minutes", "chats archive index");
 Add directly after it:
 
 ```ts
-agenda.define("chats archive realtime", () => genRealtimeAndUpcomingFiles());
+agenda.define("chats archive realtime", (job) =>
+  genRealtimeAndUpcomingFiles(job)
+);
 void agenda.every("1 minutes", "chats archive realtime");
 
-agenda.define("chats archive leaderboard", () => genDailyLeaderboards());
+agenda.define("chats archive leaderboard", (job) => genDailyLeaderboards(job));
 void agenda.every("10 minutes", "chats archive leaderboard");
 ```
 
@@ -883,6 +909,8 @@ git commit -m "feat(chats-archive): schedule realtime and leaderboard jobs"
 - Create: `docs/data-contract/daily-leaderboard.md`
 
 Each new output is additive at the directory level (a new file-type document starting at version 1). Follow the structure of the existing `docs/data-contract/root-index.md`. Do not reference these markdown files from any source code (contract anti-leak rule); this task only writes markdown.
+
+**PR column:** this change lands directly on `dev` with no pull request, so each new revision-history row uses `—` in the `PR` column — the same no-PR marker the existing bootstrap rows already use. `Date` is concrete (`2026-07-11`).
 
 - [ ] **Step 1: Create `docs/data-contract/realtime.md`**
 
@@ -1233,6 +1261,8 @@ git commit -m "docs(data-contract): add realtime, upcoming, daily-leaderboard fi
 The shared summary now carries four new optional fields, so `root-index` and `channel-index` get an additive revision r1 (version stays 1). The README file-type index gains the three new rows from Task 6.
 
 Frozen-section rule for this task: the `### Base shape (r0)` interface and the r0 reader-guidance bullets are frozen — do **not** alter existing field names, types, optionality, or ordering there. What you **do** change is additive: add the new r1 revision-history row, add an `### Additive fields (r1)` subsection, append the four new fields to the reader guidance's "may be absent" bullet (annotated "since r1"), and regenerate the single cumulative JSON example to reflect r1 (adding the new optional fields and relabelling its heading `(r1)`). Regenerating the cumulative example is required by the contract's revision rules — the example is the current/rolling example for the version chapter, not frozen r0 text — so this is not a frozen-section violation.
+
+**PR column:** this change lands directly on `dev` with no pull request, so the r1 revision-history rows use `—` in the `PR` column — the same no-PR marker the existing bootstrap rows already use. `Date` is concrete (`2026-07-11`).
 
 - [ ] **Step 1: Add r1 to `root-index.md`**
 
