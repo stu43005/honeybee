@@ -55,6 +55,13 @@ Deep-history backfill of arbitrary past dates also stays out of scope (§2).
 - Add a per-JST-day `data/daily-videos/{YYYY-MM-DD}.json` file listing every
   started, non-upcoming stream of that day (full list, no ranking, no cap).
 - Refresh today + yesterday (JST) every 10 minutes.
+- Add a second, every-12h "finalize" pass that re-refreshes the start-day files
+  of streams that are still live from before yesterday, ended in the last 12h, or
+  were detected deleted in the last 12h — so long-running / late-finalizing
+  streams' lifetime metrics do not freeze stale in an out-of-window day file.
+- Add a `detectedDeletionAt` timestamp to the `Video` model, set once when a
+  video is first detected deleted and cleared when it reappears, to drive the
+  finalize pass's "recently deleted" branch.
 - Remove the daily leaderboard writer, its tests, its Agenda job, its
   data-contract document, and its README index row.
 - Mark the `root-index` data-contract document deprecated (superseded by
@@ -77,9 +84,11 @@ Deep-history backfill of arbitrary past dates also stays out of scope (§2).
 - No cleanup/migration of the already-written `data/leaderboard/**` files on S3.
   They are treated as unused and left in place; the frontend simply stops
   reading them. (See §9 Non-goals / Accepted limitations.)
-- No backfill of arbitrary historical dates on a schedule. The scheduled job
-  refreshes today + yesterday only; the single-date core serves manual/CLI
-  regeneration.
+- No backfill of arbitrary historical dates on a schedule. The 10-minute job
+  refreshes today + yesterday; the 12-hour finalize job additionally refreshes
+  only the start dates of streams still live / ended / detected-deleted in its
+  window — never a blanket sweep of old dates. The single-date core serves
+  manual/CLI regeneration of any one date.
 - No deployment/rollback/mixed-version orchestration beyond the data-contract's
   standard two-version coexistence window — **except** the leaderboard removal,
   which deliberately skips that window because its output is unused (§9).
@@ -113,6 +122,17 @@ frontend sorts on.
   series.
 - Query range for a date `D`: `[D 00:00 Asia/Tokyo, (D+1) 00:00 Asia/Tokyo)`
   converted to UTC via `moment-timezone`, matched against `availableAt`.
+
+**Metric freshness**
+
+- Each entry's `viewers` / `maxViewers` / `likes` reflect the `Video` model at
+  the moment the day's file was last regenerated, not necessarily the stream's
+  final values. The 10-minute pass keeps today + yesterday fresh; the 12-hour
+  finalize pass (§5) re-refreshes older day files while their streams are still
+  live, and once more after they end or are detected deleted, so a long-running
+  stream's frozen metrics are corrected within ≤12h of the change and finalized
+  after it ends. For a currently-live stream, the authoritative up-to-the-minute
+  value is `realtime.json`; the day file is a periodically-refreshed snapshot.
 
 **Qualification**
 
@@ -159,6 +179,14 @@ true }`, `hbIgnore: { $ne: true }`.
   `moment.tz("Asia/Tokyo")` so the pair cannot straddle JST midnight between two
   reads, calls `genDailyVideosFile` for each, and renews the Agenda lock with
   `job?.touch()` after each file.
+- `genDailyVideosFinalize(job?)` — the 12-hour finalize pass (§5). Queries the
+  streams whose start-day files may hold stale metrics (still-live-from-before-
+  yesterday, ended within 12h, or detected-deleted within 12h — full filter in
+  §5), maps each to its JST start date (`moment.tz(availableAt,"Asia/Tokyo")
+.format("YYYY-MM-DD")`), builds the **distinct** date set, drops today and
+  yesterday from it (those are owned by `genDailyVideos`, keeping the two jobs'
+  written date sets disjoint — §5), and calls `genDailyVideosFile` for each
+  remaining date, `job?.touch()` after each.
 
 All writes reuse the shared `writeDataFile` / `dataFilePath` atomic writer.
 
@@ -185,37 +213,84 @@ Inside the existing `if (CHAT_ARCHIVE_DIR)` block:
 - **Add** `chats archive daily-videos` — `agenda.every("10 minutes", ...)` whose
   handler calls `genDailyVideos(job)` (passing the Agenda job so the lock is
   renewed between the two files).
+- **Add** `chats archive daily-videos finalize` — `agenda.every("12 hours", ...)`
+  whose handler calls `genDailyVideosFinalize(job)`. A distinct job name (hence a
+  distinct Agenda lock) from the 10-minute job; the two write disjoint date sets
+  (see below), so they never contend for the same file.
 - In the `isMain(import.meta)` direct-run block, replace the leaderboard
-  generator call with a single `genDailyVideos()` invocation (no job), so a
-  manual CLI run regenerates today + yesterday alongside the existing index and
-  realtime/upcoming generators.
+  generator call with `genDailyVideos()` followed by `genDailyVideosFinalize()`
+  (both no-job), so a manual CLI run regenerates today + yesterday plus any
+  older finalize-eligible day alongside the existing index and realtime/upcoming
+  generators.
+
+**Finalize pass — which streams, which dates (12h job).** The finalize query
+selects, with `readPreference: "secondaryPreferred"`, streams that have an
+`actualStart` (started), are not `uploadedVideo` and not `hbIgnore`, and match
+**any** of these three branches (all timestamps compared against one captured
+`now`):
+
+- `status === Live` AND `availableAt < startOfYesterday` (JST) — a stream still
+  live whose start day already fell out of the 10-minute today+yesterday window;
+  its lifetime metrics keep growing and would otherwise freeze.
+- `status === Past` AND `actualEnd >= now − 12h` — a stream that ended within the
+  last 12h; one refresh captures its final metrics.
+- `status === Missing` AND `detectedDeletionAt >= now − 12h` — a stream detected
+  deleted within the last 12h; it will get no further metric updates, so its day
+  file is finalized at the last known values.
+
+Each matched stream maps to its JST start date; the pass regenerates the
+**distinct** set of those dates **minus today and yesterday** (owned by the
+10-minute job). This keeps the two scheduled jobs' written file sets disjoint.
+The finalize query runs twice a day over a small result set and reuses the
+existing `status` / `availableAt` indexes; no new index is added.
+
+**Deletion timestamp (`detectedDeletionAt`) — `Video` model + `youtube.ts`.**
+The finalize pass's "recently deleted" branch needs to know _when_ a video was
+first detected deleted. A new optional `detectedDeletionAt?: Date` `@prop()` is
+added to the `Video` model. `video.deleted` is written in exactly one place —
+`updateVideoFromYoutube` in `src/modules/youtube.ts` — so the timestamp is
+maintained there and only there, on the two `deleted` transitions:
+
+- When a video is found missing from the YouTube response and was **not** already
+  `deleted`, set `detectedDeletionAt = now` **once** (guarding on the pre-write
+  `deleted` value so repeated crawls of a still-missing video do not overwrite
+  the original detection time), then set `deleted = true`.
+- When a previously-`deleted` video reappears, clear `detectedDeletionAt`
+  (`undefined`) alongside setting `deleted = false`.
+
+This is independent of `Channel.deleted` (a separate field, unaffected).
 
 **Concurrency — single writer per job.** Correctness relies on Agenda never
 running two overlapping invocations of the same named job. Agenda registers each
 `every(...)` name as one Mongo-backed job document and takes a per-job lock
 before dispatching, so a run is not re-dispatched while a prior run of that name
 is still in flight — even if `manager` were scaled. Each run is a full,
-idempotent regeneration from current DB state writing a disjoint file set, so at
-any moment there is exactly one writer per file and successive runs publish in
-schedule order. These runs are sub-second (two indexed range queries plus two
-small JSON writes); `job.touch()` after each file renews the lock so a slow run
-cannot let its lock lapse mid-run.
+idempotent regeneration from current DB state. The 10-minute job and the 12-hour
+finalize job are **different** Agenda names (different locks), but by
+construction they write **disjoint date sets** — the 10-minute job owns today +
+yesterday, the finalize job explicitly drops those two dates — so no file has two
+scheduled writers and successive runs of each job publish in schedule order.
+These runs are sub-second (a few indexed range queries plus small JSON writes);
+`job.touch()` after each file renews the lock so a normal run cannot let its lock
+lapse mid-run.
 
-**Direct-run vs. the scheduled job — no corruption, bounded stale-write
-accepted.** The `isMain(import.meta)` direct-run invocation is a
-developer/operator regeneration tool that shares the same `writeDataFile` as the
-scheduled job and runs **outside** the Agenda lock. Two scheduled runs never
-overlap (Agenda's per-job lock), so the only overlap is a manual regeneration
-racing a scheduled run on the same `daily-videos/{date}.json`. The unique-temp
-hardening (§4) guarantees neither ever observes a torn or corrupt file. It does
-**not** guarantee publication ordering: each run captures its own `snapshotAt`
-and re-queries the DB, so a slower older run can `rename` after a newer one and
-briefly republish staler content (advertising an older `snapshotAt`). This
-residual is **accepted, not fixed with a lock** (§9): the window is bounded to
-one scheduled interval (≤10 min) and self-heals on the next scheduled run, it
-requires a rare manual-run/scheduled-run overlap to occur at all, and adding a
-cross-process lock would be disproportionate and inconsistent with every other
-generator's lock-free writer.
+**Concurrent writers — no corruption, bounded stale-write accepted.** Two writers
+can, in rare cases, target the same `daily-videos/{date}.json`: (a) a manual
+`isMain(import.meta)` direct-run — a developer/operator tool that runs **outside**
+the Agenda lock — racing a scheduled run; or (b) an Agenda run whose per-job lock
+lapses under degradation (a stalled secondary, blocked filesystem, or an
+unusually large day pushing a query past the lock lifetime before the first
+`job.touch()`), letting a second run of the same job start while the first is
+still writing. The unique-temp hardening (§4) guarantees no reader ever observes
+a torn or corrupt file in either case. It does **not** guarantee publication
+ordering: each run captures its own `snapshotAt` and re-queries the DB, so a
+slower older run can `rename` after a newer one and briefly republish staler
+content (advertising an older `snapshotAt`). This residual is **accepted, not
+fixed with a lock or `snapshotAt` compare-and-swap** (§9): both triggers are rare
+(a manual/scheduled collision, or a lock lapse under degradation), the stale
+window is bounded to one scheduled interval (≤10 min for the frequent job) and
+self-heals on the next run, and a cross-process publication guard would be
+disproportionate and inconsistent with every other generator's lock-free writer.
 
 ## 6. Removed leaderboard assets
 
@@ -245,9 +320,14 @@ scan instead of the leaderboard.
   the `—` placeholder if not known at authoring time — matching the existing
   bootstrap docs), the TypeScript interface, a cumulative
   JSON example, and a reader-guidance section documenting `date` and
-  `snapshotAt` as always-present, `videos: []` for a computed-empty day, and the
+  `snapshotAt` as always-present, `videos: []` for a computed-empty day, the
   `availableAt`-descending default order (with the note that consumers may
-  re-sort client-side).
+  re-sort client-side), and the metric-freshness contract (§3): a day file is
+  refreshed every 10 min while it is today/yesterday, then at least every 12h
+  while it still contains a live stream and once more after such a stream ends or
+  is detected deleted, so `viewers`/`maxViewers`/`likes` are a periodically
+  refreshed snapshot — `realtime.json` is authoritative for a currently-live
+  stream's instantaneous value.
 
 **Removed file-type document:**
 
@@ -291,6 +371,19 @@ state transitions are observed):
   `availableAt`.
 - Empty day: zero qualifying streams emits `{ ..., videos: [] }`, not a 404 /
   missing file.
+- Finalize date selection: given streams across the three branches (live before
+  yesterday; ended within 12h; detected-deleted within 12h) plus non-matching
+  controls (live within today/yesterday; ended >12h ago; missing without a recent
+  `detectedDeletionAt`; `uploadedVideo`/`hbIgnore`; no `actualStart`), the pass
+  regenerates exactly the distinct JST start dates of the matched streams **minus
+  today and yesterday** — asserted structurally on the set of dates passed to
+  `genDailyVideosFile`.
+
+`youtube.spec.ts` (or the existing youtube module test) covers `detectedDeletionAt`
+via a stateful fake `Video`: a first missing-from-response crawl sets
+`detectedDeletionAt` and `deleted = true`; a second still-missing crawl leaves the
+original `detectedDeletionAt` unchanged (set-once); a later reappearing crawl
+clears `detectedDeletionAt` and sets `deleted = false`.
 
 `write-data-file.spec.ts` is updated for the unique-temp change (§4): assert the
 published file still lands atomically with the exact content, and that the temp
@@ -325,19 +418,23 @@ observed DB state transition, per project test conventions.
   `root-index` is instead only deprecated with its writer retained (§1, §7), not
   removed.
 
-- **Concern:** the direct-run path and the scheduled job share `writeDataFile`
-  with no cross-process lock, so a manual regeneration overlapping a scheduled
-  run can `rename` a staler snapshot after a fresher one and briefly republish
-  older content (older `snapshotAt`) for a `daily-videos/{date}.json` file.
+- **Concern:** writers of a `daily-videos/{date}.json` file share `writeDataFile`
+  with no cross-process publication guard, so two overlapping writers can `rename`
+  a staler snapshot after a fresher one and briefly republish older content
+  (older `snapshotAt`). Overlap can arise from (a) a manual direct-run racing a
+  scheduled run, or (b) an Agenda run whose per-job lock lapses under degradation,
+  letting a second run of the same job start before the first finishes.
   **Decision:** accepted; unique-temp writes (§4) prevent torn/corrupt files, but
   no lock or `snapshotAt` compare-and-swap is added to enforce publication
   ordering.
-  **Rationale:** two scheduled runs never overlap (Agenda per-job lock), so this
-  needs a rare manual-run/scheduled-run collision to occur at all; the stale
-  window is bounded to one scheduled interval (≤10 min) and self-heals on the
-  next run; and a cross-process lock would be disproportionate to this bounded,
-  self-correcting effect and inconsistent with every other generator's lock-free
-  writer.
+  **Rationale:** normal operation has exactly one scheduled writer per file (the
+  10-minute and 12-hour jobs write disjoint dates, and each job's Agenda lock
+  serialises its own runs), so overlap needs either a rare manual/scheduled
+  collision or a rare lock lapse under degradation; the stale window is bounded to
+  one scheduled interval (≤10 min for the frequent job) and self-heals on the next
+  run; and a cross-process publication guard would be disproportionate to this
+  bounded, self-correcting effect and inconsistent with every other generator's
+  lock-free writer.
 
 ## 10. Open questions
 
