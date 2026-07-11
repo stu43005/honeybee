@@ -32,17 +32,21 @@ per-day `daily-videos/{date}.json` files. Accordingly, `root-index`'s
 kept unchanged for now** (no output or shape change) so existing readers keep
 working during the frontend transition.
 
-**"Superseded" is a forward-preference marker, not an immediate backend cutover,
-and needs no historical backfill.** `root-index` is not a historical archive: its
-`live`/`past` arrays come from `findLiveVideos(48)` / `findRecentlyEndedVideos(48)`,
-i.e. a rolling ~48h window of currently-live and recently-ended streams, not
-arbitrary past dates. The `daily-videos` today+yesterday refresh covers a
-comparable recent window, so nothing a `root-index` reader could previously see
-is lost. Because the `root-index` writer is retained (not removed), both outputs
-are published simultaneously and the frontend migrates at its own pace — there is
-no forced switch that could produce 404s. Deep-history backfill of arbitrary past
-dates stays out of scope (§2); it was never a `root-index` capability either, so
-deprecating `root-index` introduces no historical-coverage gap.
+**"Superseded" is a forward-preference marker, not an immediate backend cutover.**
+The no-loss guarantee rests solely on the `root-index` writer being **retained,
+not removed**: `data/index.json` keeps being published unchanged, so no reader
+loses anything and the frontend migrates at its own pace with no forced switch
+that could produce 404s. This spec does **not** claim `daily-videos` is a
+coverage-equivalent drop-in for `root-index`'s `past`: they are deliberately
+different slices — `root-index`'s `past` is a recently-**ended** window
+(`findRecentlyEndedVideos(48)`), whereas `daily-videos` buckets each stream by
+its start day (`availableAt`) and refreshes only today + yesterday. A
+long-running stream that started before yesterday but ended recently is therefore
+in `root-index`'s `past` but not in the scheduled `daily-videos` today/yesterday
+files. Reconciling those slices into whatever "recent past" view the frontend
+wants (e.g. reading additional day files, or continuing to read `root-index` for
+the recently-ended set) is a **frontend composition choice, out of scope here**.
+Deep-history backfill of arbitrary past dates also stays out of scope (§2).
 
 ## 2. Goals / non-goals
 
@@ -166,11 +170,12 @@ the one shared temp file could publish a corrupt file, or one `rm`/`rename` coul
 race the other. This design changes `writeDataFile` to write to a **per-call
 unique temp name** (`<path>.<pid>.<random>.tmp`) and `rename` that into place, so
 each writer owns its own temp file and the final `rename` is the only contended
-step. `rename` is atomic and both writers produce byte-identical content from the
-same DB snapshot, so the last rename wins harmlessly — no torn or corrupt file is
-ever observable. This is a pure robustness change to the shared helper (all
-generators — `gen-index-file`, `gen-realtime-file`, this one — benefit); the
-published output bytes are unchanged. It adds no cross-process lock.
+step. `rename` is atomic, so a reader never observes a torn or corrupt file. This
+is a pure robustness change to the shared helper (all generators —
+`gen-index-file`, `gen-realtime-file`, this one — benefit); the published output
+bytes for any single writer are unchanged. It adds **no** cross-process lock and
+does **not** by itself guarantee publication ordering between two concurrent
+writers — see §5 for the residual stale-write behaviour and why it is accepted.
 
 ## 5. Scheduling (`src/components/chats-archive.ts`)
 
@@ -196,16 +201,21 @@ schedule order. These runs are sub-second (two indexed range queries plus two
 small JSON writes); `job.touch()` after each file renews the lock so a slow run
 cannot let its lock lapse mid-run.
 
-**Direct-run vs. the scheduled job — safe by construction.** The
-`isMain(import.meta)` direct-run invocation is a developer/operator regeneration
-tool that shares the same `writeDataFile` as the scheduled job. It runs outside
-the Agenda lock, so a manual regeneration can overlap a scheduled run and both
-may write the same `daily-videos/{date}.json`. With the unique-temp hardening
-above, this is harmless: each run writes its own temp file, both derive
-byte-identical content from the same DB state, and the two atomic `rename`s
-simply publish in arbitrary order with the last one winning — no torn, corrupt,
-or missing file is ever observable. No cross-process lock is therefore required,
-and the direct-run path stays consistent with every other generator's writer.
+**Direct-run vs. the scheduled job — no corruption, bounded stale-write
+accepted.** The `isMain(import.meta)` direct-run invocation is a
+developer/operator regeneration tool that shares the same `writeDataFile` as the
+scheduled job and runs **outside** the Agenda lock. Two scheduled runs never
+overlap (Agenda's per-job lock), so the only overlap is a manual regeneration
+racing a scheduled run on the same `daily-videos/{date}.json`. The unique-temp
+hardening (§4) guarantees neither ever observes a torn or corrupt file. It does
+**not** guarantee publication ordering: each run captures its own `snapshotAt`
+and re-queries the DB, so a slower older run can `rename` after a newer one and
+briefly republish staler content (advertising an older `snapshotAt`). This
+residual is **accepted, not fixed with a lock** (§9): the window is bounded to
+one scheduled interval (≤10 min) and self-heals on the next scheduled run, it
+requires a rare manual-run/scheduled-run overlap to occur at all, and adding a
+cross-process lock would be disproportionate and inconsistent with every other
+generator's lock-free writer.
 
 ## 6. Removed leaderboard assets
 
@@ -314,6 +324,20 @@ observed DB state transition, per project test conventions.
   is scoped to the leaderboard output specifically — the actively-read
   `root-index` is instead only deprecated with its writer retained (§1, §7), not
   removed.
+
+- **Concern:** the direct-run path and the scheduled job share `writeDataFile`
+  with no cross-process lock, so a manual regeneration overlapping a scheduled
+  run can `rename` a staler snapshot after a fresher one and briefly republish
+  older content (older `snapshotAt`) for a `daily-videos/{date}.json` file.
+  **Decision:** accepted; unique-temp writes (§4) prevent torn/corrupt files, but
+  no lock or `snapshotAt` compare-and-swap is added to enforce publication
+  ordering.
+  **Rationale:** two scheduled runs never overlap (Agenda per-job lock), so this
+  needs a rare manual-run/scheduled-run collision to occur at all; the stale
+  window is bounded to one scheduled interval (≤10 min) and self-heals on the
+  next run; and a cross-process lock would be disproportionate to this bounded,
+  self-correcting effect and inconsistent with every other generator's lock-free
+  writer.
 
 ## 10. Open questions
 
