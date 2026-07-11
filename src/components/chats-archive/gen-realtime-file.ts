@@ -4,6 +4,7 @@ import { VideoStatus } from "holodex.js";
 import VideoModel, { type Video } from "../../models/Video.js";
 import { buildVideoSummary } from "./build-video-summary.js";
 import { dataFilePath, writeDataFile } from "./write-data-file.js";
+import moment from "moment";
 
 // A stream that has just gone live lingers on the upcoming page for this long
 // after its availableAt, so viewers who saw it as upcoming can still find it.
@@ -80,6 +81,15 @@ export async function queryLiveVideos(): Promise<VideoDoc[]> {
   for await (const video of VideoModel.findLiveVideos(48)
     .populate("channel")
     .setOptions({ readPreference: "secondaryPreferred" })) {
+    // filter out streams that have been live for more than 2 days without an actualStart
+    if (
+      video.status === VideoStatus.Live &&
+      !video.actualStart &&
+      video.scheduledStart &&
+      moment.tz("UTC").isAfter(moment(video.scheduledStart).add(2, "days"))
+    )
+      continue;
+
     videos.push(video);
   }
   return videos;
