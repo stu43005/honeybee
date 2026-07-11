@@ -1285,11 +1285,14 @@ Frozen-section rule for this task: the `### Base shape (r0)` interface and the r
 ````markdown
 ### Additive fields (r1)
 
-Each `VideoSummaryWithChannel` entry may additionally carry these optional
-fields; all are absent when the underlying value was never populated:
+Since r1, each `VideoSummaryWithChannel` entry may also carry these
+optional fields; all are absent when the underlying value was never
+populated. TypeScript interface declarations merge, so re-declaring
+`VideoSummaryWithChannel` here augments the r0 base shape without editing
+it:
 
 ```ts
-interface VideoSummaryWithChannelR1 extends VideoSummaryWithChannel {
+interface VideoSummaryWithChannel {
   viewers?: number; // live concurrent viewers; 0 after the stream finishes
   maxViewers?: number; // peak concurrent viewers; persists after finish
   likes?: number; // like count; persists after finish
@@ -1335,11 +1338,13 @@ Apply the same five edits as Step 1, adapted to this file:
 ````markdown
 ### Additive fields (r1)
 
-Each `VideoSummaryNoChannel` entry may additionally carry these optional
-fields; all are absent when the underlying value was never populated:
+Since r1, each `VideoSummaryNoChannel` entry may also carry these optional
+fields; all are absent when the underlying value was never populated.
+TypeScript interface declarations merge, so re-declaring
+`VideoSummaryNoChannel` here augments the r0 base shape without editing it:
 
 ```ts
-interface VideoSummaryNoChannelR1 extends VideoSummaryNoChannel {
+interface VideoSummaryNoChannel {
   viewers?: number; // live concurrent viewers; 0 after the stream finishes
   maxViewers?: number; // peak concurrent viewers; persists after finish
   likes?: number; // like count; persists after finish
