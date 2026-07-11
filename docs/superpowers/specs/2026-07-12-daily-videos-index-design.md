@@ -486,6 +486,20 @@ observed DB state transition, per project test conventions.
   checkpoint would be disproportionate to this residual and matches the project's
   standing preference against hardening rare-outage edges.
 
+- **Concern:** once a frontend release depends on `daily-videos`, deployment /
+  rollback ordering is unspecified — rolling the backend back to before this
+  change stops producing `daily-videos` (a required dependency), and the removed
+  leaderboard writer/job is not retained as a fallback, so a partial rollout or
+  rollback could serve 404s / stale views.
+  **Decision:** out of scope; no publish-before-read invariant, retained-writer
+  coexistence window, or frontend-fallback mechanism is specified here beyond the
+  standard additive-feature deploy order (ship the writer before any reader).
+  **Rationale:** this is the deployment / rollback / mixed-version class of
+  concern the project has standingly ruled disproportionate to enforce in a spec;
+  the new output is purely additive and the retained `root-index` remains a
+  natural fallback, so release sequencing is an operational/release-process matter
+  rather than a design invariant this document must encode.
+
 ## 10. Open questions
 
 None outstanding.
