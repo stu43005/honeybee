@@ -529,6 +529,26 @@ observed DB state transition, per project test conventions.
   disproportionate to this residual and matches the project's standing preference
   against hardening rare edges.
 
+- **Concern:** ignored-channel exclusion in `dailyVideosFilter` /
+  `finalizeFilter` keys on the denormalized `Video.hbIgnore` flag
+  (`hbIgnore: { $ne: true }`). That flag is propagated from `Channel.hbIgnore`
+  opportunistically during a later video crawl (`youtube.ts`), and setting a
+  channel ignored (`set-channel is-ignore`) does not synchronously backfill
+  existing `Video` documents or regenerate already-written day files. So a video
+  whose channel became ignored after it was last crawled can still appear in
+  daily-videos, and older `daily-videos/{date}.json` files are not retroactively
+  purged.
+  **Decision:** accepted; exclusion continues to use the denormalized
+  `Video.hbIgnore` flag with no authoritative channel-join or synchronous
+  backfill added by this design.
+  **Rationale:** this is a pre-existing, project-wide denormalization — the
+  removed leaderboard writer used the byte-identical `hbIgnore: { $ne: true }`
+  filter, and `root-index`, `channel-index`, cleanup, and the worker all rely on
+  the same `Video.hbIgnore` mechanism. daily-videos faithfully reuses the
+  established pattern; making only daily-videos authoritative would be
+  inconsistent with every other index output and a project-wide change out of
+  scope for this feature.
+
 ## 10. Open questions
 
 None outstanding.
