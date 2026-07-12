@@ -507,6 +507,28 @@ observed DB state transition, per project test conventions.
   natural fallback, so release sequencing is an operational/release-process matter
   rather than a design invariant this document must encode.
 
+- **Concern:** the finalize pass only recognizes terminal `Missing` streams via
+  the deletion branch (`detectedDeletionAt >= now − 48h`). A started stream can
+  instead become `Missing` through a heuristic in `updateVideoFromYoutube` while
+  it still exists on YouTube (e.g. live for 2+ days with no viewers, or a
+  scheduled stream overslept 48h) — that path runs the found branch and never
+  sets `detectedDeletionAt`. Such a stream is no longer `Live`, is not `Past`,
+  and has no `detectedDeletionAt`, so once its start day leaves the 10-minute
+  today/yesterday window the finalize pass will not pick it up, and its start-day
+  file can keep showing the stream as `live` with metrics frozen at its
+  last-live snapshot.
+  **Decision:** accepted; the finalize `Missing` branch keys only on
+  `detectedDeletionAt` (real deletions). No general "became missing" timestamp is
+  added and no `hbEnd`-based branch is introduced.
+  **Rationale:** this needs the intersection of a long-running stream (2+ days),
+  a heuristic Missing transition rather than a real deletion, and its start day
+  having already rolled out of the frequent window — a rare edge. A dead stream's
+  `maxViewers`/`likes` are already at their effectively-final values, so the
+  leaderboard inputs are essentially correct; only the `status` field is stale.
+  Generalizing the timestamp (rename + multiple set/clear sites) would be
+  disproportionate to this residual and matches the project's standing preference
+  against hardening rare edges.
+
 ## 10. Open questions
 
 None outstanding.
