@@ -404,14 +404,21 @@ state transitions are observed):
   `availableAt`.
 - Empty day: zero qualifying streams emits `{ ..., videos: [] }`, not a 404 /
   missing file.
-- Finalize date selection: given streams across the three branches (live before
-  yesterday; ended within 48h; detected-deleted within 48h) plus non-matching
-  controls (live within today/yesterday; ended >48h ago; missing without a recent
-  `detectedDeletionAt`; `uploadedVideo`/`hbIgnore`; no `actualStart`), the pass
-  regenerates exactly the distinct JST start dates of the matched streams **minus
-  today and yesterday** — asserted structurally on the set of dates passed to
-  `genDailyVideosFile`. Include a boundary case at exactly `now − 48h` for the
-  ended/deleted branches.
+- Finalize selection, in three parts (the Mongo query is mocked in unit tests, so
+  the filter's selectivity is proven by asserting the exact filter object rather
+  than by running it against a DB):
+  - the filter builder asserts the **exact** filter object — the three `$or`
+    branches (live-before-yesterday; `Past` with `actualEnd >= now − 48h`;
+    `Missing` with `detectedDeletionAt >= now − 48h`) plus the non-matching
+    controls encoded as clauses: `actualStart: { $exists: true, $ne: null }`
+    (excludes never-started), `uploadedVideo`/`hbIgnore` `$ne: true`, and the
+    ended/deleted lower bound at **exactly `now − 48h`** (anything older, or a
+    `Missing` stream without a recent `detectedDeletionAt`, is excluded);
+  - the date mapper asserts distinct JST start dates **minus today and
+    yesterday**, with today/yesterday control docs and a duplicate;
+  - the driver (`genDailyVideosFinalize`) integration test asserts it regenerates
+    exactly those dates (structurally on the set passed to `genDailyVideosFile`)
+    and renews the Agenda lock after each file.
 
 `youtube.spec.ts` (or the existing youtube module test) covers `detectedDeletionAt`
 via a stateful fake `Video`: a first missing-from-response crawl sets
