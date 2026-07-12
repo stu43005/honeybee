@@ -1,4 +1,5 @@
 import assert from "node:assert";
+import { randomUUID } from "node:crypto";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { CHAT_ARCHIVE_DIR } from "../../constants.js";
@@ -15,16 +16,18 @@ export function dataFilePath(...segments: string[]): string {
 
 /**
  * Write `data` as compact JSON (trailing newline) to `absPath` atomically:
- * create the parent directory, write a temp sibling, then rename it into place
- * so a reader never observes a partially written file.
+ * create the parent directory, write a per-call unique temp sibling, then
+ * rename it into place so a reader never observes a partially written file.
  */
 export async function writeDataFile(
   absPath: string,
   data: unknown
 ): Promise<void> {
   await fsp.mkdir(path.dirname(absPath), { recursive: true });
-  const tmp = `${absPath}.tmp`;
-  await fsp.rm(tmp, { force: true });
+  // Per-call unique temp name: two writers racing the same output path each own
+  // their own temp file, so an interleaved write can never corrupt a shared temp
+  // and the atomic rename is the only contended step.
+  const tmp = `${absPath}.${process.pid}.${randomUUID()}.tmp`;
   await fsp.writeFile(tmp, JSON.stringify(data) + "\n", "utf-8");
   await fsp.rename(tmp, absPath);
 }
