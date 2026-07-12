@@ -1,5 +1,15 @@
 # Root index (`data/index.json`)
 
+> **⚠️ Deprecated.** `data/index.json` is superseded by the newer per-purpose
+> files — its `live` array by `realtime.json` + `upcoming.json`, and the per-day
+> started-videos purpose of `past` by `daily-videos/{YYYY-MM-DD}.json`. This is
+> **not** a mechanical 1:1 swap: `daily-videos` is bucketed by a stream's start
+> day and does **not** preserve `past`'s "recently ended within 48h" semantics
+> (a long-running stream that started before yesterday but ended recently is in
+> `past` but not in the scheduled today/yesterday `daily-videos` files).
+> Composing an equivalent recent-past view is a frontend concern. The writer is
+> retained for now, so readers needing the recently-ended set keep working.
+
 **File path pattern:** `data/index.json`
 **Companion file:** none. (When a companion exists, its version is always
 identical to this file's version; readers determine the version of the
@@ -14,10 +24,11 @@ implies version 1.
 
 ## Revision history
 
-| Version | Revision | Date       | PR  | Summary                                                                          |
-| ------- | -------- | ---------- | --- | -------------------------------------------------------------------------------- |
-| 1       | r0       | 2026-05-30 | —   | Initial documentation of the existing pre-versioned format (bootstrap).          |
-| 1       | r1       | 2026-07-11 | —   | Add optional `viewers`, `maxViewers`, `likes`, `premiere` to each video summary. |
+| Version | Revision | Date       | PR  | Summary                                                                                                                                     |
+| ------- | -------- | ---------- | --- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1       | r0       | 2026-05-30 | —   | Initial documentation of the existing pre-versioned format (bootstrap).                                                                     |
+| 1       | r1       | 2026-07-11 | —   | Add optional `viewers`, `maxViewers`, `likes`, `premiere` to each video summary.                                                            |
+| 1       | r2       | 2026-07-12 | —   | Marked deprecated; superseded by realtime/upcoming (live) and daily-videos (per-day started list). Writer unchanged, still emits version 1. |
 
 ## version 1
 
