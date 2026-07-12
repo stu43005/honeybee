@@ -322,7 +322,19 @@ Replace the `else` branch (currently `video.status = VideoStatus.Missing;` then 
 
 The `if (!video.deleted)` guard runs before `video.deleted = true`, so a repeated crawl of a still-missing video keeps the original detection time.
 
-**Do not change the existing early return** at the top of `updateVideoFromYoutube` (`if (!ytVideoItems?.length) return [];`). That guard exists so a totally empty API response — which almost always means an API error/quota failure, not that every requested video was really deleted — does **not** mass-mark videos deleted. `detectedDeletionAt` therefore co-locates with the existing per-video `deleted` write and, like `deleted` itself, is only set when the batch has at least one found video (the realistic deletion case). Handling an all-empty response is intentionally out of scope; the test exercises the mixed found/missing batch, which is the real transition path.
+**Also handle the all-missing response.** Replace the early return
+`const ytVideoItems = response?.data?.items; if (!ytVideoItems?.length) return [];`
+with `const ytVideoItems = response?.data?.items ?? [];` so the per-video loop
+still runs when the response has no items. Confirmed behavior (googleapis
+173 / gaxios 7; YouTube Data API v3): API/quota/network errors **throw** before
+this line, and `videos.list` returns HTTP 200 with nonexistent/deleted/private
+ids omitted — so a resolved response with `items: []` means every requested id
+is genuinely gone, not an error. Falling through lets a lone deleted video (or an
+all-deleted batch) get `deleted = true` + `detectedDeletionAt` set (via the same
+`else` branch), which the finalize "recently deleted" branch needs. Add a
+regression test: `updateVideoFromYoutube(["gone1"])` with `{ data: { items: [] } }`
+asserts `deleted === true`, `detectedDeletionAt` is a `Date`, and a second
+empty-items crawl keeps the original detection time.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
