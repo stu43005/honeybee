@@ -146,9 +146,13 @@ export async function updateVideoFromYoutube(
       video.privacyStatus = ytInfo.status
         ?.privacyStatus as Video["privacyStatus"];
       video.uploadStatus = ytInfo.status?.uploadStatus as Video["uploadStatus"];
-      if (video.deleted) video.deleted = false;
+      if (video.deleted) {
+        video.deleted = false;
+        video.detectedDeletionAt = undefined;
+      }
     } else {
       video.status = VideoStatus.Missing;
+      if (!video.deleted) video.detectedDeletionAt = new Date();
       video.deleted = true;
     }
 
