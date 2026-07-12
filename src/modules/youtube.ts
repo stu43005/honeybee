@@ -44,8 +44,10 @@ export async function updateVideoFromYoutube(
       "items(id,snippet(channelId,title,description,publishedAt,liveBroadcastContent),contentDetails(licensedContent,contentRating/ytRating,duration),status(uploadStatus,embeddable,privacyStatus),liveStreamingDetails,statistics(viewCount,likeCount))",
     maxResults: 50,
   });
-  const ytVideoItems = response?.data?.items;
-  if (!ytVideoItems?.length) return [];
+  // A resolved response with no items means every requested id is gone
+  // (deleted / private / nonexistent) — API/quota errors throw before here — so
+  // fall through and let the per-video loop mark the missing ids deleted.
+  const ytVideoItems = response?.data?.items ?? [];
 
   const result: DocumentType<Video>[] = [];
   const needUpdateChannels: string[] = [];

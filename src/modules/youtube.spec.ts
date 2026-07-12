@@ -90,4 +90,23 @@ describe("updateVideoFromYoutube detectedDeletionAt", () => {
     expect(gone.deleted).toBe(false);
     expect(gone.detectedDeletionAt).toBeUndefined();
   });
+
+  it("marks a lone deleted video when the response has empty items", async () => {
+    const gone = fakeVideo({ id: "gone1", deleted: false });
+    jest
+      .spyOn(VideoModel, "findByVideoId")
+      .mockImplementation((() => gone) as any);
+    // A resolved 200 with no items = every requested id is gone (not an error).
+    mockVideosList.mockResolvedValue({ data: { items: [] } });
+
+    await updateVideoFromYoutube(["gone1"]);
+
+    expect(gone.deleted).toBe(true);
+    expect(gone.detectedDeletionAt).toBeInstanceOf(Date);
+    const firstDetection = gone.detectedDeletionAt;
+
+    // A second still-missing empty-items crawl keeps the original detection time.
+    await updateVideoFromYoutube(["gone1"]);
+    expect(gone.detectedDeletionAt).toBe(firstDetection);
+  });
 });
