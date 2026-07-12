@@ -331,10 +331,32 @@ this line, and `videos.list` returns HTTP 200 with nonexistent/deleted/private
 ids omitted — so a resolved response with `items: []` means every requested id
 is genuinely gone, not an error. Falling through lets a lone deleted video (or an
 all-deleted batch) get `deleted = true` + `detectedDeletionAt` set (via the same
-`else` branch), which the finalize "recently deleted" branch needs. Add a
-regression test: `updateVideoFromYoutube(["gone1"])` with `{ data: { items: [] } }`
-asserts `deleted === true`, `detectedDeletionAt` is a `Date`, and a second
-empty-items crawl keeps the original detection time.
+`else` branch), which the finalize "recently deleted" branch needs.
+
+But **only transition records that already exist**: the crawler and the Discord
+`crawl` command call this with brand-new ids too, and a never-before-seen id that
+YouTube omits has no `channelId` / `title` to persist (the model requires both),
+so creating `new VideoModel({ id })` for it and calling `save()` would fail
+validation and abort the whole batch. So look up the existing doc first and, when
+the id is both absent from the response and absent from the DB, `continue` (skip
+it) instead of creating a phantom record:
+
+```ts
+const ytInfo = ytVideoItems.find((v) => v.id === targetVideo);
+const existing = await VideoModel.findByVideoId(targetVideo);
+if (!ytInfo && !existing) continue; // never-seen id already gone — nothing to record
+const video = existing ?? new VideoModel({ id: targetVideo });
+```
+
+This also fixes the same latent validation abort that the pre-change code had for
+a new-unknown missing id inside a mixed (partial) batch.
+
+Add two regression tests: (1) an already-tracked lone deleted video with
+`{ data: { items: [] } }` gets `deleted === true`, `detectedDeletionAt` a `Date`,
+and a second empty-items crawl keeps the original detection time; (2) a
+never-seen id (`findByVideoId` → `null`) with `{ data: { items: [] } }` is
+skipped — `updateVideoFromYoutube` resolves to `[]` without throwing (no phantom
+save).
 
 - [ ] **Step 4: Run the test to verify it passes**
 
