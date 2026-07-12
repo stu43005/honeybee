@@ -20,6 +20,8 @@ jest.unstable_mockModule("./write-data-file.js", () => ({
 const {
   buildDailyVideos,
   dailyVideosFilter,
+  genDailyVideos,
+  genDailyVideosFile,
   jstDayRangeUtc,
   queryDailyVideos,
 } = await import("./gen-daily-videos-file.js");
@@ -51,6 +53,13 @@ function fakeQuery(docs: unknown[]) {
 }
 
 const SNAP = new Date("2026-07-11T09:00:00.000Z");
+
+afterEach(() => {
+  jest.useRealTimers();
+  jest.restoreAllMocks();
+  writeDataFile.mockClear();
+  dataFilePath.mockClear();
+});
 
 describe("jstDayRangeUtc", () => {
   it("maps a JST calendar day to its UTC [start, end) bounds", () => {
@@ -107,10 +116,6 @@ describe("buildDailyVideos", () => {
 });
 
 describe("queryDailyVideos", () => {
-  afterEach(() => {
-    jest.restoreAllMocks();
-  });
-
   it("queries VideoModel.find with the daily-videos filter and returns the docs", async () => {
     const docs = [v({ id: "a" }), v({ id: "b" })];
     const spy = jest.spyOn(VideoModel, "find").mockReturnValue(fakeQuery(docs));
@@ -119,5 +124,57 @@ describe("queryDailyVideos", () => {
 
     expect(spy).toHaveBeenCalledWith(dailyVideosFilter("2026-07-11"));
     expect(result.map((d) => d.id)).toEqual(["a", "b"]);
+  });
+});
+
+describe("genDailyVideosFile", () => {
+  it("writes the requested daily-videos date file with the generated snapshot", async () => {
+    jest.useFakeTimers().setSystemTime(new Date("2026-07-11T09:30:00.000Z"));
+    jest.spyOn(VideoModel, "find").mockReturnValue(fakeQuery([v({ id: "a" })]));
+
+    await genDailyVideosFile("2026-07-11");
+
+    expect(dataFilePath).toHaveBeenCalledWith(
+      "daily-videos",
+      "2026-07-11.json"
+    );
+    expect(writeDataFile).toHaveBeenCalledTimes(1);
+    const [path, payload] = writeDataFile.mock.calls[0] as unknown[];
+    expect(path).toBe("daily-videos/2026-07-11.json");
+    expect(payload).toMatchObject({
+      date: "2026-07-11",
+      snapshotAt: "2026-07-11T09:30:00.000Z",
+    });
+    expect(
+      (payload as { videos: { id: string }[] }).videos.map((s) => s.id)
+    ).toEqual(["a"]);
+  });
+});
+
+describe("genDailyVideos", () => {
+  it("refreshes today and yesterday in JST and touches after each file", async () => {
+    jest.useFakeTimers().setSystemTime(new Date("2026-07-11T16:30:00.000Z"));
+    jest.spyOn(VideoModel, "find").mockReturnValue(fakeQuery([]));
+    const job = {
+      touch: jest.fn<() => Promise<void>>().mockResolvedValue(undefined),
+    };
+
+    await genDailyVideos(job as any);
+
+    expect(dataFilePath.mock.calls).toEqual([
+      ["daily-videos", "2026-07-12.json"],
+      ["daily-videos", "2026-07-11.json"],
+    ]);
+    expect(writeDataFile.mock.calls.map((call) => call[0])).toEqual([
+      "daily-videos/2026-07-12.json",
+      "daily-videos/2026-07-11.json",
+    ]);
+    expect(job.touch).toHaveBeenCalledTimes(2);
+    expect(writeDataFile.mock.invocationCallOrder[0]).toBeLessThan(
+      job.touch.mock.invocationCallOrder[0]
+    );
+    expect(writeDataFile.mock.invocationCallOrder[1]).toBeLessThan(
+      job.touch.mock.invocationCallOrder[1]
+    );
   });
 });
