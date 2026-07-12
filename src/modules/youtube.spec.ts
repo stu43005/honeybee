@@ -109,4 +109,20 @@ describe("updateVideoFromYoutube detectedDeletionAt", () => {
     await updateVideoFromYoutube(["gone1"]);
     expect(gone.detectedDeletionAt).toBe(firstDetection);
   });
+
+  it("skips a never-seen id that is already gone (no phantom record)", async () => {
+    // findByVideoId returns null (never tracked); YouTube omits it (deleted).
+    const findSpy = jest
+      .spyOn(VideoModel, "findByVideoId")
+      .mockImplementation((() => null) as any);
+    mockVideosList.mockResolvedValue({ data: { items: [] } });
+
+    // No `new VideoModel(...).save()` is attempted (that would need a DB and fail
+    // validation for the missing channelId/title), so this resolves cleanly with
+    // an empty result rather than throwing.
+    const result = await updateVideoFromYoutube(["neverseen1"]);
+
+    expect(result).toEqual([]);
+    expect(findSpy).toHaveBeenCalledWith("neverseen1");
+  });
 });

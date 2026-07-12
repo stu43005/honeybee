@@ -52,12 +52,15 @@ export async function updateVideoFromYoutube(
   const result: DocumentType<Video>[] = [];
   const needUpdateChannels: string[] = [];
   for (const targetVideo of targetVideos) {
-    const video =
-      (await VideoModel.findByVideoId(targetVideo)) ??
-      new VideoModel({ id: targetVideo });
     const ytInfo = ytVideoItems.find(
       (ytVideoItem) => ytVideoItem.id === targetVideo
     );
+    const existing = await VideoModel.findByVideoId(targetVideo);
+    // A never-before-seen id that YouTube omits (deleted / private / nonexistent)
+    // has no channel/title to persist and is not a video we track — skip it
+    // instead of creating an invalid phantom record that would fail validation.
+    if (!ytInfo && !existing) continue;
+    const video = existing ?? new VideoModel({ id: targetVideo });
     if (ytInfo) {
       if (ytInfo.snippet?.channelId) video.channelId = ytInfo.snippet.channelId;
       if (ytInfo.snippet?.title) video.title = ytInfo.snippet.title;
