@@ -28,6 +28,13 @@ export async function writeDataFile(
   // their own temp file, so an interleaved write can never corrupt a shared temp
   // and the atomic rename is the only contended step.
   const tmp = `${absPath}.${process.pid}.${randomUUID()}.tmp`;
-  await fsp.writeFile(tmp, JSON.stringify(data) + "\n", "utf-8");
-  await fsp.rename(tmp, absPath);
+  // The unique temp name means no later call cleans up after us, so on any
+  // failure we must remove our own temp file or it is orphaned permanently.
+  try {
+    await fsp.writeFile(tmp, JSON.stringify(data) + "\n", "utf-8");
+    await fsp.rename(tmp, absPath);
+  } catch (err) {
+    await fsp.rm(tmp, { force: true });
+    throw err;
+  }
 }
