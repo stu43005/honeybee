@@ -16,7 +16,10 @@ import { isMain } from "../utils/esm.js";
 import { archiveVideo } from "./chats-archive/archive-video.js";
 import { genIndexFile } from "./chats-archive/gen-index-file.js";
 import { genRealtimeAndUpcomingFiles } from "./chats-archive/gen-realtime-file.js";
-import { genDailyLeaderboards } from "./chats-archive/gen-leaderboard-file.js";
+import {
+  genDailyVideos,
+  genDailyVideosFinalize,
+} from "./chats-archive/gen-daily-videos-file.js";
 
 export default function chatsArchive(app: Application) {
   const { agenda } = app.get<AgendaModule>("agenda") ?? {};
@@ -34,10 +37,13 @@ export default function chatsArchive(app: Application) {
     );
     void agenda.every("1 minutes", "chats archive realtime");
 
-    agenda.define("chats archive leaderboard", (job) =>
-      genDailyLeaderboards(job)
+    agenda.define("chats archive daily-videos", (job) => genDailyVideos(job));
+    void agenda.every("10 minutes", "chats archive daily-videos");
+
+    agenda.define("chats archive daily-videos finalize", (job) =>
+      genDailyVideosFinalize(job)
     );
-    void agenda.every("1 hours", "chats archive leaderboard");
+    void agenda.every("12 hours", "chats archive daily-videos finalize");
   }
 }
 
@@ -95,7 +101,8 @@ if (isMain(import.meta)) {
     await mongoose.connect(MONGO_URI);
     await genIndexFile({ isDirect: true });
     await genRealtimeAndUpcomingFiles();
-    await genDailyLeaderboards();
+    await genDailyVideos();
+    await genDailyVideosFinalize();
     await mongoose.disconnect();
     process.exit(0);
   })();
