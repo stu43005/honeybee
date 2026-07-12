@@ -72,7 +72,7 @@ export const IsNotShortQuery = Object.freeze({
 )
 // Non-partial companion to the partial availableAt index above: serves
 // availableAt range queries that are NOT restricted to live/upcoming (the
-// daily leaderboard scans a JST-day availableAt window across all statuses).
+// daily-videos writer scans a JST-day availableAt window across all statuses).
 // The partial index cannot serve those, so this one covers every status.
 @index({ availableAt: 1 }, { name: "availableAt_all" })
 @index(
@@ -85,6 +85,14 @@ export const IsNotShortQuery = Object.freeze({
 )
 @index(
   { hbEnd: 1 },
+  {
+    partialFilterExpression: {
+      status: VideoStatus.Missing,
+    },
+  }
+)
+@index(
+  { detectedDeletionAt: 1 },
   {
     partialFilterExpression: {
       status: VideoStatus.Missing,
@@ -143,6 +151,9 @@ export class Video extends TimeStamps {
 
   @prop()
   public deleted?: boolean;
+
+  @prop()
+  public detectedDeletionAt?: Date;
 
   @prop()
   public likes?: number;
