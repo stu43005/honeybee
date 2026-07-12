@@ -40,12 +40,32 @@ it("leaves no temp sibling behind after a successful write", async () => {
 });
 ```
 
+Also add a third `it` that verifies the writer uses a **per-call unique** temp
+name (not the fixed `<path>.tmp`) by spying on `fsp.writeFile` and inspecting the
+temp path it receives. Add `jest` to the imports from `@jest/globals`
+(`import { afterEach, describe, expect, it, jest } from "@jest/globals";`):
+
+```ts
+it("writes via a per-call unique temp name, not a fixed .tmp", async () => {
+  dir = await fsp.mkdtemp(path.join(os.tmpdir(), "hb-write-"));
+  const target = path.join(dir, "out.json");
+  const writeSpy = jest.spyOn(fsp, "writeFile");
+  await writeDataFile(target, { ok: true });
+  const tmpArg = writeSpy.mock.calls[0][0] as string;
+  expect(tmpArg).not.toBe(`${target}.tmp`); // not the old fixed name
+  expect(tmpArg.startsWith(`${target}.`)).toBe(true);
+  expect(tmpArg.endsWith(".tmp")).toBe(true);
+  expect(tmpArg).toContain(String(process.pid));
+  writeSpy.mockRestore();
+});
+```
+
 Leave the first `it` ("creates parent dirs and writes JSON with a trailing newline") unchanged.
 
-- [ ] **Step 2: Run the test to verify the current writer still passes it**
+- [ ] **Step 2: Run the tests to see the unique-name test fail (red)**
 
 Run: `npm run test -- src/components/chats-archive/write-data-file.spec.ts`
-Expected: PASS (the current fixed-`.tmp` writer already removes its temp file). This confirms the new assertion is valid before we change the implementation.
+Expected: the two existing-style tests PASS, but the new "writes via a per-call unique temp name" test FAILS because the current writer uses the fixed `${target}.tmp` name (`tmpArg` equals `${target}.tmp`). This confirms the new test actually pins the behavior we are about to change.
 
 - [ ] **Step 3: Change the writer to a unique temp name**
 
@@ -178,18 +198,19 @@ Create `src/modules/youtube.spec.ts`. It mocks `googleapis` (so no real API call
 
 ```ts
 /// <reference types="jest" />
-import {
-  afterEach,
-  beforeAll,
-  describe,
-  expect,
-  it,
-  jest,
-} from "@jest/globals";
+import { afterEach, describe, expect, it, jest } from "@jest/globals";
+import VideoModel from "../models/Video.js";
+
+// This repo runs true-ESM Jest, so a module mock must use
+// jest.unstable_mockModule + a dynamic import of the module under test
+// (jest.mock does not hoist under ESM — see src/modules/redis.spec.ts).
+// GOOGLE_API_KEY must be set before the dynamic import because getYoutubeApi()
+// asserts it. VideoModel needs no mock (only a spy), so it is a static import.
+process.env.GOOGLE_API_KEY = "test-key";
 
 const mockVideosList = jest.fn<() => Promise<unknown>>();
 
-jest.mock("googleapis", () => ({
+jest.unstable_mockModule("googleapis", () => ({
   google: {
     youtube: () => ({
       videos: { list: mockVideosList },
@@ -197,6 +218,8 @@ jest.mock("googleapis", () => ({
     }),
   },
 }));
+
+const { updateVideoFromYoutube } = await import("./youtube.js");
 
 // A minimal mutable stand-in for a Video document.
 function fakeVideo(overrides: Record<string, unknown>) {
@@ -218,15 +241,6 @@ function foundItem(id: string) {
     contentDetails: {},
   };
 }
-
-let updateVideoFromYoutube: typeof import("./youtube.js").updateVideoFromYoutube;
-let VideoModel: typeof import("../models/Video.js").default;
-
-beforeAll(async () => {
-  process.env.GOOGLE_API_KEY = "test-key";
-  ({ updateVideoFromYoutube } = await import("./youtube.js"));
-  ({ default: VideoModel } = await import("../models/Video.js"));
-});
 
 afterEach(() => {
   jest.restoreAllMocks();
@@ -305,6 +319,8 @@ Replace the `else` branch (currently `video.status = VideoStatus.Missing;` then 
 
 The `if (!video.deleted)` guard runs before `video.deleted = true`, so a repeated crawl of a still-missing video keeps the original detection time.
 
+**Do not change the existing early return** at the top of `updateVideoFromYoutube` (`if (!ytVideoItems?.length) return [];`). That guard exists so a totally empty API response — which almost always means an API error/quota failure, not that every requested video was really deleted — does **not** mass-mark videos deleted. `detectedDeletionAt` therefore co-locates with the existing per-video `deleted` write and, like `deleted` itself, is only set when the batch has at least one found video (the realistic deletion case). Handling an all-empty response is intentionally out of scope; the test exercises the mixed found/missing batch, which is the real transition path.
+
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `npm run test -- src/modules/youtube.spec.ts`
@@ -340,12 +356,27 @@ Create `src/components/chats-archive/gen-daily-videos-file.spec.ts` with tests f
 import { afterEach, describe, expect, it, jest } from "@jest/globals";
 import { VideoStatus } from "holodex.js";
 import VideoModel from "../../models/Video.js";
-import {
+
+// True-ESM Jest: mock the first-party writer via unstable_mockModule + a dynamic
+// import so the finalize driver test (Task 5) can assert the exact date files it
+// would write without touching the filesystem or CHAT_ARCHIVE_DIR. VideoModel is
+// only spied, so it stays a static import.
+const writeDataFile = jest
+  .fn<() => Promise<void>>()
+  .mockResolvedValue(undefined);
+const dataFilePath = jest.fn((...segments: string[]) => segments.join("/"));
+
+jest.unstable_mockModule("./write-data-file.js", () => ({
+  writeDataFile,
+  dataFilePath,
+}));
+
+const {
   buildDailyVideos,
   dailyVideosFilter,
   jstDayRangeUtc,
   queryDailyVideos,
-} from "./gen-daily-videos-file.js";
+} = await import("./gen-daily-videos-file.js");
 
 function v(overrides: Record<string, unknown>) {
   return {
@@ -452,6 +483,14 @@ Run: `npm run test -- src/components/chats-archive/gen-daily-videos-file.spec.ts
 Expected: FAIL with a module-not-found / missing-export error (the file does not exist yet).
 
 - [ ] **Step 3: Implement the core module**
+
+Note on the entry type: `videos` is typed `Record<string, unknown>[]`, matching
+`buildVideoSummary`'s actual return type (`Promise<Record<string, unknown>>`) and
+the existing `gen-realtime-file.ts` / (removed) `gen-leaderboard-file.ts`
+interfaces. There is no `VideoSummaryWithChannel` TypeScript type in the codebase
+— that name exists only in the data-contract docs as the documented JSON shape —
+so do not invent one here; reuse the established `Record<string, unknown>[]`
+convention.
 
 Create `src/components/chats-archive/gen-daily-videos-file.ts`:
 
@@ -578,7 +617,7 @@ git commit -m "feat(chats-archive): daily-videos per-day query/build and today+y
 
 - [ ] **Step 1: Write the failing test for `finalizeFilter` and `finalizeDates`**
 
-Append these imports and `describe` blocks to `src/components/chats-archive/gen-daily-videos-file.spec.ts`. Add `finalizeDates` and `finalizeFilter` to the existing import from `./gen-daily-videos-file.js`:
+Append these `describe` blocks to `src/components/chats-archive/gen-daily-videos-file.spec.ts`, and add `finalizeDates`, `finalizeFilter`, `queryFinalizeVideos`, and `genDailyVideosFinalize` to the dynamic-import destructuring at the top of the spec (the `const { ... } = await import("./gen-daily-videos-file.js");` block created in Task 4):
 
 ```ts
 describe("finalizeFilter", () => {
@@ -740,19 +779,70 @@ describe("queryFinalizeVideos", () => {
 });
 ```
 
-Add `queryFinalizeVideos` to the import from `./gen-daily-videos-file.js`.
+- [ ] **Step 5: Add the finalize driver integration test**
 
-- [ ] **Step 5: Run the tests to verify they pass**
+This proves `genDailyVideosFinalize` wires the query → date selection →
+`genDailyVideosFile` correctly: it excludes today/yesterday and regenerates
+exactly the matched older start dates. `VideoModel.find` is stubbed to return the
+finalize docs for the finalize query (the filter carrying `$or`) and an empty set
+for each per-date `queryDailyVideos` call; the mocked `dataFilePath`
+(from Task 4's `unstable_mockModule`) records the date each regenerated file
+targets. `jest.useFakeTimers()` pins `new Date()` so "today"/"yesterday" are
+deterministic. Append to the spec:
+
+```ts
+describe("genDailyVideosFinalize", () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+    jest.useRealTimers();
+    writeDataFile.mockClear();
+    dataFilePath.mockClear();
+  });
+
+  it("regenerates exactly the matched older start dates, excluding today/yesterday", async () => {
+    jest.useFakeTimers().setSystemTime(new Date("2026-07-11T09:00:00.000Z"));
+    const finalizeDocs = [
+      v({ id: "old1", availableAt: new Date("2026-07-08T02:00:00.000Z") }), // 07-08 JST
+      v({ id: "old2", availableAt: new Date("2026-07-08T20:00:00.000Z") }), // 07-09 JST
+      v({ id: "old3", availableAt: new Date("2026-07-08T21:00:00.000Z") }), // 07-09 JST (dup)
+      v({ id: "today", availableAt: new Date("2026-07-11T02:00:00.000Z") }), // excluded
+      v({ id: "yday", availableAt: new Date("2026-07-10T02:00:00.000Z") }), // excluded
+    ];
+    // finalize query carries `$or`; per-date queryDailyVideos calls do not.
+    jest
+      .spyOn(VideoModel, "find")
+      .mockImplementation(((filter: any) =>
+        fakeQuery(filter?.$or ? finalizeDocs : [])) as any);
+    const touch = jest.fn<() => Promise<void>>().mockResolvedValue(undefined);
+
+    await genDailyVideosFinalize({ touch } as any);
+
+    // dataFilePath is called once per regenerated date as ("daily-videos", "<date>.json").
+    const writtenDates = dataFilePath.mock.calls
+      .filter((c) => c[0] === "daily-videos")
+      .map((c) => c[1]);
+    expect([...writtenDates].sort()).toEqual([
+      "2026-07-08.json",
+      "2026-07-09.json",
+    ]);
+    expect(writeDataFile).toHaveBeenCalledTimes(2);
+    // the Agenda lock is renewed after each regenerated file
+    expect(touch).toHaveBeenCalledTimes(2);
+  });
+});
+```
+
+- [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `npm run test -- src/components/chats-archive/gen-daily-videos-file.spec.ts`
 Expected: PASS (all `describe` blocks).
 
-- [ ] **Step 6: Typecheck and lint**
+- [ ] **Step 7: Typecheck and lint**
 
 Run: `npm run build && npm run lint`
 Expected: no errors.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add src/components/chats-archive/gen-daily-videos-file.ts src/components/chats-archive/gen-daily-videos-file.spec.ts
@@ -845,10 +935,10 @@ git commit -m "feat(chats-archive): schedule daily-videos and 12h finalize jobs,
 
 `jstDayRangeUtc` (the only export the rest of the codebase still needed) was reintroduced in `gen-daily-videos-file.ts` in Task 4, and `chats-archive.ts` no longer imports the leaderboard module after Task 6, so these files have no remaining importers.
 
-- [ ] **Step 1: Confirm there are no remaining importers**
+- [ ] **Step 1: Confirm there are no remaining external importers**
 
-Run: `grep -rn "gen-leaderboard-file" src/`
-Expected: no matches (Task 6 removed the last import).
+Run: `grep -rn "gen-leaderboard-file" src/ | grep -v "chats-archive/gen-leaderboard-file"`
+Expected: no matches. (The only references left are the two `gen-leaderboard-file.*` files referring to themselves — the `.spec.ts` importing its own `./gen-leaderboard-file.js` — both of which this task deletes. The `grep -v` filters those out; any remaining line would be a real external importer that must be cleaned up first.)
 
 - [ ] **Step 2: Delete the files**
 
@@ -880,7 +970,13 @@ git commit -m "refactor(chats-archive): remove daily leaderboard writer"
 
 - [ ] **Step 1: Create `docs/data-contract/daily-videos.md`**
 
-````markdown
+Create the file mirroring the structure of the existing `realtime.md`. Assemble
+it from the four parts below in order (each part is shown in its own fence to
+avoid nested code fences — concatenate their contents into the single file).
+
+Part 1 — header, revision history, and the `### Base shape (r0)` heading:
+
+```markdown
 # Daily videos index (`data/daily-videos/{YYYY-MM-DD}.json`)
 
 **File path pattern:** `data/daily-videos/{YYYY-MM-DD}.json` (JST calendar date)
@@ -899,6 +995,9 @@ defensively as `(json.version ?? 1)`.
 ## version 1
 
 ### Base shape (r0)
+```
+
+Part 2 — the TypeScript interfaces, placed directly under `### Base shape (r0)`:
 
 ```ts
 interface DailyVideos {
@@ -911,7 +1010,7 @@ interface VideoSummaryWithChannel {
   id: string;
   title: string;
   channel: { id: string; name: string; avatarUrl?: string };
-  status: string; // holodex VideoStatus (never "upcoming" in this file)
+  status: string; // holodex VideoStatus; not status-filtered (listing is by actualStart)
   duration: number; // seconds; 0 while a stream is live
   availableAt: string; // ISO 8601
   archiveVersion: number; // 1 = legacy, 2 = current archiver
@@ -926,9 +1025,8 @@ interface VideoSummaryWithChannel {
   premiere?: boolean; // true for YouTube premieres
 }
 ```
-````
 
-### Cumulative JSON example (r0)
+Part 3 — add the heading `### Cumulative JSON example (r0)`, then this example:
 
 ```json
 {
@@ -971,8 +1069,9 @@ interface VideoSummaryWithChannel {
 }
 ```
 
-### Reader guidance
+Part 4 — add the heading `### Reader guidance`, then these bullets:
 
+```markdown
 - **Version detection:** absence of a `version` key implies version 1.
 - **Always present at root:** `date`, `snapshotAt`, `videos` (may be empty).
 - **`videos: []`** means the day was computed and no stream qualified — distinct
@@ -982,9 +1081,11 @@ interface VideoSummaryWithChannel {
 - **May be absent per entry:** `channel.avatarUrl`, `scheduledStart`,
   `actualStart`, `actualEnd`, `publishedAt`, `viewers`, `maxViewers`, `likes`,
   `premiere`.
-- **Membership:** every started stream whose start (`availableAt`) falls in this
-  JST day, excluding `upcoming`/never-started, uploaded videos, and ignored
-  channels. No ranking or count cap — sort client-side for any leaderboard.
+- **Which streams are listed:** every started stream (`actualStart` set) whose
+  start (`availableAt`) falls in this JST day, excluding streams that never
+  started, uploaded videos, and ignored channels. `status` is not filtered, so it
+  typically reads `"live"`/`"past"`/`"missing"`. No ranking or count cap — sort
+  client-side for any leaderboard.
 - **Ordering:** `videos` is sorted descending by `availableAt`, ties broken by
   ascending `id`. This is a stable default only; re-sort client-side as needed.
 - **Metric freshness:** `viewers`/`maxViewers`/`likes` are a periodically
@@ -994,14 +1095,13 @@ interface VideoSummaryWithChannel {
   or is detected deleted (barring an extended finalize outage). For a currently
   live stream, `realtime.json` is authoritative for the instantaneous value.
 - **Unknown extra fields:** ignore (forward compatibility).
-
-````
+```
 
 - [ ] **Step 2: Delete `docs/data-contract/daily-leaderboard.md`**
 
 ```bash
 git rm docs/data-contract/daily-leaderboard.md
-````
+```
 
 - [ ] **Step 3: Update the README file-type index**
 
