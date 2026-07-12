@@ -99,7 +99,7 @@ Keep `dataFilePath` unchanged. Preserve the existing JSDoc on `writeDataFile` bu
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `npm run test -- src/components/chats-archive/write-data-file.spec.ts`
-Expected: PASS (both `it` blocks).
+Expected: PASS (all three `it` blocks, including the new unique-temp-name one).
 
 - [ ] **Step 5: Typecheck and lint**
 
@@ -199,13 +199,15 @@ Create `src/modules/youtube.spec.ts`. It mocks `googleapis` (so no real API call
 ```ts
 /// <reference types="jest" />
 import { afterEach, describe, expect, it, jest } from "@jest/globals";
-import VideoModel from "../models/Video.js";
 
 // This repo runs true-ESM Jest, so a module mock must use
 // jest.unstable_mockModule + a dynamic import of the module under test
 // (jest.mock does not hoist under ESM — see src/modules/redis.spec.ts).
-// GOOGLE_API_KEY must be set before the dynamic import because getYoutubeApi()
-// asserts it. VideoModel needs no mock (only a spy), so it is a static import.
+// GOOGLE_API_KEY must be set before importing ANYTHING that reaches
+// constants.ts (VideoModel -> ChannelModel -> constants.ts reads the env at
+// module-eval time), because getYoutubeApi() asserts it — so VideoModel is
+// imported dynamically too, after the assignment. VideoModel is only spied,
+// not mocked.
 process.env.GOOGLE_API_KEY = "test-key";
 
 const mockVideosList = jest.fn<() => Promise<unknown>>();
@@ -219,6 +221,7 @@ jest.unstable_mockModule("googleapis", () => ({
   },
 }));
 
+const { default: VideoModel } = await import("../models/Video.js");
 const { updateVideoFromYoutube } = await import("./youtube.js");
 
 // A minimal mutable stand-in for a Video document.
@@ -358,9 +361,9 @@ import { VideoStatus } from "holodex.js";
 import VideoModel from "../../models/Video.js";
 
 // True-ESM Jest: mock the first-party writer via unstable_mockModule + a dynamic
-// import so the finalize driver test (Task 5) can assert the exact date files it
-// would write without touching the filesystem or CHAT_ARCHIVE_DIR. VideoModel is
-// only spied, so it stays a static import.
+// import so the driver tests can assert the exact date files they would write
+// without touching the filesystem or CHAT_ARCHIVE_DIR. VideoModel is only spied,
+// so it stays a static import.
 const writeDataFile = jest
   .fn<() => Promise<void>>()
   .mockResolvedValue(undefined);
@@ -568,8 +571,9 @@ export async function queryDailyVideos(date: string): Promise<VideoDoc[]> {
 
 /** Regenerate the daily-videos file for a single JST date. */
 export async function genDailyVideosFile(date: string): Promise<void> {
+  const snapshotAt = new Date();
   const videos = await queryDailyVideos(date);
-  const daily = await buildDailyVideos(date, videos, new Date());
+  const daily = await buildDailyVideos(date, videos, snapshotAt);
   await writeDataFile(dataFilePath("daily-videos", `${date}.json`), daily);
 }
 
@@ -665,6 +669,21 @@ describe("finalizeDates", () => {
   });
 });
 ```
+
+**How the non-matching controls and the 48h boundary are covered.** Because
+`VideoModel.find` is mocked in these unit tests (the Mongo query is never run
+against a database), the filter's selectivity is proven by asserting the
+**exact** object `finalizeFilter` builds — not by feeding it non-matching
+documents. The `toEqual` above therefore pins every non-matching control:
+`actualStart: { $exists: true, $ne: null }` excludes streams that never started;
+`uploadedVideo: { $ne: true }` and `hbIgnore: { $ne: true }` exclude uploaded and
+ignored videos; and the `$gte` lower bound of **exactly `now − 48h`**
+(`2026-07-09T09:00:00.000Z`) is the ended/deleted boundary, so anything ended or
+detected-deleted before it (`> 48h` ago) is outside the filter, and a `Missing`
+stream without a recent `detectedDeletionAt` fails the `$gte` too. The date-level
+controls (today/yesterday exclusion and de-duplication) are covered by the
+`finalizeDates` test above and the `genDailyVideosFinalize` integration test
+(Step 5).
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -937,8 +956,8 @@ git commit -m "feat(chats-archive): schedule daily-videos and 12h finalize jobs,
 
 - [ ] **Step 1: Confirm there are no remaining external importers**
 
-Run: `grep -rn "gen-leaderboard-file" src/ | grep -v "chats-archive/gen-leaderboard-file"`
-Expected: no matches. (The only references left are the two `gen-leaderboard-file.*` files referring to themselves — the `.spec.ts` importing its own `./gen-leaderboard-file.js` — both of which this task deletes. The `grep -v` filters those out; any remaining line would be a real external importer that must be cleaned up first.)
+Run: `grep -rn "gen-leaderboard-file" src/ | grep -v '^src/components/chats-archive/gen-leaderboard-file\.'`
+Expected: no matches. `grep -rn` prefixes each hit with its file path, so the `^…gen-leaderboard-file\.`-anchored `grep -v` drops only lines **from** the two `gen-leaderboard-file.*` files being deleted (e.g. the `.spec.ts` importing its own `./gen-leaderboard-file.js`). A real external importer such as `src/components/chats-archive.ts` has a different path prefix and is **not** filtered — any surviving line is a real importer that must be cleaned up before deleting the module.
 
 - [ ] **Step 2: Delete the files**
 
