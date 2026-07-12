@@ -1029,7 +1029,7 @@ interface VideoSummaryWithChannel {
   id: string;
   title: string;
   channel: { id: string; name: string; avatarUrl?: string };
-  status: string; // holodex VideoStatus; not status-filtered (listing is by actualStart)
+  status: string; // "new" | "upcoming" | "live" | "past" | "missing"
   duration: number; // seconds; 0 while a stream is live
   availableAt: string; // ISO 8601
   archiveVersion: number; // 1 = legacy, 2 = current archiver
@@ -1100,11 +1100,10 @@ Part 4 — add the heading `### Reader guidance`, then these bullets:
 - **May be absent per entry:** `channel.avatarUrl`, `scheduledStart`,
   `actualStart`, `actualEnd`, `publishedAt`, `viewers`, `maxViewers`, `likes`,
   `premiere`.
-- **Which streams are listed:** every started stream (`actualStart` set) whose
-  start (`availableAt`) falls in this JST day, excluding streams that never
-  started, uploaded videos, and ignored channels. `status` is not filtered, so it
-  typically reads `"live"`/`"past"`/`"missing"`. No ranking or count cap — sort
-  client-side for any leaderboard.
+- **Which streams are listed:** every stream that has actually started
+  (`actualStart` set) and whose `availableAt` falls in this JST day, excluding
+  streams that never started, uploaded videos, and ignored channels. A stream is
+  placed in the day of its `availableAt`.
 - **Ordering:** `videos` is sorted descending by `availableAt`, ties broken by
   ascending `id`. This is a stable default only; re-sort client-side as needed.
 - **Metric freshness:** `viewers`/`maxViewers`/`likes` are a periodically
