@@ -22,17 +22,37 @@ export async function prepareWebhook(
     return;
   }
 
-  // Check if the webhook is still valid
+  // Check if the webhook is still valid.
   webhook.failedAttempts ??= 0;
+  let reachable = true;
   try {
     await axiosInstance.get(webhook.insertUrl, {
       timeout: 60_000,
     });
+  } catch (error) {
+    // A GET probe can only prove connectivity, so any HTTP response counts as
+    // reachable — including 405 Method Not Allowed from POST-only endpoints that
+    // reject GET. Treat it as unreachable only when the endpoint is definitively
+    // gone (404/410) or nothing answered at all (DNS/timeout/connection refused,
+    // where there is no response object).
+    const status = axios.isAxiosError(error)
+      ? error.response?.status
+      : undefined;
+    reachable = status !== undefined && status !== 404 && status !== 410;
+    if (!reachable) {
+      documentLog(
+        webhook,
+        "<!> [ERROR] Unable to connect to the webhook",
+        error
+      );
+    }
+  }
+
+  if (reachable) {
     webhook.lastSuccess = new Date();
     webhook.failedAttempts = 0;
     webhook.enabled = true;
-  } catch (error) {
-    documentLog(webhook, "<!> [ERROR] Unable to connect to the webhook", error);
+  } else {
     webhook.failedAttempts += 1;
 
     // Disable webhook after 24 failed attempts to prevent excessive retries.
