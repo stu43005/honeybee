@@ -23,7 +23,7 @@
     "@agendajs/mongo-backend": "^4.0.1",
     "@fastify/express": "^2.3.0",
     "@keyv/redis": "^3.0.1",
-    "@stu43005/masterchat": "^2.0.0",
+    "@stu43005/masterchat": "^2.1.0",
     "@typegoose/typegoose": "^12.2.0",
     "agenda": "^6.2.4",
     "axios": "^1.6.8",
