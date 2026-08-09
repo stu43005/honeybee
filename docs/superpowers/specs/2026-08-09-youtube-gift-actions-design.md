@@ -302,7 +302,7 @@ worker ── addGiftItemAction ─┐
                         （message_total  change stream   （2h 後刪除）
                      purchase_amount_total）
                                   ▲
-manager ── "gift price rebuild" ──┴─▶ giftprices（純累加，永不刪除）
+manager ── "gift price rebuild" ──┴─▶ giftprices（只增不減，永不刪除）
 ```
 
 ## 資料模型
@@ -367,16 +367,22 @@ metrics 的 label 集合保持完整。Gift 不進任何 jpy 換算路徑，因�
 | `price`       | `number`  | ✓                | 單價（Jewels）                                 |
 | `giftName`    | `string`  |                  | 最後觀測到的顯示名稱，**僅供對照，不參與查價** |
 | `manual`      | `boolean` |                  | 此價格由人工填入；**不阻擋自動學習**           |
-| `sampleCount` | `number`  | ✓（default `0`） | 支持**目前這個** `price` 的累計觀測筆數        |
+| `sampleCount` | `number`  | ✓（default `0`） | 支持**目前這個** `price` 的單次最大觀測筆數    |
 
 繼承 `TimeStamps`（`createdAt` / `updatedAt`）。
 
 `giftprices` **不被 `cleanup` 清除** —— 它是跨直播累積的知識庫。
 
-`sampleCount` 是**累計值**，不是單次窗口的計數：同價再次被觀測到就累加，價格被
-覆蓋時重設為當次的觀測筆數。它同時也是這筆價格的可信度指標，覆蓋門檻直接依它
-分級（見下），因此不需要額外的 provisional 旗標。人工補價的預設值 `0` 讓它自然
-落在「未經觀測背書」那一級。
+`sampleCount` 的語意是**歷來單次重建中，同時支持目前這個 `price` 的最大觀測
+筆數**，以 `$max` 更新（價格被覆蓋時重設為當次筆數）。
+
+用 `$max` 而非累加，是因為重建每次都重掃同一個窗口（見下），**同一筆 gift 文件
+會在多次重建中被重複看到**。若採累加，`sampleCount` 會隨重跑次數自己膨脹，一筆
+壞觀測或一筆人工種子只要在窗口裡待滿幾輪就會「升級」成高可信度，反而更難被
+修正 —— 恰好與這個欄位的用途相反。`$max` 讓重建對未變動的資料完全冪等。
+
+它同時也是這筆價格的可信度指標，覆蓋門檻直接依它分級（見下），因此不需要額外的
+provisional 旗標。人工補價的預設值 `0` 讓它自然落在「未經觀測背書」那一級。
 
 `manual` 是**營運用的補價出口**。價格只能從帶 `comboCount` 的訊息推導，因此
 從未被連擊過的資產（高單價禮物尤其容易如此）可能長期學不到價。這種情況直接在
@@ -529,9 +535,10 @@ Agenda job `"gift price rebuild"`，每 10 分鐘執行：
    的錯價。
 2. 依 `assetName` 取本次窗口內**出現次數最多**的 price，並記下最後看到的
    `giftName`。
-3. **純累加 upsert**（永不 `deleteMany`）：
+3. **只增不減的 upsert**（永不 `deleteMany`）：
    - 該 `assetName` 尚無記錄 → 直接寫入，`sampleCount` = 本次觀測筆數。
-   - 已有記錄且價格相同 → `sampleCount` 累加本次觀測筆數，更新 `giftName`。
+   - 已有記錄且價格相同 → `sampleCount = max(既有, 本次觀測筆數)`，更新
+     `giftName`，並清除 `manual` 旗標（這個價格已由真實觀測背書）。
    - 已有記錄但價格不同 → 依既有記錄的 `sampleCount` 分級決定：
      - 既有 `sampleCount >= 2`（已被多筆觀測背書）→ **本次觀測筆數 ≥ 2 才覆蓋**
      - 既有 `sampleCount < 2`（單筆種子或人工補價）→ **本次任一筆觀測即可覆蓋**
@@ -539,12 +546,18 @@ Agenda job `"gift price rebuild"`，每 10 分鐘執行：
      覆蓋時 `sampleCount` 重設為本次觀測筆數、清除 `manual` 旗標，並輸出警告
      log。
 
+   **整個步驟 3 對未變動的 `gifts` 是冪等的**：`sampleCount` 走 `$max`、價格與
+   旗標的判定都只依賴「既有狀態」與「本次窗口算出的值」，重跑同一個窗口不會
+   改變任何欄位。這一點是必要的 —— 重建每 10 分鐘重掃同一批文件，若 `sampleCount`
+   採累加，一筆觀測會隨重跑次數不斷放大，讓錯價或人工種子憑「待得夠久」就升級
+   成高可信度，與這個欄位的用途完全相反。
+
    分級的用意是讓**新資產的第一筆觀測不會被永久釘死**。首筆觀測仍然立刻生效
    （有價可用勝過沒有），但它只是「未經背書的種子」，任何一筆不同的觀測就能
-   推翻它；要等累計到 2 筆一致的觀測，才升級為需要同等證據才能推翻的可信價格。
-   若首筆觀測就直接享有 ≥ 2 的保護，一次異常解析就會污染該資產之後的每一筆
-   `amount`，而且 `giftprices` 從不清除 —— 對很少被連擊的資產，那個錯價可能
-   永遠等不到修正。
+   推翻它；要等某一次重建同時看到 2 筆一致的觀測，才升級為需要同等證據才能
+   推翻的可信價格。若首筆觀測就直接享有 ≥ 2 的保護，一次異常解析就會污染該
+   資產之後的每一筆 `amount`，而且 `giftprices` 從不清除 —— 對很少被連擊的
+   資產，那個錯價可能永遠等不到修正。
 
    `manual: true` 的記錄**走的是同一條規則，沒有任何豁免**（預設 `sampleCount`
    為 `0`，因此落在「單筆種子」那一級）。它在「還沒有任何觀測」時提供價格，
@@ -553,12 +566,14 @@ Agenda job `"gift price rebuild"`，每 10 分鐘執行：
 
 `readPreference: "secondaryPreferred"`，比照 `video-stats` 的既有做法。
 
-**為何必須純累加**：`MAX_HOURS_BEFORE_CLEANUP = 2`，`gifts` 只留最近兩小時內
+**為何必須只增不減**：`MAX_HOURS_BEFORE_CLEANUP = 2`，`gifts` 只留最近兩小時內
 有活動的影片資料。若採「全量重算後覆蓋」，任何最近兩小時沒被送出的禮物，其
-價格會被整個抹掉。純累加 upsert 讓價格表只增不減。
+價格會被整個抹掉。只增不減的 upsert 讓價格表不會遺忘。
 
-因為是純累加、且每次都重掃當前窗口，不需要 `_id` 水位或任何額外的狀態文件。
-單次窗口漏掉只會延後學到價格，下次該禮物出現時自動補上。
+因為每次都重掃當前窗口、且步驟 3 是冪等的，不需要 `_id` 水位或任何額外的狀態
+文件。`_id` 水位在這裡反而會出錯：文件先以無 combo 的形式 insert、稍後才被改寫
+成帶 `comboCount` 的摘要，水位早已越過它，那筆觀測就永遠學不到。單次窗口漏掉只
+會延後學到價格，下次該禮物出現時自動補上。
 
 ## 統計整合
 
@@ -685,15 +700,18 @@ insert 一次）；`purchase_amount_total` 則會漏掉文件寫入後才發生�
 - `amount` 的「算得出來就覆蓋」規則：先寫入一筆價格未知的文件（`amount` 缺），
   再以價格已知的寫入補上，斷言 `amount` 被填入；反向順序（先有值、後一次算
   不出來）則斷言既有值不被抹除。
-- 價格表重建：新資產寫入（`sampleCount` 等於本次觀測筆數）、同價時 `sampleCount`
-  **累加**（非重設）、以及重建**不會刪除**窗口內未出現的既有資產。
+- 價格表重建：新資產寫入（`sampleCount` 等於本次觀測筆數）、同價時
+  `sampleCount` 取 `max`（既有 3、本次 1 → 仍是 3）、以及重建**不會刪除**窗口內
+  未出現的既有資產。
+- **重建冪等性**：對完全未變動的 `gifts` 連續跑兩次，斷言 `giftprices` 的
+  `price` / `sampleCount` / `manual` 三個欄位皆與第一次後完全相同。
 - 覆蓋門檻分級：既有 `sampleCount = 1` 時單筆異價即覆蓋；既有
   `sampleCount >= 2` 時單筆異價不覆蓋、雙筆才覆蓋。覆蓋後斷言 `sampleCount`
   被重設為本次觀測筆數。
 - 人工價格的三種歸宿：`manual: true` 且本次窗口無任何觀測時，斷言 `price` 維持
   不變；`manual: true`（`sampleCount = 0`）遇到單筆異價觀測時，斷言 `price` 被
-  覆蓋且 `manual` 旗標被清除；`manual: true` 遇到同價觀測時，斷言 `sampleCount`
-  開始累加。
+  覆蓋且 `manual` 旗標被清除；`manual: true` 遇到同價觀測時，斷言 `manual` 旗標
+  同樣被清除、`sampleCount` 升為本次觀測筆數。
 - 價格表重建的排除條件：造一筆 `hasGiftImageUrl: false` 但由 ticker 補上
   `assetName`、且帶 `jewelCount` / `comboCount` 的文件（例如
   `comboed x2 Heart for 10 Jewels`），斷言它**不會**被納入價格推導 —— 否則會
