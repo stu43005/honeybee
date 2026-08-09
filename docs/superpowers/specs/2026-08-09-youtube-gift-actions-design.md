@@ -59,6 +59,25 @@ Gift 是 YouTube 以 **Jewels 虛擬代幣**購買的打賞道具，行為近似
   欄位只有 ticker（單價 ≥ 100 Jewels）才有；加上 `followUpdate` 預設關閉、只有
   insert 事件會觸發，因此只有「ticker 與 item 落在同一批次而被合併」或「ticker
   先於 item 到達」的高單價禮物才會發出 webhook。
+- **價格重建停機超過保留窗口時，該期間的觀測永久遺失**。
+  - 顧慮：價格只從 `gifts` 的當前窗口學習，而 `cleanup` 在直播結束 2 小時後就
+    刪除文件。若 manager 或該 Agenda job 停擺超過保留窗口，那段期間唯一能推導
+    價格的 combo 觀測會連同文件一起消失，且既有的 `purchase_amount_total` 也
+    不會回頭補算。
+  - 決定：不做持久化觀測日誌、不讓 cleanup 等待重建、不延長保留期。
+  - 理由：manager 停機超過 2 小時本來就是必須處理的運維事件，影響遠不只價格表
+    （所有 Agenda 排程工作都停了）。同一個資產日後再被連擊就會學到價；真的長期
+    學不到的，已有 `manual` 補價出口。為此新增一份持久化觀測日誌或讓 cleanup
+    與重建產生耦合，與問題規模不相稱。
+- **Gift 的 jewel 金額共用 `purchase_amount_total`，以 `currency="JEWEL"` 區分**。
+  - 顧慮：該 metric 原本承載的是法幣金額。跨 currency 加總的儀表板或 API
+    消費者，會把虛擬代幣數量混進金錢總額。
+  - 決定：不另開 metric，沿用 `purchase_amount_total`。
+  - 理由：這個 metric 本來就同時裝著多種法幣，跨幣別加總原本就沒有意義（專案
+    另有 `purchase_amount_jpy_total` 供此用途），`JEWEL` 只是多一個標籤值。
+    Prometheus 匯出時另帶 `type="gift"`，有做類型過濾的查詢完全不受影響，而
+    `recalcVideoHbStats` 只彙總 SuperChat / SuperSticker 的 jpy 統計，也不會
+    被波及。另開 `VideoStatsType` 要多一條專屬 cron 與一個新 gauge，收益不足。
 - **並發首次 upsert 撞 `E11000` 時不重試，失敗方的互補欄位就此遺失**。
   - 顧慮：兩個 replica 若在同一 `id` 的首次 insert 上真正同時站，MongoDB 只讓
     一方建立文件、另一方拿到 `E11000`。既有的 catch 會把它當成一般撞重吞掉，
@@ -232,6 +251,42 @@ id ChwKGkNPSFA5NFQtLXBJREZRNlZ3Z1FkM09RMTJ3
 - masterchat 建立連線後的**第一份回應就包含聊天室上既有的項目**。因為重送的是
   同一批 `id`，以 `id` 去重即可，不會重複計數 —— worker 重啟、replica 上線、
   多 replica 併行都適用同一條保證。
+
+### mongoose pipeline update + upsert 的實際行為（已驗證）
+
+版本：mongoose `8.2.1`（`node_modules/mongoose/package.json`），其內嵌的
+mongodb driver 為 `6.3.0`（`node_modules/mongoose/node_modules/mongodb/`；
+專案根目錄另有一份 `7.1.1` 屬於其他相依，mongoose 不使用它）。MongoDB 伺服器
+為 `mongo:5`（[docker-compose.yml](../../../docker-compose.yml)、
+[k8s/base/db.yaml](../../../k8s/base/db.yaml)），aggregation pipeline update
+自 4.2 起支援。
+
+以下皆為實際讀取 `node_modules/mongoose/` 原始碼取得：
+
+- **允許以陣列（pipeline）當 `bulkWrite` `updateOne` 的 `update`。**
+  `lib/helpers/query/castUpdate.js` 對 `Array.isArray(obj)` 的分支只逐 stage
+  呼叫 `castPipelineOperator`（僅認得 `$set` / `$unset` / `$project` /
+  `$addFields` / `$replaceRoot` / `$replaceWith`）後**直接 return**，跳過其後
+  所有的轉型與 strict 處理。
+- **schema 預設值不會生效。** `lib/helpers/model/castBulkWrite.js` 會呼叫
+  `setDefaultsOnInsert()`，但它是把結果寫成 `pipeline.$setOnInsert = {...}`
+  ——**掛在陣列物件上的屬性**。BSON 只序列化陣列的元素、不序列化屬性，因此那些
+  預設值在送達 MongoDB 前就被丟棄。版本鍵（`__v`）同理失效。
+- **`updatedAt` 會被加上，`createdAt` 不會。**
+  `lib/helpers/update/applyTimestampsToUpdate.js` 對陣列 update 的處理是
+  `updates.push({ $set: { [updatedAt]: now } })`，只補 `updatedAt`。
+- **不跑驗證器、不檢查 `required`。** `castBulkWrite.js` 的 `updateOne` 分支
+  沒有 `$validate()` 呼叫（只有 `insertOne` 分支有）。
+- **strict mode 不生效**，不在 schema 中的欄位不會被剝除（同第一點的 early
+  return）。
+- **filter 的等值條件會用來生成新文件**，這是 **MongoDB 伺服器**行為而非
+  mongoose —— mongoose 只是把 filter 原樣放進 update statement 的 `q`。因此
+  `{ id }` 這個 filter 會讓 upsert 建立的文件自帶 `id`。
+
+**對本設計的結論**：worker 的 gift upsert 可以用 pipeline，但**必須把每一個
+required 欄位都在 pipeline 裡明確寫出**，不得倚賴任何 schema `default` 或
+`createdAt`。而價格重建**不使用 pipeline**（見該節），以保留 mongoose 的一般
+語意。
 
 ### giftImageUrl / stickerUrl 實際型態
 
@@ -467,6 +522,13 @@ combo 狀態群），但 `amount` 仍可由 `stickerUrl` 推出的 `assetName` �
 每筆 op 是 **aggregation pipeline update + `upsert: true`**。用 pipeline 而非
 `$setOnInsert` + `$set`，是因為三種語意要在同一次原子更新裡表達：
 
+**前提（已驗證，見「事實基準」）**：pipeline update 會繞過 mongoose 的 schema
+預設值、`createdAt`、strict mode 與驗證器。因此這裡的 pipeline **必須把每一個
+required 欄位都明確寫出** —— `timestamp`、`authorType`、`currency`、
+`originVideoId`、`originChannelId` 都在下列互補欄位中，不倚賴任何 schema
+`default`。`id` 由 filter `{ id }` 的等值條件在 upsert 時由 MongoDB 伺服器帶入
+新文件。Gift model 不繼承 `TimeStamps`，因此不受 `createdAt` 不生效的影響。
+
 **互補欄位（填缺不覆蓋，`$ifNull`）**
 
 `timestamp`、`authorName`、`authorPhoto`、`authorChannelId`、`giftName`、
@@ -535,7 +597,16 @@ Agenda job `"gift price rebuild"`，每 10 分鐘執行：
    的錯價。
 2. 依 `assetName` 取本次窗口內**出現次數最多**的 price，並記下最後看到的
    `giftName`。
-3. **只增不減的 upsert**（永不 `deleteMany`）：
+3. **讀出整張 `giftprices`**（數百列，就是 worker 快取的同一份資料），在應用層
+   決定每個 `assetName` 的去向，再以**一般 update 運算子**（`$set` /
+   `$setOnInsert` / `$unset`）`bulkWrite` 回去。
+
+   這裡刻意**不使用 aggregation pipeline update** —— pipeline 會繞過 mongoose
+   的 schema 預設值與 `createdAt`（見「事實基準」）。價格重建沒有併發對手
+   （Agenda 的 `lockLifetime` 保證單一實例），讀後寫完全安全，用一般語意即可
+   保留 mongoose 的正常行為。分級判斷也因此寫在 JS 裡，比塞進 `$cond` 好讀。
+
+4. **只增不減**（永不 `deleteMany`）：
    - 該 `assetName` 尚無記錄 → 直接寫入，`sampleCount` = 本次觀測筆數。
    - 已有記錄且價格相同 → `sampleCount = max(既有, 本次觀測筆數)`，更新
      `giftName`，並清除 `manual` 旗標（這個價格已由真實觀測背書）。
@@ -546,7 +617,10 @@ Agenda job `"gift price rebuild"`，每 10 分鐘執行：
      覆蓋時 `sampleCount` 重設為本次觀測筆數、清除 `manual` 旗標，並輸出警告
      log。
 
-   **整個步驟 3 對未變動的 `gifts` 是冪等的**：`sampleCount` 走 `$max`、價格與
+   比較 `sampleCount` 時一律以 `existing.sampleCount ?? 0` 取值。手動補價可能
+   是直接在 DB 插入的，不會經過 mongoose 的 `default`，該欄位有可能不存在。
+
+   **整個步驟 4 對未變動的 `gifts` 是冪等的**：`sampleCount` 取 `max`、價格與
    旗標的判定都只依賴「既有狀態」與「本次窗口算出的值」，重跑同一個窗口不會
    改變任何欄位。這一點是必要的 —— 重建每 10 分鐘重掃同一批文件，若 `sampleCount`
    採累加，一筆觀測會隨重跑次數不斷放大，讓錯價或人工種子憑「待得夠久」就升級
@@ -716,6 +790,9 @@ insert 一次）；`purchase_amount_total` 則會漏掉文件寫入後才發生�
   `assetName`、且帶 `jewelCount` / `comboCount` 的文件（例如
   `comboed x2 Heart for 10 Jewels`），斷言它**不會**被納入價格推導 —— 否則會
   寫入 `10 / 2 = 5` 這個錯價。
+- gift upsert 的 pipeline **必須明確寫出每個 required 欄位**：斷言首次 upsert
+  產生的文件同時具備 `timestamp` / `authorType` / `currency` / `originVideoId`
+  / `originChannelId`，不倚賴 schema `default`（pipeline update 下不會生效）。
 - 依專案慣例，Mongo / Redis 依賴以 `jest.unstable_mockModule` 搭配有狀態的
   fake（非裸 `jest.fn()`），確保 upsert 前後的可觀測狀態變化能被斷言。
 
@@ -724,9 +801,6 @@ insert 一次）；`purchase_amount_total` 則會漏掉文件寫入後才發生�
 - `getCacheInstance` 的 `refreshThreshold` 在 cache-manager 目前版本的實際
   semantics（背景 refresh 是否會阻塞讀取），需在 plan 階段以 research subagent
   讀 `node_modules/cache-manager` 確認後再定 TTL 參數。
-- Mongoose `bulkWrite` 的 `updateOne` 搭配 aggregation pipeline `update` 與
-  `upsert: true` 時，pipeline 在 insert 路徑上對不存在欄位的 `$ifNull` 行為，
-  需以 research subagent 讀 `node_modules/mongoose` 與 MongoDB 版本確認。
 - `partialFilterExpression` 與既有 `attachIndexWarningListeners`
   （`src/modules/db.ts`）的互動：專案先前有過 partial index 相關設計
   （`2026-05-20-mongo-partial-index-fix-design.md`），需在 plan 階段對照其結論。
