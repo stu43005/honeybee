@@ -26,11 +26,16 @@ Gift 是 YouTube 以 **Jewels 虛擬代幣**購買的打賞道具，行為近似
 
 以下皆為明知且接受的取捨，不再額外投入工程量修正：
 
-- **detailed 模式的 combo 訊息 `amount` 留空**。這類文件永遠拿不到 `assetName`
-  （無 `giftImageUrl`、低單價無 ticker），且形態一與形態二在不知單價時無法區分。
+- **detailed 模式的 combo 訊息多數 `amount` 留空**。這類文件只有在單價
+  ≥ 100 Jewels 而 ticker 補上圖時才拿得到 `assetName` 去查價；其餘一律留空
+  （形態一與形態二在不知單價時無法區分，硬取 `jewelCount` 會高估數倍）。
   jewel 合計因此系統性低估。
-- **新資產上線初期 `amount` 留空且不回填**。價格表由 manager 每 10 分鐘重建，
-  首次見到某資產到價格可用之間寫入的文件不會有 `amount`。
+- **價格未知的資產 `amount` 留空，且寫入後不回填**。價格只能從帶 `comboCount`
+  的訊息推導，因此**從未被連擊過的資產可能永久學不到價**，不只是上線初期的
+  暖機窗口 —— 而且偏差方向不利：高單價禮物通常一次只送一個，最不容易被連擊，
+  卻在 jewel 合計裡權重最大。營運出口是**手動在 `giftprices` 補一筆
+  `manual: true` 的價格**，最多 5 分鐘後對新寫入的文件生效；已寫入的舊文件
+  不回填。人工價之後仍受自動學習修正，因此 YouTube 調價不會讓它永久錯下去。
 - **`purchase_amount_total` 只採計文件首次進入統計水位時的 `amount`，後續
   combo 更新不補算**。
   - 顧慮：`updateStats` 的增量模式以 `_id > lastId` 為界、用 `$inc` 累加，每份
@@ -330,16 +335,29 @@ metrics 的 label 集合保持完整。Gift 不進任何 jpy 換算路徑，因�
 
 ### `src/models/GiftPrice.ts` → collection `giftprices`
 
-| 欄位          | 型別     | required    | 說明                                           |
-| ------------- | -------- | ----------- | ---------------------------------------------- |
-| `assetName`   | `string` | ✓（unique） | 唯一鍵，例如 `finger_heart`                    |
-| `price`       | `number` | ✓           | 單價（Jewels）                                 |
-| `giftName`    | `string` |             | 最後觀測到的顯示名稱，**僅供對照，不參與查價** |
-| `sampleCount` | `number` | ✓           | 最近一次重建時支持此價格的觀測筆數             |
+| 欄位          | 型別      | required         | 說明                                           |
+| ------------- | --------- | ---------------- | ---------------------------------------------- |
+| `assetName`   | `string`  | ✓（unique）      | 唯一鍵，例如 `finger_heart`                    |
+| `price`       | `number`  | ✓                | 單價（Jewels）                                 |
+| `giftName`    | `string`  |                  | 最後觀測到的顯示名稱，**僅供對照，不參與查價** |
+| `manual`      | `boolean` |                  | 此價格由人工填入；**不阻擋自動學習**           |
+| `sampleCount` | `number`  | ✓（default `0`） | 最近一次重建時支持此價格的觀測筆數             |
 
 繼承 `TimeStamps`（`createdAt` / `updatedAt`）。
 
 `giftprices` **不被 `cleanup` 清除** —— 它是跨直播累積的知識庫。
+
+`manual` 是**營運用的補價出口**。價格只能從帶 `comboCount` 的訊息推導，因此
+從未被連擊過的資產（高單價禮物尤其容易如此）可能長期學不到價。這種情況直接在
+`giftprices` 手動插入一筆 `{ assetName, price, manual: true }` 即可立刻生效 ——
+worker 的價格表快取一視同仁地讀取，最多 5 分鐘後套用。`sampleCount` 給預設值
+`0`，讓手動插入只需要 `assetName` / `price` / `manual` 三個欄位。
+
+`manual` **只是種子值，不是鎖**。重建 job 對它套用與自動學習值完全相同的覆蓋
+規則（見下）；一旦累積到足夠的真實觀測，人工值就會被取代並清除旗標。若讓人工
+值永久免疫覆寫，YouTube 調整貼圖價格後那筆補價會永遠是錯的，而且沒有任何自動
+機制能發現 —— 補洞的價值不足以換取這個風險。旗標本身只用於稽核（看得出這個價
+是人填的、還沒被觀測驗證過）。
 
 ## `src/components/gift.ts`（worker 端純函式）
 
@@ -372,13 +390,16 @@ merged 模式（item 帶 giftImageUrl）—— 這則代表整波
 
 detailed 模式（item 未帶 giftImageUrl）—— 這則恆代表 1 份
   comboCount == null  →  jewelCount            // jewelCount 即單價
-  否則                 →  undefined             // 單價不可得，見下
+  否則                 →  priceTable[assetName] // 見下
 ```
 
-detailed 模式的 combo 訊息之所以留空：這類訊息沒有 `giftImageUrl` 就沒有
-`assetName`，而低單價禮物又永遠不會有 ticker 補圖，因此**單價在該文件上永遠
-不可得**。且形態一（`J = 單價`）與形態二（`J = 單價 × N`）在不知單價時無法區分，
-硬取 `jewelCount` 會在形態二上高估數倍。留空是唯一不會系統性放大誤差的選擇。
+detailed 模式的 combo 訊息**不能直接取 `jewelCount`**：形態一（`J = 單價`）與
+形態二（`J = 單價 × N`）在不知單價時無法區分，硬取會在形態二上高估數倍。改查
+價格表則兩種形態都得到正確的「1 份」金額。
+
+這條查表路徑多數時候會落空 —— detailed 訊息沒有 `giftImageUrl`，只有在單價
+≥ 100 Jewels 而 ticker 補上 `stickerUrl` 時才有 `assetName`。落空即 `amount`
+留空，jewel 合計就此低估；這是接受的取捨。
 
 `amount` 是「這一份文件所代表的 jewel 金額」。merged 模式一筆代表整波，detailed
 模式一筆代表 1 份 —— 兩者相加即為該影片的 jewel 合計，不重複計算。
@@ -466,7 +487,13 @@ Agenda job `"gift price rebuild"`，每 10 分鐘執行：
    - 該 `assetName` 尚無記錄 → 直接寫入。
    - 已有記錄且價格相同 → 更新 `sampleCount` 與 `giftName`。
    - 已有記錄但價格不同 → **僅當本次觀測筆數 ≥ 2 才覆蓋**，並輸出警告 log；
-     觀測筆數為 1 時保留舊值（單筆解析雜訊不足以推翻既有價格）。
+     觀測筆數為 1 時保留舊值（單筆解析雜訊不足以推翻既有價格）。覆蓋時一併
+     清除 `manual` 旗標 —— 這個價格已由真實觀測背書，不再是人工填的。
+
+   `manual: true` 的記錄**走的是同一條規則，沒有任何豁免**。它在「還沒有任何
+   觀測」時提供價格，一旦有 ≥ 2 筆觀測給出不同的價（例如 YouTube 調價），就會
+   被自動修正。這是刻意的：永久免疫覆寫的人工值一旦過時，沒有任何機制能自動
+   發現。
 
 `readPreference: "secondaryPreferred"`，比照 `video-stats` 的既有做法。
 
@@ -562,8 +589,9 @@ insert 一次）；`purchase_amount_total` 則會漏掉文件寫入後才發生�
 - `parseGiftAssetName`：item 版（帶 `=w640-h640`）與 ticker 版（不帶）產生同一
   `assetName`；不同禮物產生不同 `assetName`；undefined / 空字串 / 無副檔名輸入。
 - `deriveGiftAmount`：merged 已結算 / merged 未結算（查表命中與未命中）/
-  detailed 非 combo / detailed combo（留空）四條路徑各一，且以生產資料的實際
-  數值（Heart 10、Star 2、x8/80、x4/8）為測資。
+  detailed 非 combo / detailed combo（查表命中與未命中）各一，且以生產資料的
+  實際數值（Heart 10、Star 2、x8/80、x4/8）為測資。detailed combo 命中那條要
+  斷言取到的是單價而非 `jewelCount`。
 - `mergeGiftActions`：item-only、ticker-only、同批 item+ticker（驗證
   `authorChannelId` 與 `image` 都出現在同一筆輸出）、同批多筆同 `id`（驗證
   combo 狀態取新者）。
@@ -572,6 +600,9 @@ insert 一次）；`purchase_amount_total` 則會漏掉文件寫入後才發生�
   不出現 `jewelCount=10, comboCount=8` 這類混合狀態。
 - 價格表重建：新資產寫入、同價更新 `sampleCount`、異價單筆不覆蓋、異價雙筆覆蓋
   四種情形；並斷言重建**不會刪除**窗口內未出現的既有資產。
+- 人工價格的兩種歸宿：`manual: true` 且本次窗口無任何觀測時，斷言 `price` 維持
+  不變；`manual: true` 且本次觀測到 2 筆以上不同價格時，斷言 `price` 被覆蓋且
+  `manual` 旗標被清除。
 - 價格表重建的排除條件：造一筆 `hasGiftImageUrl: false` 但由 ticker 補上
   `assetName`、且帶 `jewelCount` / `comboCount` 的文件，斷言它**不會**被納入
   價格推導（否則會寫入 `單價 / comboCount` 的錯價）。
