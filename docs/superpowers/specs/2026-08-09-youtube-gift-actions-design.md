@@ -51,26 +51,30 @@ Gift 是 YouTube 以 **Jewels 虛擬代幣**購買的打賞道具，行為近似
   - 理由：jewel 合計本來就只能靠推導取得，不精確在可接受範圍內。改成全量重算
     要為 gift 在 `crons` 開一條有別於其他統計的專屬路徑，並每次掃過整個
     `gifts` collection，與這項統計的用途不相稱。
-- **ticker-only 文件的補收是不均勻的**。item 始終沒到達時（例如 worker 或
-  replica 中途啟動、只接到 ticker bar 的既有項目），該次送禮仍會靠 ticker 被
-  記錄並計入統計，但這只可能發生在單價 ≥ 100 Jewels 的禮物上 —— 低單價禮物
-  沒有 ticker，同樣情境下就整筆漏掉。
+- **ticker-only 文件的補收是不均勻的**。item 始終沒到達時（該筆 chat item 已
+  不在 masterchat 初始回應的範圍，而它的 ticker 仍掛在 ticker bar 上），該次
+  送禮仍會靠 ticker 被記錄並計入統計，但這只可能發生在單價 ≥ 100 Jewels 的
+  禮物上 —— 低單價禮物沒有 ticker，同樣情境下就整筆漏掉。
 - **webhook 覆蓋率低**。track / DM 的 preset 都以 `authorChannelId` 過濾，而該
   欄位只有 ticker（單價 ≥ 100 Jewels）才有；加上 `followUpdate` 預設關閉、只有
   insert 事件會觸發，因此只有「ticker 與 item 落在同一批次而被合併」或「ticker
   先於 item 到達」的高單價禮物才會發出 webhook。
 - **並發首次 upsert 撞 `E11000` 時不重試，失敗方的互補欄位就此遺失**。
   - 顧慮：兩個 replica 若在同一 `id` 的首次 insert 上真正同時站，MongoDB 只讓
-    一方建立文件、另一方拿到 `E11000`。既有的 catch 會把它當成一般撞重吞掉；
-    若失敗方手上帶的是 ticker 專有的 `authorChannelId`，該欄位就永久遺失。
+    一方建立文件、另一方拿到 `E11000`。既有的 catch 會把它當成一般撞重吞掉，
+    失敗方手上的欄位就此遺失。多數情況遺失的是 ticker 專有的
+    `authorChannelId`（只影響 webhook）；但**最壞情況會影響 `amount`** ——
+    失敗方是 ticker、而勝方是那約 10% 不帶 `giftImageUrl` 的 item 時，
+    `stickerUrl` 是該文件取得 `assetName` 的唯一來源，遺失即無從查價，該筆
+    對 `purchase_amount_total` 貢獻 0。
   - 決定：不實作重試。
   - 理由：觸發需同時滿足「毫秒級同時的首次 insert」與「兩邊持有的欄位恰好
     不同」。YouTube 通常把 item 與 ticker 放在同一個 continuation response，
-    因此各 replica 合併後多半產生完全相同的 payload，第二個條件很難成立。
-    晚一步的寫入都會走正常 update 路徑、不會遺失。實際損失也僅是偶發少一筆
-    gift 的 `authorChannelId`（webhook 本就是低覆蓋率），兩項統計完全不受影響。
-    為此在 worker 中新增一條有別於其他 20 個 case 的錯誤處理路徑，與問題規模
-    不相稱。
+    因此各 replica 合併後多半產生完全相同的 payload，第二個條件很難成立；
+    晚一步的寫入都會走正常 update 路徑、不會遺失。而上述影響 `amount` 的最壞
+    情況還要再疊加「勝方恰好是無圖的那 10%」，機率更低，且其後果與本節其他
+    已接受的低估來源同量級。為此在 worker 中新增一條有別於其他 20 個 case 的
+    錯誤處理路徑，與問題規模不相稱。
 
 ## 名詞與既有機制（事實基準）
 
@@ -225,6 +229,9 @@ id ChwKGkNPSFA5NFQtLXBJREZRNlZ3Z1FkM09RMTJ3
 - ticker **只出現在單價 ≥ 100 Jewels 的禮物上**。低單價禮物（如 Heart 10、
   Star 2）永遠不會有 ticker。
 - 去重方式與其他 action 一致：以 `id` 為唯一鍵；item 與 ticker 共用同一個 `id`。
+- masterchat 建立連線後的**第一份回應就包含聊天室上既有的項目**。因為重送的是
+  同一批 `id`，以 `id` 去重即可，不會重複計數 —— worker 重啟、replica 上線、
+  多 replica 併行都適用同一條保證。
 
 ### giftImageUrl / stickerUrl 實際型態
 
@@ -360,11 +367,16 @@ metrics 的 label 集合保持完整。Gift 不進任何 jpy 換算路徑，因�
 | `price`       | `number`  | ✓                | 單價（Jewels）                                 |
 | `giftName`    | `string`  |                  | 最後觀測到的顯示名稱，**僅供對照，不參與查價** |
 | `manual`      | `boolean` |                  | 此價格由人工填入；**不阻擋自動學習**           |
-| `sampleCount` | `number`  | ✓（default `0`） | 最近一次重建時支持此價格的觀測筆數             |
+| `sampleCount` | `number`  | ✓（default `0`） | 支持**目前這個** `price` 的累計觀測筆數        |
 
 繼承 `TimeStamps`（`createdAt` / `updatedAt`）。
 
 `giftprices` **不被 `cleanup` 清除** —— 它是跨直播累積的知識庫。
+
+`sampleCount` 是**累計值**，不是單次窗口的計數：同價再次被觀測到就累加，價格被
+覆蓋時重設為當次的觀測筆數。它同時也是這筆價格的可信度指標，覆蓋門檻直接依它
+分級（見下），因此不需要額外的 provisional 旗標。人工補價的預設值 `0` 讓它自然
+落在「未經觀測背書」那一級。
 
 `manual` 是**營運用的補價出口**。價格只能從帶 `comboCount` 的訊息推導，因此
 從未被連擊過的資產（高單價禮物尤其容易如此）可能長期學不到價。這種情況直接在
@@ -518,16 +530,26 @@ Agenda job `"gift price rebuild"`，每 10 分鐘執行：
 2. 依 `assetName` 取本次窗口內**出現次數最多**的 price，並記下最後看到的
    `giftName`。
 3. **純累加 upsert**（永不 `deleteMany`）：
-   - 該 `assetName` 尚無記錄 → 直接寫入。
-   - 已有記錄且價格相同 → 更新 `sampleCount` 與 `giftName`。
-   - 已有記錄但價格不同 → **僅當本次觀測筆數 ≥ 2 才覆蓋**，並輸出警告 log；
-     觀測筆數為 1 時保留舊值（單筆解析雜訊不足以推翻既有價格）。覆蓋時一併
-     清除 `manual` 旗標 —— 這個價格已由真實觀測背書，不再是人工填的。
+   - 該 `assetName` 尚無記錄 → 直接寫入，`sampleCount` = 本次觀測筆數。
+   - 已有記錄且價格相同 → `sampleCount` 累加本次觀測筆數，更新 `giftName`。
+   - 已有記錄但價格不同 → 依既有記錄的 `sampleCount` 分級決定：
+     - 既有 `sampleCount >= 2`（已被多筆觀測背書）→ **本次觀測筆數 ≥ 2 才覆蓋**
+     - 既有 `sampleCount < 2`（單筆種子或人工補價）→ **本次任一筆觀測即可覆蓋**
 
-   `manual: true` 的記錄**走的是同一條規則，沒有任何豁免**。它在「還沒有任何
-   觀測」時提供價格，一旦有 ≥ 2 筆觀測給出不同的價（例如 YouTube 調價），就會
-   被自動修正。這是刻意的：永久免疫覆寫的人工值一旦過時，沒有任何機制能自動
-   發現。
+     覆蓋時 `sampleCount` 重設為本次觀測筆數、清除 `manual` 旗標，並輸出警告
+     log。
+
+   分級的用意是讓**新資產的第一筆觀測不會被永久釘死**。首筆觀測仍然立刻生效
+   （有價可用勝過沒有），但它只是「未經背書的種子」，任何一筆不同的觀測就能
+   推翻它；要等累計到 2 筆一致的觀測，才升級為需要同等證據才能推翻的可信價格。
+   若首筆觀測就直接享有 ≥ 2 的保護，一次異常解析就會污染該資產之後的每一筆
+   `amount`，而且 `giftprices` 從不清除 —— 對很少被連擊的資產，那個錯價可能
+   永遠等不到修正。
+
+   `manual: true` 的記錄**走的是同一條規則，沒有任何豁免**（預設 `sampleCount`
+   為 `0`，因此落在「單筆種子」那一級）。它在「還沒有任何觀測」時提供價格，
+   一旦有真實觀測給出不同的價（例如 YouTube 調價），就會被自動修正。這是刻意
+   的：永久免疫覆寫的人工值一旦過時，沒有任何機制能自動發現。
 
 `readPreference: "secondaryPreferred"`，比照 `video-stats` 的既有做法。
 
@@ -568,10 +590,12 @@ ticker-only 文件（缺整個 combo 狀態群）**照常計入兩項統計**。
 文件，`$sum: 1` 只會算到一次。無論兩者同批合併、分批先後到達、或 item 始終
 沒到，該次送禮在 `message_total` 裡都恰好是 1。
 
-而 item 始終沒到的那種文件，代表的仍是**一次真實發生的送禮**（只是我們沒收到
-它的 chat item，例如 worker 或 replica 中途啟動時只接到 ticker bar 的既有
-項目）。把它排除掉是少收資料，不是修正誤差。已知的偏差是這種補收只會發生在
-單價 ≥ 100 Jewels 的禮物上（低單價沒有 ticker），因此覆蓋是不均勻的 —— 記在
+而 item 始終沒到的那種文件，代表的仍是**一次真實發生的送禮**，只是我們沒收到
+它的 chat item。中途啟動不太會造成這種情況 —— masterchat 的第一份回應本來就
+包含聊天室既有的項目，item 與 ticker 通常會一起補齊；只有當該筆 chat item 已
+不在初始回應的範圍、而它的 ticker 仍掛在 ticker bar 上時才會落單。把這種文件
+排除掉是少收資料，不是修正誤差。已知的偏差是這種補收只會發生在單價
+≥ 100 Jewels 的禮物上（低單價沒有 ticker），因此覆蓋是不均勻的 —— 記在
 「Non-goals / Accepted limitations」。
 
 ### 增量模式的影響
@@ -630,7 +654,8 @@ insert 一次）；`purchase_amount_total` 則會漏掉文件寫入後才發生�
   跑完。唯一不受影響的是 `sent X for P Jewels`（無 `comboCount`）—— 它直接觀測
   到單價，不查表。
 - **同一 `assetName` 觀測到兩種價格**：可能是 YouTube 調價，也可能是解析雜訊。
-  規則為「本次窗口觀測 ≥ 2 才覆蓋」並記 log，讓調價能生效、單筆雜訊被擋下。
+  依既有記錄的 `sampleCount` 分級覆蓋並記 log —— 已被多筆背書的價格需要同等
+  證據才推翻，只有單筆種子（含人工補價）的則從善如流。
 - **replica > 1 並發 upsert**：`ordered: false` + 既有 11000 catch。pipeline
   update 本身是原子的，兩個 replica 送同樣內容不會互相破壞。首次 insert 撞重時
   失敗方不重試（見「Non-goals / Accepted limitations」）。
@@ -660,11 +685,15 @@ insert 一次）；`purchase_amount_total` 則會漏掉文件寫入後才發生�
 - `amount` 的「算得出來就覆蓋」規則：先寫入一筆價格未知的文件（`amount` 缺），
   再以價格已知的寫入補上，斷言 `amount` 被填入；反向順序（先有值、後一次算
   不出來）則斷言既有值不被抹除。
-- 價格表重建：新資產寫入、同價更新 `sampleCount`、異價單筆不覆蓋、異價雙筆覆蓋
-  四種情形；並斷言重建**不會刪除**窗口內未出現的既有資產。
-- 人工價格的兩種歸宿：`manual: true` 且本次窗口無任何觀測時，斷言 `price` 維持
-  不變；`manual: true` 且本次觀測到 2 筆以上不同價格時，斷言 `price` 被覆蓋且
-  `manual` 旗標被清除。
+- 價格表重建：新資產寫入（`sampleCount` 等於本次觀測筆數）、同價時 `sampleCount`
+  **累加**（非重設）、以及重建**不會刪除**窗口內未出現的既有資產。
+- 覆蓋門檻分級：既有 `sampleCount = 1` 時單筆異價即覆蓋；既有
+  `sampleCount >= 2` 時單筆異價不覆蓋、雙筆才覆蓋。覆蓋後斷言 `sampleCount`
+  被重設為本次觀測筆數。
+- 人工價格的三種歸宿：`manual: true` 且本次窗口無任何觀測時，斷言 `price` 維持
+  不變；`manual: true`（`sampleCount = 0`）遇到單筆異價觀測時，斷言 `price` 被
+  覆蓋且 `manual` 旗標被清除；`manual: true` 遇到同價觀測時，斷言 `sampleCount`
+  開始累加。
 - 價格表重建的排除條件：造一筆 `hasGiftImageUrl: false` 但由 ticker 補上
   `assetName`、且帶 `jewelCount` / `comboCount` 的文件（例如
   `comboed x2 Heart for 10 Jewels`），斷言它**不會**被納入價格推導 —— 否則會
@@ -680,11 +709,6 @@ insert 一次）；`purchase_amount_total` 則會漏掉文件寫入後才發生�
 - Mongoose `bulkWrite` 的 `updateOne` 搭配 aggregation pipeline `update` 與
   `upsert: true` 時，pipeline 在 insert 路徑上對不存在欄位的 `$ifNull` 行為，
   需以 research subagent 讀 `node_modules/mongoose` 與 MongoDB 版本確認。
-- ticker-only 文件實際出現的頻率與成因：masterchat 在建立連線後的第一份
-  continuation 是否會把 ticker bar 上的既有項目當成 `addLiveChatTickerItemAction`
-  送出（本設計以「可能會」為前提定義行為）。需在 plan 階段讀
-  `node_modules/@stu43005/masterchat/lib/masterchat.mjs` 的初次抓取路徑確認，
-  以決定 ticker-only 測試要覆蓋到什麼程度。
 - `partialFilterExpression` 與既有 `attachIndexWarningListeners`
   （`src/modules/db.ts`）的互動：專案先前有過 partial index 相關設計
   （`2026-05-20-mongo-partial-index-fix-design.md`），需在 plan 階段對照其結論。
