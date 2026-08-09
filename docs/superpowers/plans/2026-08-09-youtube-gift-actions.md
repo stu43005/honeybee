@@ -212,7 +212,39 @@ export default getModelForClass(Gift);
 Run: `npm run build && npm run lint`
 Expected: 皆成功。`importAllModels()` 會自動掃到這個檔案，不需要註冊。
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: 確認 partial filter 只用了 MongoDB 允許的運算子**
+
+`partialFilterExpression` 只接受相等比較、`$exists: true`、`$gt` / `$gte` /
+`$lt` / `$lte`、`$type`、`$and`、`$or`、`$in`。用到別的（例如 `$ne`）時
+`createIndex` 會被伺服器拒絕，而 mongoose 的 `autoIndex` 會把那個 rejection 吞掉
+—— 程式以為索引存在、實際上沒有。這正是 `attachIndexWarningListeners()`
+（`src/modules/db.ts`）當初被加進來的原因。
+
+檢查上面寫的 filter：`hasGiftImageUrl: true` 是相等比較、其餘三個是
+`$exists: true`，全部合法。
+
+Run:
+
+```bash
+grep -n '\$ne\|\$nin\|\$not\|\$regex\|\$expr' src/models/Gift.ts
+```
+
+Expected: 無輸出。
+
+- [ ] **Step 4: 部署後的線上確認（實作階段完成後執行一次）**
+
+服務啟動後，在 MongoDB 上執行：
+
+```js
+db.gifts.getIndexes();
+```
+
+Pass 條件：輸出中含有 `assetName_1`，且其 `partialFilterExpression` 與上面宣告的
+四個條件一致。同時檢查服務啟動日誌**沒有**出現
+`[mongoose] autoIndex failed for gifts`。任一條不符，代表索引其實沒建立，價格
+重建的掃描會退化成全表掃。
+
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/models/Gift.ts
@@ -456,7 +488,9 @@ describe("deriveGiftAmount", () => {
 - [ ] **Step 2: 執行測試確認失敗**
 
 Run: `npm run test -- src/components/gift.spec.ts -t "deriveGiftAmount"`
-Expected: FAIL，`deriveGiftAmount is not a function`。
+Expected: FAIL，訊息形如
+`SyntaxError: The requested module './gift.js' does not provide an export named 'deriveGiftAmount'`
+（named import 指向尚不存在的 export，整個檔案在載入階段就失敗）。
 
 - [ ] **Step 3: 寫最小實作**
 
@@ -587,7 +621,8 @@ describe("mergeGiftActions", () => {
     expect(merged[0]).toEqual({
       id: "gift-1",
       complement: {
-        timestamp: CTX.receivedAt,
+        // The item states no timestamp here, so the ticker's stands in.
+        timestamp: new Date("2026-08-09T00:00:05.000Z"),
         authorName: "sender",
         authorPhoto: undefined,
         authorChannelId: "UCsender",
@@ -887,6 +922,10 @@ git commit -m "feat(gift): merge item and ticker actions of one gift into a sing
 在 `src/components/gift.spec.ts` 的 `./gift.js` import 加入 `buildGiftUpsertOps`，並在檔案末端追加：
 
 ```ts
+// True exactly when the stored document has no combo state yet: this flag is
+// written by every item delivery and by nothing else.
+const NO_COMBO_YET = { $eq: [{ $ifNull: ["$hasGiftImageUrl", null] }, null] };
+
 describe("buildGiftUpsertOps", () => {
   it("gap-fills complementary fields and states every required one", () => {
     const [op] = buildGiftUpsertOps(
@@ -961,7 +1000,18 @@ describe("buildGiftUpsertOps", () => {
       )
     );
     const stage = (op as any).updateOne.update[0].$set;
-    const isNewer = { $gt: [8, { $ifNull: ["$comboCount", 1] }] };
+    const expectedCondition = {
+      $or: [
+        NO_COMBO_YET,
+        { $gt: [8, { $ifNull: ["$comboCount", 1] }] },
+        {
+          $and: [
+            { $eq: [8, { $ifNull: ["$comboCount", 1] }] },
+            { $eq: [{ $ifNull: ["$jewelCount", null] }, null] },
+          ],
+        },
+      ],
+    };
 
     // All four move together — a stored jewelCount=10 paired with an incoming
     // comboCount=8 would make the price rebuild compute 10/8.
@@ -971,7 +1021,7 @@ describe("buildGiftUpsertOps", () => {
       "comboCount",
       "hasGiftImageUrl",
     ]) {
-      expect(stage[field].$cond[0]).toEqual({ $or: [isNewer] });
+      expect(stage[field].$cond[0]).toEqual(expectedCondition);
       expect(stage[field].$cond[2]).toBe(`$${field}`);
     }
     expect(stage.message.$cond[1]).toEqual({
@@ -993,6 +1043,33 @@ describe("buildGiftUpsertOps", () => {
 
     expect(stage.jewelCount.$cond[1]).toBe("$$REMOVE");
     expect(stage.comboCount.$cond[1]).toBe("$$REMOVE");
+  });
+
+  it("writes combo state onto a document that has none yet", () => {
+    // A first delivery with no jewel figure ties on combo size against an
+    // empty document, so without the empty-document clause the raw message
+    // would never be stored at all — including every message the gift text
+    // pattern failed to parse.
+    const [op] = buildGiftUpsertOps(
+      mergeGiftActions(
+        [
+          giftItem({
+            message: "ギフトを贈りました",
+            giftName: undefined,
+            jewelCount: undefined,
+          }),
+        ],
+        [],
+        CTX,
+        PRICES
+      )
+    );
+    const stage = (op as any).updateOne.update[0].$set;
+
+    expect(stage.message.$cond[0].$or).toContainEqual(NO_COMBO_YET);
+    expect(stage.message.$cond[1]).toEqual({ $literal: "ギフトを贈りました" });
+    expect(stage.hasGiftImageUrl.$cond[0].$or).toContainEqual(NO_COMBO_YET);
+    expect(stage.hasGiftImageUrl.$cond[1]).toEqual({ $literal: false });
   });
 
   it("never lets a ticker-only write touch the combo group", () => {
@@ -1017,7 +1094,7 @@ describe("buildGiftUpsertOps", () => {
     );
     expect(
       (withFigure as any).updateOne.update[0].$set.message.$cond[0].$or
-    ).toHaveLength(2);
+    ).toHaveLength(3);
 
     const [withoutFigure] = buildGiftUpsertOps(
       mergeGiftActions(
@@ -1029,7 +1106,7 @@ describe("buildGiftUpsertOps", () => {
     );
     expect(
       (withoutFigure as any).updateOne.update[0].$set.message.$cond[0].$or
-    ).toHaveLength(1);
+    ).toHaveLength(2);
   });
 });
 ```
@@ -1098,6 +1175,12 @@ function buildGiftUpdateStage(upsert: GiftUpsert): Record<string, unknown> {
     const storedCombo = { $ifNull: ["$comboCount", 1] };
     const isNewer = {
       $or: [
+        // Nothing stored yet — this flag is written by every item delivery and
+        // by nothing else, so its absence means the document has only ever
+        // seen a ticker. Without this clause a first delivery carrying neither
+        // a combo count nor a jewel figure would tie against the empty
+        // document and store no combo state at all, losing the raw message.
+        { $eq: [{ $ifNull: ["$hasGiftImageUrl", null] }, null] },
         { $gt: [incomingCombo, storedCombo] },
         // Same wave size: prefer the delivery that states a jewel figure.
         ...(upsert.combo.jewelCount != null
@@ -1153,7 +1236,7 @@ export function buildGiftUpsertOps(
 - [ ] **Step 4: 執行測試確認通過**
 
 Run: `npm run test -- src/components/gift.spec.ts`
-Expected: PASS，22 個 test 全綠。
+Expected: PASS，23 個 test 全綠。
 
 - [ ] **Step 5: 確認編譯與 lint**
 
@@ -1175,7 +1258,23 @@ git commit -m "feat(gift): build atomic pipeline upserts for gift documents"
 
 - Modify: `src/components/gift.ts`
 
-- [ ] **Step 1: 加入快取存取函式**
+- [ ] **Step 1: 確認 `refreshThreshold` 不會阻塞讀取**
+
+TTL 與 refresh 參數的取值取決於 cache-manager 是同步等待 refresh 還是背景執行 ——
+若是前者，每 4 分鐘就會有一次 gift 寫入被 DB 往返卡住。
+
+Run:
+
+```bash
+grep -n "shouldRefresh" -A 12 node_modules/cache-manager/dist/index.js
+```
+
+Expected: 看到 `if (shouldRefresh) { coalesceAsync(...).then(...) }`，後面沒有
+`await`，而函式最後 `return value;` 回傳的是舊的快取值。也就是**refresh 是背景
+執行、讀取立刻返回舊值**。快取未命中時才會 `await fnc()`。確認符合後再進行下一
+步；若實際原始碼與此不符，停下來回報，不要自行調參數。
+
+- [ ] **Step 2: 加入快取存取函式**
 
 在 `src/components/gift.ts` 的 import 區加入：
 
@@ -1234,17 +1333,17 @@ export async function getGiftPriceTable(): Promise<Map<string, number>> {
 }
 ```
 
-- [ ] **Step 2: 確認編譯與 lint 通過**
+- [ ] **Step 3: 確認編譯與 lint 通過**
 
 Run: `npm run build && npm run lint`
 Expected: 皆成功。
 
-- [ ] **Step 3: 確認既有測試沒被影響**
+- [ ] **Step 4: 確認既有測試沒被影響**
 
 Run: `npm run test -- src/components/gift.spec.ts`
-Expected: PASS，22 個 test 仍全綠（此函式不在單元測試範圍，它只是 DB + 快取的組裝）。
+Expected: PASS，23 個 test 仍全綠（此函式不在單元測試範圍，它只是 DB + 快取的組裝）。
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/components/gift.ts
@@ -1549,12 +1648,7 @@ const bulkWrite = jest.fn(async (ops: any[]) => {
   }
 });
 
-const find = jest.fn(async (filter: any) => {
-  const wanted: string[] = filter.assetName.$in;
-  return wanted
-    .filter((name) => store.has(name))
-    .map((name) => store.get(name));
-});
+const find = jest.fn(async () => Array.from(store.values()));
 
 jest.unstable_mockModule("../models/Gift.js", () => ({
   default: { aggregate },
@@ -1570,6 +1664,8 @@ const { decideGiftPriceUpdate, rebuildGiftPrices } =
 並在檔案末端追加：
 
 ```ts
+// Rows come back in whatever order the group stage produced; picking the
+// winner must not depend on that order.
 function windowRows(
   rows: { assetName: string; price: number; count: number; giftName?: string }[]
 ) {
@@ -1752,9 +1848,6 @@ export async function collectGiftPriceObservations(): Promise<
           giftName: { $last: "$giftName" },
         },
       },
-      // Price ascending is only a tiebreak, but without it a tie would resolve
-      // differently between runs and the rebuild would stop being idempotent.
-      { $sort: { count: -1, "_id.price": 1 } },
     ],
     { readPreference: "secondaryPreferred" }
   );
@@ -1762,7 +1855,17 @@ export async function collectGiftPriceObservations(): Promise<
   const best = new Map<string, GiftPriceObservation>();
   for (const row of rows) {
     const { assetName, price } = row._id;
-    if (best.has(assetName)) continue;
+    const current = best.get(assetName);
+    // Most-supported price wins. The lower price settles a tie so that
+    // rerunning over an unchanged window always lands on the same value —
+    // relying on the group stage's output order would not.
+    if (
+      current &&
+      (current.count > row.count ||
+        (current.count === row.count && current.price <= price))
+    ) {
+      continue;
+    }
     best.set(assetName, {
       assetName,
       price,
@@ -1789,8 +1892,11 @@ export async function rebuildGiftPrices(): Promise<void> {
   const observations = await collectGiftPriceObservations();
   if (observations.length === 0) return;
 
+  // The whole table, not just the assets in this window: it is the same few
+  // hundred rows the worker already caches, and reading it in one go keeps the
+  // tiering decisions in plain TypeScript.
   const existingDocs = await GiftPriceModel.find(
-    { assetName: { $in: observations.map((o) => o.assetName) } },
+    {},
     { assetName: 1, price: 1, sampleCount: 1, manual: 1 },
     { readPreference: "secondaryPreferred" }
   );
@@ -1949,9 +2055,9 @@ await Gift.deleteMany({ originVideoId: { $in: videoIds } });
 
 `giftprices` 不刪 —— 它是跨直播累積的知識庫，不屬於任何一支影片。
 
-- [ ] **Step 3: 確認編譯與 lint 通過**
+- [ ] **Step 3: 確認編譯、lint 與全部測試通過**
 
-Run: `npm run build && npm run lint`
+Run: `npm run build && npm run lint && npm test`
 Expected: 皆成功。
 
 - [ ] **Step 4: Commit**
@@ -2023,7 +2129,9 @@ if (parameters.collection === "gifts") {
 
 - [ ] **Step 4: 在 embed fields 加入 gifts 分支**
 
-在 `src/data/webhook.ts` 的 `discord-embed-chats` 模板中，把 fields 的三元判斷改成：
+在 `src/data/webhook.ts` 的 `discord-embed-chats` 模板中，把整段 fields 三元
+判斷（從 `...(["superchats", "superstickers"].includes(...)` 起，到與 `footer:`
+相鄰的 `: {}),` 為止）**整段換成**下面這段：
 
 ```ts
           ...(["superchats", "superstickers"].includes(parameters.collection)
@@ -2053,9 +2161,21 @@ if (parameters.collection === "gifts") {
                 }
               : parameters.collection === "milestones"
                 ? {
+                    fields: [
+                      {
+                        name: "Milestone",
+                        value: `${
+                          parameters.level ? `${parameters.level}, ` : ""
+                        }since ${parameters.since}`,
+                        inline: true,
+                      },
+                    ],
+                  }
+                : {}),
 ```
 
-注意原本的 `milestones` 分支與其後的 `: {}` 需要相應調整縮排與括號層級。`parameters.image` 已是通用處理，禮物圖會自動出現在 embed。
+`milestones` 分支的內容與原本完全相同，只是往內縮了一層。`parameters.image`
+已是通用處理，禮物圖會自動出現在 embed。
 
 - [ ] **Step 5: 確認編譯、lint、format 與全部測試通過**
 
