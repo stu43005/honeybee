@@ -10,16 +10,57 @@ Gift 是 YouTube 以 **Jewels 虛擬代幣**購買的打賞道具，行為近似
 不帶任何金額欄位（大多數情況）、不帶 badge 資訊、也不帶真實貨幣。單價必須由
 系統自行推導並維護一份 **Gift 價格總表**。
 
-## 非目標
+## Non-goals / Accepted limitations（非目標與已接受的限制）
+
+### 非目標
 
 - 不做 chats-archive 整合：`gifts` 不寫進 `{videoId}.jsonl` 或 video-meta 摘要，
   `docs/data-contract/` 不變動。
 - 不做 jpy 換算：不產出 `purchase_amount_jpy_total`，Gift 不進
   `recalcVideoHbStats`。`hbStats.totalGifts` 維持「會籍禮物」語意，不混用。
 - 不做 users 統計：不開 `calcUsersTotal`，不寫 `VideoUserStats`。
-- 不回填歷史 `amount`：價格表學到新價格後不回頭修正既有文件（見「已接受的
-  不準確」）。
+- 不回填歷史 `amount`：價格表學到新價格後不回頭修正既有文件。
 - 不處理跨版本部署 / 回滾 / 混版安全（依專案既有慣例不在本設計範圍）。
+
+### 已接受的限制
+
+以下皆為明知且接受的取捨，不再額外投入工程量修正：
+
+- **detailed 模式的 combo 訊息 `amount` 留空**。這類文件永遠拿不到 `assetName`
+  （無 `giftImageUrl`、低單價無 ticker），且形態一與形態二在不知單價時無法區分。
+  jewel 合計因此系統性低估。
+- **新資產上線初期 `amount` 留空且不回填**。價格表由 manager 每 10 分鐘重建，
+  首次見到某資產到價格可用之間寫入的文件不會有 `amount`。
+- **`purchase_amount_total` 只採計文件首次進入統計水位時的 `amount`，後續
+  combo 更新不補算**。
+  - 顧慮：`updateStats` 的增量模式以 `_id > lastId` 為界、用 `$inc` 累加，每份
+    文件只會被計入一次；而 gift 的 `amount` 會在寫入後改變。形態三的
+    `sent Star` 先以 `amount = 單價` 被計入，兩小時後才被
+    `comboed x4 Star for 8 Jewels` 改寫成 `amount = 8`，那 6 的差額永遠不會被
+    補算。merged 模式約佔 90%，因此 jewel 合計會系統性偏低。
+  - 決定：沿用既有增量框架，不改用全量重算。
+  - 理由：jewel 合計本來就只能靠推導取得，不精確在可接受範圍內。改成全量重算
+    要為 gift 在 `crons` 開一條有別於其他統計的專屬路徑，並每次掃過整個
+    `gifts` collection，與這項統計的用途不相稱。
+- **merged 模式一波 combo 只產生一筆文件**，所以 `message_total` 是「gift 訊息
+  筆數」而非「禮物件數」。這與其他 `messageType` 的 `message_total` 語意一致
+  （皆為文件筆數）。
+- **webhook 覆蓋率低**。track / DM 的 preset 都以 `authorChannelId` 過濾，而該
+  欄位只有 ticker（單價 ≥ 100 Jewels）才有；加上 `followUpdate` 預設關閉、只有
+  insert 事件會觸發，因此只有「ticker 與 item 落在同一批次而被合併」或「ticker
+  先於 item 到達」的高單價禮物才會發出 webhook。
+- **並發首次 upsert 撞 `E11000` 時不重試，失敗方的互補欄位就此遺失**。
+  - 顧慮：兩個 replica 若在同一 `id` 的首次 insert 上真正同時站，MongoDB 只讓
+    一方建立文件、另一方拿到 `E11000`。既有的 catch 會把它當成一般撞重吞掉；
+    若失敗方手上帶的是 ticker 專有的 `authorChannelId`，該欄位就永久遺失。
+  - 決定：不實作重試。
+  - 理由：觸發需同時滿足「毫秒級同時的首次 insert」與「兩邊持有的欄位恰好
+    不同」。YouTube 通常把 item 與 ticker 放在同一個 continuation response，
+    因此各 replica 合併後多半產生完全相同的 payload，第二個條件很難成立。
+    晚一步的寫入都會走正常 update 路徑、不會遺失。實際損失也僅是偶發少一筆
+    gift 的 `authorChannelId`（webhook 本就是低覆蓋率），兩項統計完全不受影響。
+    為此在 worker 中新增一條有別於其他 20 個 case 的錯誤處理路徑，與問題規模
+    不相稱。
 
 ## 名詞與既有機制（事實基準）
 
@@ -256,6 +297,7 @@ manager ── "gift price rebuild" ──┴─▶ giftprices（純累加，永
 | `image`           | `string`            |             | `item.giftImageUrl` ?? `ticker.contents.stickerUrl`         |
 | `jewelCount`      | `number`            |             | action 原始值                                               |
 | `comboCount`      | `number`            |             | action 原始值                                               |
+| `hasGiftImageUrl` | `boolean`           |             | item 是否帶 `giftImageUrl`；ticker-only 文件無此欄位        |
 | `amount`          | `number`            |             | 推導出的 jewel 金額                                         |
 | `currency`        | `string`            | ✓           | 固定 `"JEWEL"`                                              |
 | `originVideoId`   | `string`            | ✓（index）  |                                                             |
@@ -267,7 +309,14 @@ manager ── "gift price rebuild" ──┴─▶ giftprices（純累加，永
 - `id` unique（比照其他訊息 model）
 - `{ originVideoId: 1, timestamp: 1 }`（比照 `SuperSticker`）
 - 支援價格重建掃描的 partial index：
-  `{ assetName: 1 }`，`partialFilterExpression: { assetName: { $exists: true }, jewelCount: { $exists: true }, comboCount: { $exists: true } }`
+  `{ assetName: 1 }`，`partialFilterExpression: { hasGiftImageUrl: true, assetName: { $exists: true }, jewelCount: { $exists: true }, comboCount: { $exists: true } }`
+
+`hasGiftImageUrl` 是**價格推導的安全前提，必須持久化**。`assetName` 由 `image`
+推導，而 `image` 可能來自 ticker 的 `stickerUrl` —— 也就是說一筆 detailed 模式
+（item 無 `giftImageUrl`）的文件，只要單價 ≥ 100 Jewels 而有 ticker 補圖，就會
+帶有 `assetName`。這類文件的 `jewelCount` 可能是單價而非整波總額（形態一），
+若被價格重建採用，會算出 `單價 / comboCount` 這種偏低的錯價，並經由快取擴散到
+後續所有文件的 `amount`。持久化這個旗標，才能讓重建只採信 merged 模式的觀測。
 
 `authorType` 固定寫 `other` 的理由：Gift action 完全沒有 badge 欄位，無從判斷。
 寫入常數值可讓 `video-stats` 的 label、`VideoStats` 的唯一索引、以及
@@ -362,21 +411,25 @@ item 與 ticker 各持有對方沒有的欄位，先到者寫入、後到者補�
 
 **combo 狀態群（整組替換）**
 
-`message`、`jewelCount`、`comboCount`、`amount`。
+`message`、`jewelCount`、`comboCount`、`hasGiftImageUrl`、`amount`。
 
-這四個欄位必須**當作一個整體**替換，不能各自填缺。形態二的 `id` 先收到
+這五個欄位必須**當作一個整體**替換，不能各自填缺。形態二的 `id` 先收到
 `sent Heart for 10 Jewels`（`jewelCount=10`，無 `comboCount`），後收到
 `comboed x8 Heart for 80 Jewels`（`jewelCount=80, comboCount=8`）；若逐欄填缺，
 會留下 `jewelCount=10, comboCount=8` 這個從未存在過的組合。
 
 替換條件：以 `comboCount ?? 1` 較大者勝出；相等時，帶 `jewelCount` 的那版勝出。
-ticker 不帶任何 combo 資訊，因此永遠不觸發這組替換。
+ticker 不帶任何 combo 資訊，因此永遠不觸發這組替換 —— 這也是
+`hasGiftImageUrl` 必須留在這一群的原因：它描述的是「該版 combo 欄位該怎麼讀」，
+只能隨產生那些欄位的 item 一起變動，不能被 ticker 或另一版 item 拆開。
 
-`amount` 隨 combo 狀態群一起替換，因為它是由 `jewelCount` / `comboCount` /
-`giftImageUrl` 三者推導而來，與它們必須保持一致。
+`amount` 同理隨這一群替換，因為它由 `jewelCount` / `comboCount` /
+`hasGiftImageUrl` 三者推導而來，與它們必須保持一致。
 
 replica > 1 的並發 upsert 可能撞出 `code 11000`；`ordered: false` 加上 worker
-既有的 `MongoBulkWriteError` catch 已能吞掉，不需新增處理。
+既有的 `MongoBulkWriteError` catch 會吞掉。撞重的失敗方**不重試**，其手上的互補
+欄位就此遺失 —— 這是明確接受的限制，理由見「Non-goals / Accepted
+limitations」。
 
 ## worker 整合
 
@@ -401,9 +454,12 @@ case "addGiftTickerAction": {
 
 Agenda job `"gift price rebuild"`，每 10 分鐘執行：
 
-1. 對 `gifts` 聚合，`$match` 出 `assetName` / `jewelCount` / `comboCount` 皆存在
-   且 `comboCount > 0` 的文件（走 partial index），算
-   `price = jewelCount / comboCount`。
+1. 對 `gifts` 聚合，`$match` 出 `hasGiftImageUrl: true` 且 `assetName` /
+   `jewelCount` / `comboCount` 皆存在、`comboCount > 0` 的文件（走 partial
+   index），算 `price = jewelCount / comboCount`。
+   `hasGiftImageUrl: true` 這個條件不可省略：少了它，detailed 模式但有 ticker
+   補圖的高單價文件也會通過過濾，而它們的 `jewelCount` 可能是單價，會算出偏低
+   的錯價。
 2. 依 `assetName` 取本次窗口內**出現次數最多**的 price，並記下最後看到的
    `giftName`。
 3. **純累加 upsert**（永不 `deleteMany`）：
@@ -441,6 +497,11 @@ Agenda job `"gift price rebuild"`，每 10 分鐘執行：
 - `metrics.ts` 的 `if (!videoStats.authorType) break;` 自然通過，Prometheus 會
   以 `type="gift"` / `authorType="other"` / `currency="JEWEL"` 匯出。
 
+兩項統計都沿用 `updateStats` 的增量模式（`_id > lastId` 水位 + `$inc`），因此
+**只採計文件首次進入水位時的欄位值**。`message_total` 不受影響（文件只被
+insert 一次）；`purchase_amount_total` 則會漏掉文件寫入後才發生的 `amount`
+變化 —— 這是明確接受的限制，理由見「Non-goals / Accepted limitations」。
+
 不開 `calcUsersTotal`（`authorChannelId` 大多缺失，統計會嚴重低估且產生大量
 無意義記錄）、不開 `calcJpyAmount`（Jewels 不是法幣）、不加入
 `recalcVideoHbStats`。
@@ -477,38 +538,22 @@ Agenda job `"gift price rebuild"`，每 10 分鐘執行：
     （`amount` 缺失時只顯示 `giftName`）。
   - `parameters.image` 已是通用處理，禮物圖會自動出現在 embed。
 
-## 已接受的不準確
-
-以下皆為明知且接受的取捨，不再額外投入工程量修正：
-
-- **detailed 模式的 combo 訊息 `amount` 留空**。這類文件永遠拿不到 `assetName`
-  （無 `giftImageUrl`、低單價無 ticker），且形態一與形態二在不知單價時無法區分。
-  jewel 合計因此系統性低估。
-- **新資產上線初期 `amount` 留空且不回填**。價格表由 manager 每 10 分鐘重建，
-  首次見到某資產到價格可用之間寫入的文件不會有 `amount`；`updateStats` 是增量式
-  （`_id` 水位 + `$inc`），即使日後回填也不會被補算，因此設計上直接不回填。
-- **merged 模式一波 combo 只產生一筆文件**，所以 `message_total` 是「gift 訊息
-  筆數」而非「禮物件數」。這與其他 `messageType` 的 `message_total` 語意一致
-  （皆為文件筆數）。
-- **webhook 覆蓋率低**。track / DM 的 preset 都以 `authorChannelId` 過濾，而該
-  欄位只有 ticker（單價 ≥ 100 Jewels）才有；加上 `followUpdate` 預設關閉、只有
-  insert 事件會觸發，因此只有「ticker 與 item 落在同一批次而被合併」或「ticker
-  先於 item 到達」的高單價禮物才會發出 webhook。
-
 ## 邊界與失敗情境
 
 - **`GIFT_TEXT_RE` 未命中**（非英文 locale 或 YouTube 改文案）：`giftName` /
   `jewelCount` / `comboCount` 全為 undefined，`message` 仍保留原文。文件照常寫入
   並計入 `message_total`；`amount` 依規則留空。價格表不受污染。
 - **`item.timestamp` 缺失**（`id` 不符 `timestampUsecFromChatItemId` 形狀）：
-  退回該批次的接收時間。ticker 的 `contents.timestamp` 永遠存在，若同批合併則
-  優先採用。
+  依模型表的單一優先序 `item.timestamp` → `ticker.contents.timestamp` →
+  該批次接收時間逐級退回。同批合併時 item 的值優先 —— 兩者本就源自同一個 `id`
+  的 `timestampUsec`，而 ticker 只在單價 ≥ 100 Jewels 時存在，不能當成主要來源。
 - **價格表為空**（首次部署）：所有 merged 模式未結算文件的 `amount` 留空，直到
   第一次重建跑完。已結算文件（帶 `jewelCount`）不受影響。
 - **同一 `assetName` 觀測到兩種價格**：可能是 YouTube 調價，也可能是解析雜訊。
   規則為「本次窗口觀測 ≥ 2 才覆蓋」並記 log，讓調價能生效、單筆雜訊被擋下。
 - **replica > 1 並發 upsert**：`ordered: false` + 既有 11000 catch。pipeline
-  update 本身是原子的，兩個 replica 送同樣內容不會互相破壞。
+  update 本身是原子的，兩個 replica 送同樣內容不會互相破壞。首次 insert 撞重時
+  失敗方不重試（見「Non-goals / Accepted limitations」）。
 - **同批次同 `id` 多筆 item**（形態三重送）：`mergeGiftActions` 先在記憶體內以
   combo 狀態新舊收斂成一筆，再送出單一 upsert。
 
@@ -523,10 +568,13 @@ Agenda job `"gift price rebuild"`，每 10 分鐘執行：
   `authorChannelId` 與 `image` 都出現在同一筆輸出）、同批多筆同 `id`（驗證
   combo 狀態取新者）。
 - combo 狀態群替換規則：以形態二（`sent … for 10` → `comboed x8 … for 80`）與
-  形態三（`sent Star` → `comboed x4 Star for 8`）為測資，斷言四個欄位整組替換、
+  形態三（`sent Star` → `comboed x4 Star for 8`）為測資，斷言五個欄位整組替換、
   不出現 `jewelCount=10, comboCount=8` 這類混合狀態。
 - 價格表重建：新資產寫入、同價更新 `sampleCount`、異價單筆不覆蓋、異價雙筆覆蓋
   四種情形；並斷言重建**不會刪除**窗口內未出現的既有資產。
+- 價格表重建的排除條件：造一筆 `hasGiftImageUrl: false` 但由 ticker 補上
+  `assetName`、且帶 `jewelCount` / `comboCount` 的文件，斷言它**不會**被納入
+  價格推導（否則會寫入 `單價 / comboCount` 的錯價）。
 - 依專案慣例，Mongo / Redis 依賴以 `jest.unstable_mockModule` 搭配有狀態的
   fake（非裸 `jest.fn()`），確保 upsert 前後的可觀測狀態變化能被斷言。
 
