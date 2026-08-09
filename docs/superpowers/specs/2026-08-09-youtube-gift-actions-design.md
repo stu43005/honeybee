@@ -4,7 +4,11 @@
 
 收集 masterchat 新增的兩種 action —— `addGiftItemAction` 與
 `addGiftTickerAction` —— 寫入新的 `gifts` collection，並在 VideoStats 產出兩項
-統計：`message_total`（gift 訊息筆數）與 `purchase_amount_total`（jewel 合計）。
+統計：`message_total`（gift 總數）與 `purchase_amount_total`（jewel 合計）。
+
+每送出一份禮物就是一個獨立的 `id`、一份文件，所以 `message_total` 的文件筆數
+等同於禮物件數；`amount` 則恆為單價，整波連擊的金額由該波的多個 `id` 各自貢獻
+一份自然加總得出。
 
 Gift 是 YouTube 以 **Jewels 虛擬代幣**購買的打賞道具，行為近似 SuperSticker，但
 不帶任何金額欄位（大多數情況）、不帶 badge 資訊、也不帶真實貨幣。單價必須由
@@ -26,30 +30,31 @@ Gift 是 YouTube 以 **Jewels 虛擬代幣**購買的打賞道具，行為近似
 
 以下皆為明知且接受的取捨，不再額外投入工程量修正：
 
-- **detailed 模式的 combo 訊息多數 `amount` 留空**。這類文件只有在單價
-  ≥ 100 Jewels 而 ticker 補上圖時才拿得到 `assetName` 去查價；其餘一律留空
-  （形態一與形態二在不知單價時無法區分，硬取 `jewelCount` 會高估數倍）。
-  jewel 合計因此系統性低估。
+- **無 `giftImageUrl` 又無 ticker 的文件拿不到 `assetName`，`amount` 一律留空**。
+  `assetName` 只能從圖片 URL 推導，而約 10% 的 item 不帶 `giftImageUrl`；這些
+  文件只有在單價 ≥ 100 Jewels、ticker 補上 `stickerUrl` 時才查得到價。唯一的
+  例外是 `sent X for P Jewels`（無 `comboCount`），此時 `P` 就是單價、不需查表。
+  其餘一律留空，jewel 合計因此系統性低估。
 - **價格未知的資產 `amount` 留空，且寫入後不回填**。價格只能從帶 `comboCount`
   的訊息推導，因此**從未被連擊過的資產可能永久學不到價**，不只是上線初期的
   暖機窗口 —— 而且偏差方向不利：高單價禮物通常一次只送一個，最不容易被連擊，
   卻在 jewel 合計裡權重最大。營運出口是**手動在 `giftprices` 補一筆
   `manual: true` 的價格**，最多 5 分鐘後對新寫入的文件生效；已寫入的舊文件
   不回填。人工價之後仍受自動學習修正，因此 YouTube 調價不會讓它永久錯下去。
-- **`purchase_amount_total` 只採計文件首次進入統計水位時的 `amount`，後續
-  combo 更新不補算**。
+- **`purchase_amount_total` 只採計文件首次進入統計水位時的 `amount`，之後不
+  補算**。
   - 顧慮：`updateStats` 的增量模式以 `_id > lastId` 為界、用 `$inc` 累加，每份
-    文件只會被計入一次；而 gift 的 `amount` 會在寫入後改變。形態三的
-    `sent Star` 先以 `amount = 單價` 被計入，兩小時後才被
-    `comboed x4 Star for 8 Jewels` 改寫成 `amount = 8`，那 6 的差額永遠不會被
-    補算。merged 模式約佔 90%，因此 jewel 合計會系統性偏低。
+    文件只會被計入一次；而 gift 的 `amount` 會在寫入後改變 —— 文件首次寫入時
+    價格可能還查不到（`amount` 留空、貢獻 0），稍後才由價格表或後續投遞補上。
+    那筆差額永遠不會被補算。
   - 決定：沿用既有增量框架，不改用全量重算。
   - 理由：jewel 合計本來就只能靠推導取得，不精確在可接受範圍內。改成全量重算
     要為 gift 在 `crons` 開一條有別於其他統計的專屬路徑，並每次掃過整個
     `gifts` collection，與這項統計的用途不相稱。
-- **merged 模式一波 combo 只產生一筆文件**，所以 `message_total` 是「gift 訊息
-  筆數」而非「禮物件數」。這與其他 `messageType` 的 `message_total` 語意一致
-  （皆為文件筆數）。
+- **ticker-only 文件的補收是不均勻的**。item 始終沒到達時（例如 worker 或
+  replica 中途啟動、只接到 ticker bar 的既有項目），該次送禮仍會靠 ticker 被
+  記錄並計入統計，但這只可能發生在單價 ≥ 100 Jewels 的禮物上 —— 低單價禮物
+  沒有 ticker，同樣情境下就整筆漏掉。
 - **webhook 覆蓋率低**。track / DM 的 preset 都以 `authorChannelId` 過濾，而該
   欄位只有 ticker（單價 ≥ 100 Jewels）才有；加上 `followUpdate` 預設關閉、只有
   insert 事件會觸發，因此只有「ticker 與 item 落在同一批次而被合併」或「ticker
@@ -143,11 +148,19 @@ masterchat 的 doc comment 明示：同一份禮物會同時產生 item 與 tick
 `giftName` / `jewelCount` / `comboCount`；regex 未命中時三者皆 undefined，但原始
 `message` 仍保留。
 
-### 生產資料觀測到的 combo 三種面貌
+### 連擊（combo）在資料裡的實際形狀
 
-一波連擊在資料裡有三種形態，取決於觀測時機與 YouTube 給出的呈現方式。
+**最重要的一條：每送出一份禮物就產生一個獨立的 chat item，各自有唯一的 `id`。**
+連擊不會把多份禮物摺成一則訊息 —— 跨多個 `id` 本身就已經表達了整波的份數。
 
-**（一）detailed 進行中 —— 每一份都是獨立訊息、各自不同 `id`**
+YouTube 另外會**改寫該波其中一則（第一則）的內容**，把它變成
+`comboed xN … for J Jewels` 這種整波摘要，用來在 UI 上呈現連擊狀態。所以
+`comboCount` / `jewelCount` 是**該波的摘要資訊，不代表這一則文件本身的份數** ——
+每一則文件恆為 1 份。
+
+下面三段是實際觀測到的三種面貌，差別只在觀測時機與 `giftImageUrl` 的有無。
+
+**（一）連擊進行中 —— 每一份都是獨立訊息、各自不同 `id`**
 
 `9hFxGFgx8Pc` 的送禮者送 Heart（單價 10）：
 
@@ -161,10 +174,10 @@ sent at    message
 +140.296   sent Heart for 10 Jewels        ← 140 秒後的新一波，combo 歸零
 ```
 
-6 個完全不同的 `id`。第一份寫 `sent`，沒有 `comboed x1`。`for 10 Jewels` 從頭到
-尾都是 **10 —— 那是單價不是累計**。每一則代表 1 份。
+6 個完全不同的 `id`，每個 `id` 就是一份禮物。第一份寫 `sent`，沒有 `comboed x1`。
+`for 10 Jewels` 從頭到尾都是 **10 —— 那是單價不是累計**。
 
-**（二）detailed 結算 —— 同一個 `id` 被重發，金額變成總額**
+**（二）連擊結束的摘要改寫 —— 第一則的 `id` 被重發，金額變成整波總額**
 
 ```text
 id ChwKGkNNeThscC1yMXBFREZjRVlyUVlkQmYwWmlB
@@ -173,10 +186,11 @@ id ChwKGkNNeThscC1yMXBFREZjRVlyUVlkQmYwWmlB
    14:46:07  收到   comboed x8 Heart for 80 Jewels  ← 8 × 10，同一個 id
 ```
 
-這波送了 8 份，但**只有第 1 份的 `id` 被改寫成 x8，其餘 7 份仍是各自獨立的 chat
-item**。因此若把 combo 訊息的金額也加總，會重複計算（80 + 7×10 = 150，實際 80）。
+這波送了 8 份、8 個 `id`；**只有第 1 份的 `id` 被改寫成 x8 摘要，其餘 7 份維持
+各自的內容**。因此 `comboed x8 … for 80 Jewels` 這一則仍然只代表 1 份禮物 ——
+把它按 80 計入就會重複計算（80 + 7×10 = 150，實際 80）。
 
-**（三）merged —— 整波只有一則訊息，原地更新**
+**（三）不帶金額的 `sent` 與後續改寫**
 
 `62hbNGH85Po` 的送禮者送 Star（單價 2）：
 
@@ -188,20 +202,20 @@ id ChwKGkNPSFA5NFQtLXBJREZRNlZ3Z1FkM09RMTJ3
    17:52:46  收到   comboed x4 Star for 8 Jewels   ← 4 × 2，同一個 id
 ```
 
-整波 4 份禮物只有一個 `id`。第 2、3、4 份完全不會產生新的 chat item —— 它們被
-摺進第一則。三次投遞的訊息時間戳完全相同（都來自同一個 `id`），變的只有內容。
+同一個 `id` 被投遞三次，三次的訊息時間戳完全相同（都來自該 `id`），變的只有
+內容 —— 這是同一份禮物先以 `sent` 出現、最後被改寫成整波摘要。該波的另外 3 份
+各有自己的 `id`。
 
-**兩種模式由 `giftImageUrl` 的有無區分：**
+**`giftImageUrl` 的有無決定 `jewelCount` 該怎麼讀：**
 
-|                             | merged（**有** `giftImageUrl`，約 90%） | detailed（**無** `giftImageUrl`，約 10%）  |
-| --------------------------- | --------------------------------------- | ------------------------------------------ |
-| 一波 combo 的 `id` 數       | 1 個，原地更新                          | 每份一個，各自獨立                         |
-| `sent X`                    | 不帶 `jewelCount`                       | `for P Jewels`，**P = 單價**               |
-| `comboed xN X for J Jewels` | **J = 整波總額**（單價 = J / N）        | **J = 單價**（形態一）或整波總額（形態二） |
-| 一則訊息代表                | 整波 N 份                               | **恆為 1 份**                              |
+|                             | 有 `giftImageUrl`（約 90%）      | 無 `giftImageUrl`（約 10%）                |
+| --------------------------- | -------------------------------- | ------------------------------------------ |
+| `sent X`                    | 不帶 `jewelCount`                | `for P Jewels`，**P = 單價**               |
+| `comboed xN X for J Jewels` | **J = 整波總額**（單價 = J / N） | **J = 單價**（形態一）或整波總額（形態二） |
+| 這一則代表的份數            | **恆為 1 份**                    | **恆為 1 份**                              |
 
 這解釋了為何 `price = jewelCount / comboCount` 只在有 `giftImageUrl` 時安全：
-merged 模式的 `sent` 不帶金額，帶金額的一定是已結算的 combo 訊息。
+有圖時 `sent` 不帶金額，帶金額的一定是整波摘要；無圖時 `J` 可能是單價，除不得。
 
 ### 其他實測規則
 
@@ -288,26 +302,26 @@ manager ── "gift price rebuild" ──┴─▶ giftprices（純累加，永
 
 ### `src/models/Gift.ts` → collection `gifts`
 
-| 欄位              | 型別                | required    | 來源                                                        |
-| ----------------- | ------------------- | ----------- | ----------------------------------------------------------- |
-| `id`              | `string`            | ✓（unique） | item / ticker 共用                                          |
-| `timestamp`       | `Date`              | ✓           | `item.timestamp` ?? `ticker.contents.timestamp` ?? 接收時間 |
-| `authorName`      | `string`            |             | `item.authorName` / `ticker.contents.authorName`            |
-| `authorPhoto`     | `string`            |             | `item.authorPhoto` / `ticker.contents.authorPhoto`          |
-| `authorChannelId` | `string`            |             | **只有 ticker 有**                                          |
-| `authorType`      | `MessageAuthorType` | ✓           | 固定 `MessageAuthorType.Other`                              |
-| `message`         | `string`            |             | `item.message` 原始文字                                     |
-| `giftName`        | `string`            |             | `item.giftName` / `ticker.contents.giftName`                |
-| `assetName`       | `string`            |             | 由 `image` 推導                                             |
-| `image`           | `string`            |             | `item.giftImageUrl` ?? `ticker.contents.stickerUrl`         |
-| `jewelCount`      | `number`            |             | action 原始值                                               |
-| `comboCount`      | `number`            |             | action 原始值                                               |
-| `hasGiftImageUrl` | `boolean`           |             | item 是否帶 `giftImageUrl`；ticker-only 文件無此欄位        |
-| `amount`          | `number`            |             | 推導出的 jewel 金額                                         |
-| `currency`        | `string`            | ✓           | 固定 `"JEWEL"`                                              |
-| `originVideoId`   | `string`            | ✓（index）  |                                                             |
-| `originChannelId` | `string`            | ✓           |                                                             |
-| `isReplay`        | `boolean`           |             |                                                             |
+| 欄位              | 型別                | required    | 來源                                                         |
+| ----------------- | ------------------- | ----------- | ------------------------------------------------------------ |
+| `id`              | `string`            | ✓（unique） | item / ticker 共用                                           |
+| `timestamp`       | `Date`              | ✓           | `item.timestamp` ?? `ticker.contents.timestamp` ?? 接收時間  |
+| `authorName`      | `string`            |             | `item.authorName` / `ticker.contents.authorName`             |
+| `authorPhoto`     | `string`            |             | `item.authorPhoto` / `ticker.contents.authorPhoto`           |
+| `authorChannelId` | `string`            |             | **只有 ticker 有**                                           |
+| `authorType`      | `MessageAuthorType` | ✓           | 固定 `MessageAuthorType.Other`                               |
+| `message`         | `string`            |             | `item.message` 原始文字                                      |
+| `giftName`        | `string`            |             | `item.giftName` / `ticker.contents.giftName`                 |
+| `assetName`       | `string`            |             | 由 `image` 推導                                              |
+| `image`           | `string`            |             | `item.giftImageUrl` ?? `ticker.contents.stickerUrl`          |
+| `jewelCount`      | `number`            |             | action 原始值，**僅供價格推導**                              |
+| `comboCount`      | `number`            |             | action 原始值，**僅供價格推導**                              |
+| `hasGiftImageUrl` | `boolean`           |             | item 是否帶 `giftImageUrl`；**僅供價格推導**；ticker-only 無 |
+| `amount`          | `number`            |             | 推導出的 jewel 金額，恆為**單價**                            |
+| `currency`        | `string`            | ✓           | 固定 `"JEWEL"`                                               |
+| `originVideoId`   | `string`            | ✓（index）  |                                                              |
+| `originChannelId` | `string`            | ✓           |                                                              |
+| `isReplay`        | `boolean`           |             |                                                              |
 
 索引：
 
@@ -316,12 +330,17 @@ manager ── "gift price rebuild" ──┴─▶ giftprices（純累加，永
 - 支援價格重建掃描的 partial index：
   `{ assetName: 1 }`，`partialFilterExpression: { hasGiftImageUrl: true, assetName: { $exists: true }, jewelCount: { $exists: true }, comboCount: { $exists: true } }`
 
-`hasGiftImageUrl` 是**價格推導的安全前提，必須持久化**。`assetName` 由 `image`
-推導，而 `image` 可能來自 ticker 的 `stickerUrl` —— 也就是說一筆 detailed 模式
-（item 無 `giftImageUrl`）的文件，只要單價 ≥ 100 Jewels 而有 ticker 補圖，就會
-帶有 `assetName`。這類文件的 `jewelCount` 可能是單價而非整波總額（形態一），
-若被價格重建採用，會算出 `單價 / comboCount` 這種偏低的錯價，並經由快取擴散到
-後續所有文件的 `amount`。持久化這個旗標，才能讓重建只採信 merged 模式的觀測。
+`jewelCount` / `comboCount` / `hasGiftImageUrl` **只是價格推導的原料**，不參與
+`amount` 的計算。持久化它們是因為價格重建跑在 manager，讀不到 worker 當下手上
+的 action。
+
+`hasGiftImageUrl` 尤其是**價格推導的安全前提**。`assetName` 由 `image` 推導，
+而 `image` 可能來自 ticker 的 `stickerUrl` —— 也就是說一筆 item 無
+`giftImageUrl` 的文件，只要單價 ≥ 100 Jewels 而有 ticker 補圖，就會帶有
+`assetName`。這類文件的 `jewelCount` 可能是單價而非整波總額（形態一），若被
+價格重建採用，會算出 `單價 / comboCount` 這種偏低的錯價，並經由快取擴散到
+後續所有文件的 `amount`。持久化這個旗標，才能讓重建只採信「有 `giftImageUrl`」
+的觀測。
 
 `authorType` 固定寫 `other` 的理由：Gift action 完全沒有 badge 欄位，無從判斷。
 寫入常數值可讓 `video-stats` 的 label、`VideoStats` 的唯一索引、以及
@@ -381,28 +400,30 @@ worker 的價格表快取一視同仁地讀取，最多 5 分鐘後套用。`sam
 
 ### `deriveGiftAmount(fields, priceTable): number | undefined`
 
-`fields` 為合併後的 `{ hasGiftImageUrl, assetName, jewelCount, comboCount }`。
+`fields` 為合併後的 `{ assetName, jewelCount, comboCount }`。
+
+因為**每一份文件恆代表 1 份禮物**，`amount` 永遠是單價。整波的金額由該波的多個
+`id` 各自貢獻一份自然加總得出，不需要（也不可以）在任何一則上乘以 `comboCount`。
 
 ```text
-merged 模式（item 帶 giftImageUrl）—— 這則代表整波
-  jewelCount != null  →  jewelCount            // 已結算，整波總額
-  否則                 →  priceTable[assetName] // 尚未 combo，代表 1 份
-
-detailed 模式（item 未帶 giftImageUrl）—— 這則恆代表 1 份
-  comboCount == null  →  jewelCount            // jewelCount 即單價
-  否則                 →  priceTable[assetName] // 見下
+comboCount == null && jewelCount != null  →  jewelCount            // 直接觀測到的單價
+否則                                        →  priceTable[assetName] // 查表
 ```
 
-detailed 模式的 combo 訊息**不能直接取 `jewelCount`**：形態一（`J = 單價`）與
-形態二（`J = 單價 × N`）在不知單價時無法區分，硬取會在形態二上高估數倍。改查
-價格表則兩種形態都得到正確的「1 份」金額。
+第一條只在無 `giftImageUrl` 的 `sent X for P Jewels` 上成立，此時 `P` 就是單價，
+是最可靠的來源，直接採用。
 
-這條查表路徑多數時候會落空 —— detailed 訊息沒有 `giftImageUrl`，只有在單價
-≥ 100 Jewels 而 ticker 補上 `stickerUrl` 時才有 `assetName`。落空即 `amount`
-留空，jewel 合計就此低估；這是接受的取捨。
+其餘一律查表。**帶 `comboCount` 的訊息絕對不能直接取 `jewelCount`** —— 那是該波
+的摘要金額（有圖時是整波總額，無圖時可能是單價也可能是整波總額），拿來當這一則
+的金額會重複計算整波。
 
-`amount` 是「這一份文件所代表的 jewel 金額」。merged 模式一筆代表整波，detailed
-模式一筆代表 1 份 —— 兩者相加即為該影片的 jewel 合計，不重複計算。
+ticker-only 文件同樣走查表：ticker 對應的也是一個 `id`、也就是一份禮物，而
+ticker 一定帶 `stickerUrl`，所以 `assetName` 必定可得。
+
+查表落空（價格未知）即 `amount` 留空，jewel 合計就此低估 —— 這是接受的取捨，
+營運可用 `manual` 補價。
+
+`hasGiftImageUrl` **不參與 `amount` 推導**，它只服務價格重建（見下）。
 
 ### `mergeGiftActions(items, tickers, ctx): GiftUpsert[]`
 
@@ -417,10 +438,16 @@ detailed 模式的 combo 訊息**不能直接取 `jewelCount`**：形態一（`J
 同一批次內同一 `id` 出現多個 item（形態三的重送）時，取 combo 狀態較新者
 （見下）。
 
+**ticker-only 輸出是合法的。** 這批只有 ticker、沒有對應 item 時照樣輸出一筆
+upsert，不等待 item。理由是 ticker 代表一次真實發生的送禮，丟掉它只會少收
+資料；而共用 `id` 保證了它與日後到達的 item 收斂成同一份文件，不會重複計數。
+這類文件缺 `message` / `jewelCount` / `comboCount` / `hasGiftImageUrl`（整個
+combo 狀態群），但 `amount` 仍可由 `stickerUrl` 推出的 `assetName` 查表得到。
+
 ## 寫入：`GiftModel.bulkWrite(ops, { ordered: false })`
 
 每筆 op 是 **aggregation pipeline update + `upsert: true`**。用 pipeline 而非
-`$setOnInsert` + `$set`，是因為兩種語意要在同一次原子更新裡表達：
+`$setOnInsert` + `$set`，是因為三種語意要在同一次原子更新裡表達：
 
 **互補欄位（填缺不覆蓋，`$ifNull`）**
 
@@ -430,22 +457,29 @@ detailed 模式的 combo 訊息**不能直接取 `jewelCount`**：形態一（`J
 
 item 與 ticker 各持有對方沒有的欄位，先到者寫入、後到者補齊。已存在的值不覆蓋。
 
+**`amount`（算得出來就覆蓋，算不出來就保留）**
+
+`$ifNull: [<本次算出的 amount>, "$amount"]`。
+
+每次寫入都以當下手上的欄位與價格表重算一次。算得出來就寫，算不出來（價格未知）
+就保留既有值。這讓「先以 ticker-only 寫入、後來 item 才補上直接觀測到的單價」
+與「先寫入時價格未知、稍後 item 帶來 `sent X for P Jewels`」兩種順序都能收斂到
+比較好的值，而不會被後來一次算不出來的寫入抹掉。
+
 **combo 狀態群（整組替換）**
 
-`message`、`jewelCount`、`comboCount`、`hasGiftImageUrl`、`amount`。
+`message`、`jewelCount`、`comboCount`、`hasGiftImageUrl`。
 
-這五個欄位必須**當作一個整體**替換，不能各自填缺。形態二的 `id` 先收到
-`sent Heart for 10 Jewels`（`jewelCount=10`，無 `comboCount`），後收到
-`comboed x8 Heart for 80 Jewels`（`jewelCount=80, comboCount=8`）；若逐欄填缺，
-會留下 `jewelCount=10, comboCount=8` 這個從未存在過的組合。
+這四個欄位是**價格重建的輸入**，必須當作一個整體替換，不能各自填缺。形態二的
+`id` 先收到 `sent Heart for 10 Jewels`（`jewelCount=10`，無 `comboCount`），後
+收到 `comboed x8 Heart for 80 Jewels`（`jewelCount=80, comboCount=8`）；若逐欄
+填缺，會留下 `jewelCount=10, comboCount=8` 這個從未存在過的組合，而價格重建會
+據此算出 `1.25` 這個錯價並經快取擴散。
 
 替換條件：以 `comboCount ?? 1` 較大者勝出；相等時，帶 `jewelCount` 的那版勝出。
 ticker 不帶任何 combo 資訊，因此永遠不觸發這組替換 —— 這也是
-`hasGiftImageUrl` 必須留在這一群的原因：它描述的是「該版 combo 欄位該怎麼讀」，
-只能隨產生那些欄位的 item 一起變動，不能被 ticker 或另一版 item 拆開。
-
-`amount` 同理隨這一群替換，因為它由 `jewelCount` / `comboCount` /
-`hasGiftImageUrl` 三者推導而來，與它們必須保持一致。
+`hasGiftImageUrl` 必須留在這一群的原因：它描述的是「該版 `jewelCount` 該怎麼
+讀」，只能隨產生那些欄位的 item 一起變動，不能被 ticker 或另一版 item 拆開。
 
 replica > 1 的並發 upsert 可能撞出 `code 11000`；`ordered: false` 加上 worker
 既有的 `MongoBulkWriteError` catch 會吞掉。撞重的失敗方**不重試**，其手上的互補
@@ -478,8 +512,8 @@ Agenda job `"gift price rebuild"`，每 10 分鐘執行：
 1. 對 `gifts` 聚合，`$match` 出 `hasGiftImageUrl: true` 且 `assetName` /
    `jewelCount` / `comboCount` 皆存在、`comboCount > 0` 的文件（走 partial
    index），算 `price = jewelCount / comboCount`。
-   `hasGiftImageUrl: true` 這個條件不可省略：少了它，detailed 模式但有 ticker
-   補圖的高單價文件也會通過過濾，而它們的 `jewelCount` 可能是單價，會算出偏低
+   `hasGiftImageUrl: true` 這個條件不可省略：少了它，item 無 `giftImageUrl` 但
+   有 ticker 補圖的高單價文件也會通過過濾，而它們的 `jewelCount` 可能是單價，會算出偏低
    的錯價。
 2. 依 `assetName` 取本次窗口內**出現次數最多**的 price，並記下最後看到的
    `giftName`。
@@ -523,6 +557,24 @@ Agenda job `"gift price rebuild"`，每 10 分鐘執行：
   `{ videoId, authorType, currency }`。缺 `amount` 的文件在 `$sum` 中視為 0。
 - `metrics.ts` 的 `if (!videoStats.authorType) break;` 自然通過，Prometheus 會
   以 `type="gift"` / `authorType="other"` / `currency="JEWEL"` 匯出。
+
+### ticker-only 文件的計數契約
+
+ticker-only 文件（缺整個 combo 狀態群）**照常計入兩項統計**。不額外加旗標、
+不從統計中排除。它的 `amount` 由 `stickerUrl` 推出的 `assetName` 查表取得，
+與其他文件並無二致。
+
+它不會造成重複計數：item 與 ticker 共用同一個 `id`，upsert 後永遠是同一份
+文件，`$sum: 1` 只會算到一次。無論兩者同批合併、分批先後到達、或 item 始終
+沒到，該次送禮在 `message_total` 裡都恰好是 1。
+
+而 item 始終沒到的那種文件，代表的仍是**一次真實發生的送禮**（只是我們沒收到
+它的 chat item，例如 worker 或 replica 中途啟動時只接到 ticker bar 的既有
+項目）。把它排除掉是少收資料，不是修正誤差。已知的偏差是這種補收只會發生在
+單價 ≥ 100 Jewels 的禮物上（低單價沒有 ticker），因此覆蓋是不均勻的 —— 記在
+「Non-goals / Accepted limitations」。
+
+### 增量模式的影響
 
 兩項統計都沿用 `updateStats` 的增量模式（`_id > lastId` 水位 + `$inc`），因此
 **只採計文件首次進入水位時的欄位值**。`message_total` 不受影響（文件只被
@@ -574,8 +626,9 @@ insert 一次）；`purchase_amount_total` 則會漏掉文件寫入後才發生�
   依模型表的單一優先序 `item.timestamp` → `ticker.contents.timestamp` →
   該批次接收時間逐級退回。同批合併時 item 的值優先 —— 兩者本就源自同一個 `id`
   的 `timestampUsec`，而 ticker 只在單價 ≥ 100 Jewels 時存在，不能當成主要來源。
-- **價格表為空**（首次部署）：所有 merged 模式未結算文件的 `amount` 留空，直到
-  第一次重建跑完。已結算文件（帶 `jewelCount`）不受影響。
+- **價格表為空**（首次部署）：所有需要查表的文件 `amount` 留空，直到第一次重建
+  跑完。唯一不受影響的是 `sent X for P Jewels`（無 `comboCount`）—— 它直接觀測
+  到單價，不查表。
 - **同一 `assetName` 觀測到兩種價格**：可能是 YouTube 調價，也可能是解析雜訊。
   規則為「本次窗口觀測 ≥ 2 才覆蓋」並記 log，讓調價能生效、單筆雜訊被擋下。
 - **replica > 1 並發 upsert**：`ordered: false` + 既有 11000 catch。pipeline
@@ -588,24 +641,34 @@ insert 一次）；`purchase_amount_total` 則會漏掉文件寫入後才發生�
 
 - `parseGiftAssetName`：item 版（帶 `=w640-h640`）與 ticker 版（不帶）產生同一
   `assetName`；不同禮物產生不同 `assetName`；undefined / 空字串 / 無副檔名輸入。
-- `deriveGiftAmount`：merged 已結算 / merged 未結算（查表命中與未命中）/
-  detailed 非 combo / detailed combo（查表命中與未命中）各一，且以生產資料的
-  實際數值（Heart 10、Star 2、x8/80、x4/8）為測資。detailed combo 命中那條要
-  斷言取到的是單價而非 `jewelCount`。
-- `mergeGiftActions`：item-only、ticker-only、同批 item+ticker（驗證
+- `deriveGiftAmount`：以生產資料的實際數值為測資，涵蓋
+  `sent Heart for 10 Jewels`（無 combo → 直接取 10）、
+  `comboed x8 Heart for 80 Jewels`（**必須是單價 10，不是 80**）、
+  `comboed x4 Star for 8 Jewels`（**必須是單價 2，不是 8**）、
+  `sent Star`（無金額 → 查表得 2）、ticker-only（查表得單價）、
+  以及查表未命中一律 `undefined`。
+- `mergeGiftActions`：item-only、ticker-only（斷言仍輸出一筆 upsert、combo
+  狀態群缺席、但 `amount` 已由查表填入）、同批 item+ticker（驗證
   `authorChannelId` 與 `image` 都出現在同一筆輸出）、同批多筆同 `id`（驗證
   combo 狀態取新者）。
+- ticker-only 後續補上 item：先以 ticker-only 寫入一筆，再送出帶 combo 狀態的
+  item，斷言收斂成**同一份文件**（不是兩筆）、combo 狀態群被完整填入、且
+  ticker 帶來的 `authorChannelId` 未被覆寫。
 - combo 狀態群替換規則：以形態二（`sent … for 10` → `comboed x8 … for 80`）與
-  形態三（`sent Star` → `comboed x4 Star for 8`）為測資，斷言五個欄位整組替換、
+  形態三（`sent Star` → `comboed x4 Star for 8`）為測資，斷言四個欄位整組替換、
   不出現 `jewelCount=10, comboCount=8` 這類混合狀態。
+- `amount` 的「算得出來就覆蓋」規則：先寫入一筆價格未知的文件（`amount` 缺），
+  再以價格已知的寫入補上，斷言 `amount` 被填入；反向順序（先有值、後一次算
+  不出來）則斷言既有值不被抹除。
 - 價格表重建：新資產寫入、同價更新 `sampleCount`、異價單筆不覆蓋、異價雙筆覆蓋
   四種情形；並斷言重建**不會刪除**窗口內未出現的既有資產。
 - 人工價格的兩種歸宿：`manual: true` 且本次窗口無任何觀測時，斷言 `price` 維持
   不變；`manual: true` 且本次觀測到 2 筆以上不同價格時，斷言 `price` 被覆蓋且
   `manual` 旗標被清除。
 - 價格表重建的排除條件：造一筆 `hasGiftImageUrl: false` 但由 ticker 補上
-  `assetName`、且帶 `jewelCount` / `comboCount` 的文件，斷言它**不會**被納入
-  價格推導（否則會寫入 `單價 / comboCount` 的錯價）。
+  `assetName`、且帶 `jewelCount` / `comboCount` 的文件（例如
+  `comboed x2 Heart for 10 Jewels`），斷言它**不會**被納入價格推導 —— 否則會
+  寫入 `10 / 2 = 5` 這個錯價。
 - 依專案慣例，Mongo / Redis 依賴以 `jest.unstable_mockModule` 搭配有狀態的
   fake（非裸 `jest.fn()`），確保 upsert 前後的可觀測狀態變化能被斷言。
 
@@ -617,6 +680,11 @@ insert 一次）；`purchase_amount_total` 則會漏掉文件寫入後才發生�
 - Mongoose `bulkWrite` 的 `updateOne` 搭配 aggregation pipeline `update` 與
   `upsert: true` 時，pipeline 在 insert 路徑上對不存在欄位的 `$ifNull` 行為，
   需以 research subagent 讀 `node_modules/mongoose` 與 MongoDB 版本確認。
+- ticker-only 文件實際出現的頻率與成因：masterchat 在建立連線後的第一份
+  continuation 是否會把 ticker bar 上的既有項目當成 `addLiveChatTickerItemAction`
+  送出（本設計以「可能會」為前提定義行為）。需在 plan 階段讀
+  `node_modules/@stu43005/masterchat/lib/masterchat.mjs` 的初次抓取路徑確認，
+  以決定 ticker-only 測試要覆蓋到什麼程度。
 - `partialFilterExpression` 與既有 `attachIndexWarningListeners`
   （`src/modules/db.ts`）的互動：專案先前有過 partial index 相關設計
   （`2026-05-20-mongo-partial-index-fix-design.md`），需在 plan 階段對照其結論。
