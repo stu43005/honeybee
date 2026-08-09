@@ -115,6 +115,13 @@ import type { MessageAuthorType } from "../interfaces.js";
   schemaOptions: { collection: "gifts" },
 })
 @index({ originVideoId: 1, timestamp: 1 })
+// Narrows the price rebuild's sweep to the documents it can actually learn a
+// price from. Every condition here is either an equality or `$exists: true`,
+// which is deliberate: a partial filter may only use equality, `$exists: true`,
+// the range operators, `$type`, `$and`, `$or` and `$in`. Anything else (`$ne`,
+// say) makes the server reject createIndex, and mongoose's autoIndex swallows
+// that rejection — the code would believe the index exists while queries
+// silently fall back to a collection scan.
 @index(
   { assetName: 1 },
   {
@@ -212,39 +219,7 @@ export default getModelForClass(Gift);
 Run: `npm run build && npm run lint`
 Expected: 皆成功。`importAllModels()` 會自動掃到這個檔案，不需要註冊。
 
-- [ ] **Step 3: 確認 partial filter 只用了 MongoDB 允許的運算子**
-
-`partialFilterExpression` 只接受相等比較、`$exists: true`、`$gt` / `$gte` /
-`$lt` / `$lte`、`$type`、`$and`、`$or`、`$in`。用到別的（例如 `$ne`）時
-`createIndex` 會被伺服器拒絕，而 mongoose 的 `autoIndex` 會把那個 rejection 吞掉
-—— 程式以為索引存在、實際上沒有。這正是 `attachIndexWarningListeners()`
-（`src/modules/db.ts`）當初被加進來的原因。
-
-檢查上面寫的 filter：`hasGiftImageUrl: true` 是相等比較、其餘三個是
-`$exists: true`，全部合法。
-
-Run:
-
-```bash
-grep -n '\$ne\|\$nin\|\$not\|\$regex\|\$expr' src/models/Gift.ts
-```
-
-Expected: 無輸出。
-
-- [ ] **Step 4: 部署後的線上確認（實作階段完成後執行一次）**
-
-服務啟動後，在 MongoDB 上執行：
-
-```js
-db.gifts.getIndexes();
-```
-
-Pass 條件：輸出中含有 `assetName_1`，且其 `partialFilterExpression` 與上面宣告的
-四個條件一致。同時檢查服務啟動日誌**沒有**出現
-`[mongoose] autoIndex failed for gifts`。任一條不符，代表索引其實沒建立，價格
-重建的掃描會退化成全表掃。
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
 git add src/models/Gift.ts
@@ -2200,3 +2175,19 @@ grep -nE '§|\bspec\b|\bplan\b|Task [0-9]|Layer [0-9]' src/components/gift.ts sr
 ```
 
 Expected: 無輸出。
+
+- [ ] **Step 3: 部署後確認 partial index 真的建起來了**
+
+只有這一項需要一個實際跑起來的環境，因此擺在最後而不是綁在 Task 2 上。
+
+`autoIndex` 失敗時 mongoose 會吞掉錯誤，程式會以為索引存在而照常運作 —— 唯一
+的徵兆是價格重建的掃描退化成全表掃。服務啟動後在 MongoDB 上執行：
+
+```js
+db.gifts.getIndexes();
+```
+
+Pass 條件：輸出含有 `assetName_1`，其 `partialFilterExpression` 與 model 宣告的
+四個條件一致；且服務啟動日誌**沒有** `[mongoose] autoIndex failed for gifts`
+（這行警告來自 `attachIndexWarningListeners()`）。任一條不符就停下來處理，不要
+帶著缺索引上線。
