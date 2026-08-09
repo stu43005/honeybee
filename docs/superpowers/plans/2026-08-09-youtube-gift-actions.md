@@ -735,7 +735,9 @@ describe("mergeGiftActions", () => {
 - [ ] **Step 2: 執行測試確認失敗**
 
 Run: `npm run test -- src/components/gift.spec.ts -t "mergeGiftActions"`
-Expected: FAIL，`mergeGiftActions is not a function`。
+Expected: FAIL，訊息形如
+`SyntaxError: The requested module './gift.js' does not provide an export named 'mergeGiftActions'`
+（named import 指向尚不存在的 export，整個檔案在載入階段就失敗）。
 
 - [ ] **Step 3: 寫最小實作**
 
@@ -1258,23 +1260,14 @@ git commit -m "feat(gift): build atomic pipeline upserts for gift documents"
 
 - Modify: `src/components/gift.ts`
 
-- [ ] **Step 1: 確認 `refreshThreshold` 不會阻塞讀取**
+**已確認的前提（不需要再查）**：cache-manager 6.1.1 的 `wrap()` 在
+`remainingTtl` 低於 `refreshThreshold` 時，以
+`coalesceAsync(...).then(...)` 觸發重載但**不 await**，並立刻 `return value`
+回傳舊的快取值（`node_modules/cache-manager/dist/index.js` 的 `shouldRefresh`
+分支）。也就是 refresh 在背景進行、讀取不會被 DB 往返卡住；只有快取完全未命中
+時才會 `await fnc()`。下面的 TTL 取值以此為準。
 
-TTL 與 refresh 參數的取值取決於 cache-manager 是同步等待 refresh 還是背景執行 ——
-若是前者，每 4 分鐘就會有一次 gift 寫入被 DB 往返卡住。
-
-Run:
-
-```bash
-grep -n "shouldRefresh" -A 12 node_modules/cache-manager/dist/index.js
-```
-
-Expected: 看到 `if (shouldRefresh) { coalesceAsync(...).then(...) }`，後面沒有
-`await`，而函式最後 `return value;` 回傳的是舊的快取值。也就是**refresh 是背景
-執行、讀取立刻返回舊值**。快取未命中時才會 `await fnc()`。確認符合後再進行下一
-步；若實際原始碼與此不符，停下來回報，不要自行調參數。
-
-- [ ] **Step 2: 加入快取存取函式**
+- [ ] **Step 1: 加入快取存取函式**
 
 在 `src/components/gift.ts` 的 import 區加入：
 
@@ -1333,17 +1326,17 @@ export async function getGiftPriceTable(): Promise<Map<string, number>> {
 }
 ```
 
-- [ ] **Step 3: 確認編譯與 lint 通過**
+- [ ] **Step 2: 確認編譯與 lint 通過**
 
 Run: `npm run build && npm run lint`
 Expected: 皆成功。
 
-- [ ] **Step 4: 確認既有測試沒被影響**
+- [ ] **Step 3: 確認既有測試沒被影響**
 
 Run: `npm run test -- src/components/gift.spec.ts`
 Expected: PASS，23 個 test 仍全綠（此函式不在單元測試範圍，它只是 DB + 快取的組裝）。
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add src/components/gift.ts
