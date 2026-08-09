@@ -308,8 +308,21 @@ git commit -m "feat(models): add GiftPrice model for the learned jewel price tab
 
 ```ts
 /// <reference types="jest" />
-import { describe, expect, it } from "@jest/globals";
-import { parseGiftAssetName } from "./gift.js";
+import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+
+// Read at module load by src/constants.ts, so it has to be set before anything
+// pulls the cache module in. Empty keeps getCacheInstance memory-only.
+process.env.REDIS_URI = "";
+
+const find = jest.fn<() => Promise<{ assetName: string; price: number }[]>>();
+
+jest.unstable_mockModule("../models/GiftPrice.js", () => ({
+  default: { find },
+}));
+
+// Dynamic import so the mock above is registered first — the project's ESM
+// Jest setup has no hoisted jest.mock.
+const { parseGiftAssetName } = await import("./gift.js");
 
 const PREFIX = "https://www.gstatic.com/youtube/img/pdg/gift/assets";
 
@@ -348,7 +361,7 @@ describe("parseGiftAssetName", () => {
 - [ ] **Step 2: 執行測試確認失敗**
 
 Run: `npm run test -- src/components/gift.spec.ts`
-Expected: FAIL，錯誤訊息為找不到模組 `./gift.js`。
+Expected: FAIL，錯誤訊息為 `Cannot find module './gift.js'`。
 
 - [ ] **Step 3: 寫最小實作**
 
@@ -398,10 +411,10 @@ git commit -m "feat(gift): derive a stable asset name from gift image urls"
 
 - [ ] **Step 1: 寫失敗的測試**
 
-在 `src/components/gift.spec.ts` 的 import 加入 `deriveGiftAmount`：
+在 `src/components/gift.spec.ts` 把動態 import 的解構加上 `deriveGiftAmount`：
 
 ```ts
-import { deriveGiftAmount, parseGiftAssetName } from "./gift.js";
+const { deriveGiftAmount, parseGiftAssetName } = await import("./gift.js");
 ```
 
 並在檔案末端追加：
@@ -463,9 +476,8 @@ describe("deriveGiftAmount", () => {
 - [ ] **Step 2: 執行測試確認失敗**
 
 Run: `npm run test -- src/components/gift.spec.ts -t "deriveGiftAmount"`
-Expected: FAIL，訊息形如
-`SyntaxError: The requested module './gift.js' does not provide an export named 'deriveGiftAmount'`
-（named import 指向尚不存在的 export，整個檔案在載入階段就失敗）。
+Expected: FAIL，`deriveGiftAmount is not a function`（動態 import 解構出
+`undefined`）。
 
 - [ ] **Step 3: 寫最小實作**
 
@@ -523,7 +535,7 @@ git commit -m "feat(gift): derive the per-gift jewel amount as a unit price"
 
 - [ ] **Step 1: 寫失敗的測試**
 
-在 `src/components/gift.spec.ts` 的 import 改成：
+在 `src/components/gift.spec.ts` 的靜態 import 區加入型別與 enum：
 
 ```ts
 import type {
@@ -531,11 +543,13 @@ import type {
   AddGiftTickerAction,
 } from "@stu43005/masterchat";
 import { MessageAuthorType } from "../interfaces.js";
-import {
-  deriveGiftAmount,
-  mergeGiftActions,
-  parseGiftAssetName,
-} from "./gift.js";
+```
+
+並把動態 import 的解構加上 `mergeGiftActions`：
+
+```ts
+const { deriveGiftAmount, mergeGiftActions, parseGiftAssetName } =
+  await import("./gift.js");
 ```
 
 並在檔案末端追加：
@@ -710,9 +724,8 @@ describe("mergeGiftActions", () => {
 - [ ] **Step 2: 執行測試確認失敗**
 
 Run: `npm run test -- src/components/gift.spec.ts -t "mergeGiftActions"`
-Expected: FAIL，訊息形如
-`SyntaxError: The requested module './gift.js' does not provide an export named 'mergeGiftActions'`
-（named import 指向尚不存在的 export，整個檔案在載入階段就失敗）。
+Expected: FAIL，`mergeGiftActions is not a function`（動態 import 解構出
+`undefined`）。
 
 - [ ] **Step 3: 寫最小實作**
 
@@ -896,7 +909,18 @@ git commit -m "feat(gift): merge item and ticker actions of one gift into a sing
 
 - [ ] **Step 1: 寫失敗的測試**
 
-在 `src/components/gift.spec.ts` 的 `./gift.js` import 加入 `buildGiftUpsertOps`，並在檔案末端追加：
+在 `src/components/gift.spec.ts` 把動態 import 的解構加上 `buildGiftUpsertOps`：
+
+```ts
+const {
+  buildGiftUpsertOps,
+  deriveGiftAmount,
+  mergeGiftActions,
+  parseGiftAssetName,
+} = await import("./gift.js");
+```
+
+並在檔案末端追加：
 
 ```ts
 // True exactly when the stored document has no combo state yet: this flag is
@@ -1086,12 +1110,228 @@ describe("buildGiftUpsertOps", () => {
     ).toHaveLength(2);
   });
 });
+
+// Asserting the generated pipeline shape does not prove what a document ends
+// up looking like, and there is no MongoDB in this test suite. This evaluates
+// the handful of operators the builder emits so the write sequences below can
+// be checked against real resulting state.
+const MISSING = Symbol("missing");
+
+function evalExpr(expr: unknown, doc: Record<string, unknown>): unknown {
+  if (typeof expr === "string") {
+    if (expr === "$$REMOVE") return MISSING;
+    if (expr.startsWith("$")) {
+      const value = doc[expr.slice(1)];
+      return value === undefined ? MISSING : value;
+    }
+    return expr;
+  }
+  if (expr === null || typeof expr !== "object") return expr;
+  const [op, arg] = Object.entries(expr as Record<string, unknown>)[0];
+  const operands = () => (arg as unknown[]).map((a) => evalExpr(a, doc));
+  const nullish = (v: unknown) => (v === MISSING ? null : v);
+  switch (op) {
+    case "$literal":
+      return arg;
+    case "$ifNull": {
+      const [value, fallback] = operands();
+      return value === MISSING || value === null ? fallback : value;
+    }
+    case "$cond": {
+      const [condition, whenTrue, whenFalse] = arg as unknown[];
+      return evalExpr(evalExpr(condition, doc) ? whenTrue : whenFalse, doc);
+    }
+    case "$or":
+      return (arg as unknown[]).some((a) => evalExpr(a, doc) === true);
+    case "$and":
+      return (arg as unknown[]).every((a) => evalExpr(a, doc) === true);
+    case "$eq": {
+      const [a, b] = operands();
+      return nullish(a) === nullish(b);
+    }
+    case "$gt": {
+      const [a, b] = operands();
+      return (a as number) > (b as number);
+    }
+    default:
+      throw new Error(`unsupported operator ${op}`);
+  }
+}
+
+/**
+ * Apply one generated op to a document. Every expression reads the pre-update
+ * document, matching how a single `$set` stage evaluates.
+ */
+function applyOp(
+  doc: Record<string, unknown> | undefined,
+  op: unknown
+): Record<string, unknown> {
+  const { filter, update } = (op as any).updateOne;
+  // On insert MongoDB seeds the document from the filter's equality conditions.
+  const before = { ...(doc ?? filter) };
+  const after = { ...before };
+  for (const [field, expr] of Object.entries(update[0].$set)) {
+    const value = evalExpr(expr, before);
+    if (value === MISSING) delete after[field];
+    else after[field] = value;
+  }
+  return after;
+}
+
+function opFor(
+  items: AddGiftItemAction[],
+  tickers: AddGiftTickerAction[],
+  priceTable = PRICES
+) {
+  return buildGiftUpsertOps(
+    mergeGiftActions(items, tickers, CTX, priceTable)
+  )[0];
+}
+
+describe("applying gift upserts in sequence", () => {
+  it("converges a ticker-only write and a later item onto one document", () => {
+    const afterTicker = applyOp(undefined, opFor([], [giftTicker()]));
+    const afterItem = applyOp(
+      afterTicker,
+      opFor(
+        [
+          giftItem({
+            message: "comboed x4 Heart for 40 Jewels",
+            jewelCount: 40,
+            comboCount: 4,
+            giftImageUrl: `${PREFIX}/heart.png=w640-h640`,
+          }),
+        ],
+        []
+      )
+    );
+
+    expect(afterItem.id).toBe("gift-1");
+    // The ticker's exclusive fields survive the item write.
+    expect(afterItem.authorChannelId).toBe("UCsender");
+    expect(afterItem.timestamp).toEqual(new Date("2026-08-09T00:00:05.000Z"));
+    expect(afterItem.message).toBe("comboed x4 Heart for 40 Jewels");
+    expect(afterItem.hasGiftImageUrl).toBe(true);
+    // A unit price, never the wave's 40.
+    expect(afterItem.amount).toBe(10);
+  });
+
+  it("stores an unparsed message onto a document a ticker created", () => {
+    const afterTicker = applyOp(undefined, opFor([], [giftTicker()]));
+    const afterItem = applyOp(
+      afterTicker,
+      opFor(
+        [
+          giftItem({
+            message: "ギフトを贈りました",
+            giftName: undefined,
+            jewelCount: undefined,
+          }),
+        ],
+        []
+      )
+    );
+
+    expect(afterItem.message).toBe("ギフトを贈りました");
+    expect(afterItem.hasGiftImageUrl).toBe(false);
+  });
+
+  it("swaps the whole combo group instead of mixing two deliveries", () => {
+    const first = applyOp(
+      undefined,
+      opFor(
+        [giftItem({ message: "sent Heart for 10 Jewels", jewelCount: 10 })],
+        []
+      )
+    );
+    expect(first.jewelCount).toBe(10);
+    expect(first.comboCount).toBeUndefined();
+
+    const second = applyOp(
+      first,
+      opFor(
+        [
+          giftItem({
+            message: "comboed x8 Heart for 80 Jewels",
+            jewelCount: 80,
+            comboCount: 8,
+          }),
+        ],
+        []
+      )
+    );
+
+    // Keeping the old 10 next to the new 8 would make the rebuild learn 1.25.
+    expect({
+      jewelCount: second.jewelCount,
+      comboCount: second.comboCount,
+    }).toEqual({ jewelCount: 80, comboCount: 8 });
+    expect(second.message).toBe("comboed x8 Heart for 80 Jewels");
+  });
+
+  it("takes a wave summary that arrives after an amount-less first delivery", () => {
+    const star = `${PREFIX}/star.png=w640-h640`;
+    const first = applyOp(
+      undefined,
+      opFor(
+        [
+          giftItem({
+            message: "sent Star",
+            giftName: "Star",
+            jewelCount: undefined,
+            giftImageUrl: star,
+          }),
+        ],
+        []
+      )
+    );
+    expect(first.jewelCount).toBeUndefined();
+    expect(first.amount).toBe(2);
+
+    const second = applyOp(
+      first,
+      opFor(
+        [
+          giftItem({
+            message: "comboed x4 Star for 8 Jewels",
+            giftName: "Star",
+            jewelCount: 8,
+            comboCount: 4,
+            giftImageUrl: star,
+          }),
+        ],
+        []
+      )
+    );
+
+    expect({
+      jewelCount: second.jewelCount,
+      comboCount: second.comboCount,
+    }).toEqual({ jewelCount: 8, comboCount: 4 });
+    // Still one gift's worth, not the wave's 8.
+    expect(second.amount).toBe(2);
+  });
+
+  it("fills an amount in later and never wipes one already worked out", () => {
+    const noPrices = new Map<string, number>();
+
+    const unpriced = applyOp(undefined, opFor([], [giftTicker()], noPrices));
+    expect(unpriced.amount).toBeUndefined();
+
+    const priced = applyOp(unpriced, opFor([giftItem({})], []));
+    expect(priced.amount).toBe(10);
+
+    const stillPriced = applyOp(priced, opFor([], [giftTicker()], noPrices));
+    expect(stillPriced.amount).toBe(10);
+  });
+});
 ```
 
 - [ ] **Step 2: 執行測試確認失敗**
 
 Run: `npm run test -- src/components/gift.spec.ts -t "buildGiftUpsertOps"`
-Expected: FAIL，`buildGiftUpsertOps is not a function`。
+Expected: FAIL，`buildGiftUpsertOps is not a function`（動態 import 解構出
+`undefined`）。
 
 - [ ] **Step 3: 寫最小實作**
 
@@ -1213,7 +1453,7 @@ export function buildGiftUpsertOps(
 - [ ] **Step 4: 執行測試確認通過**
 
 Run: `npm run test -- src/components/gift.spec.ts`
-Expected: PASS，23 個 test 全綠。
+Expected: PASS，28 個 test 全綠。
 
 - [ ] **Step 5: 確認編譯與 lint**
 
@@ -1301,20 +1541,65 @@ export async function getGiftPriceTable(): Promise<Map<string, number>> {
 }
 ```
 
-- [ ] **Step 2: 確認編譯與 lint 通過**
+- [ ] **Step 2: 加上快取行為的測試**
+
+在 `src/components/gift.spec.ts` 把動態 import 的解構加上 `getGiftPriceTable`：
+
+```ts
+const {
+  buildGiftUpsertOps,
+  deriveGiftAmount,
+  getGiftPriceTable,
+  mergeGiftActions,
+  parseGiftAssetName,
+} = await import("./gift.js");
+```
+
+並在檔案末端追加（`find` 是檔案開頭那個 `GiftPrice` model 的 fake）：
+
+```ts
+describe("getGiftPriceTable", () => {
+  beforeEach(() => {
+    find.mockReset();
+  });
+
+  it("rebuilds the map from stored rows and serves repeats from cache", async () => {
+    find.mockResolvedValue([
+      { assetName: "heart", price: 10 },
+      { assetName: "star", price: 2 },
+    ]);
+
+    const first = await getGiftPriceTable();
+    const second = await getGiftPriceTable();
+
+    expect(first).toEqual(
+      new Map([
+        ["heart", 10],
+        ["star", 2],
+      ])
+    );
+    // Cached as pairs and rebuilt into a Map on the way out, because the Redis
+    // layer serialises through JSON and a Map would come back as {}.
+    expect(second).toEqual(first);
+    expect(find).toHaveBeenCalledTimes(1);
+  });
+});
+```
+
+- [ ] **Step 3: 執行測試確認通過**
+
+Run: `npm run test -- src/components/gift.spec.ts`
+Expected: PASS，29 個 test 全綠。
+
+- [ ] **Step 4: 確認編譯與 lint 通過**
 
 Run: `npm run build && npm run lint`
 Expected: 皆成功。
 
-- [ ] **Step 3: 確認既有測試沒被影響**
-
-Run: `npm run test -- src/components/gift.spec.ts`
-Expected: PASS，23 個 test 仍全綠（此函式不在單元測試範圍，它只是 DB + 快取的組裝）。
-
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add src/components/gift.ts
+git add src/components/gift.ts src/components/gift.spec.ts
 git commit -m "feat(gift): cache the jewel price table for the worker"
 ```
 
@@ -1599,7 +1884,8 @@ type PriceRow = {
 };
 
 const store = new Map<string, PriceRow>();
-const aggregate = jest.fn<() => Promise<unknown[]>>();
+const aggregate =
+  jest.fn<(pipeline: Record<string, unknown>[]) => Promise<unknown[]>>();
 
 // A stateful stand-in for the collection: writes have to be observable by the
 // next read, otherwise the idempotency test proves nothing.
@@ -1741,6 +2027,23 @@ describe("rebuildGiftPrices", () => {
     await rebuildGiftPrices();
 
     expect(bulkWrite).not.toHaveBeenCalled();
+  });
+
+  it("only learns from deliveries whose own chat item carried the image", async () => {
+    windowRows([]);
+
+    await rebuildGiftPrices();
+
+    // A document whose assetName came from a ticker can hold a unit price in
+    // jewelCount, and dividing that by comboCount would learn a price several
+    // times too low — so the sweep must never see those documents at all.
+    const [pipeline] = aggregate.mock.calls[0] as [Record<string, unknown>[]];
+    expect(pipeline[0].$match).toEqual({
+      hasGiftImageUrl: true,
+      assetName: { $exists: true },
+      jewelCount: { $exists: true },
+      comboCount: { $gt: 0 },
+    });
   });
 });
 ```
@@ -1918,7 +2221,7 @@ export async function rebuildGiftPrices(): Promise<void> {
 - [ ] **Step 4: 執行測試確認通過**
 
 Run: `npm run test -- src/components/gift-price.spec.ts`
-Expected: PASS，12 個 test 全綠。
+Expected: PASS，13 個 test 全綠。
 
 - [ ] **Step 5: 在 manager 註冊這個 component**
 
