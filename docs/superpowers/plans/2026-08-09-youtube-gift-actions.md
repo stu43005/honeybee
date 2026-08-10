@@ -1474,6 +1474,7 @@ git commit -m "feat(gift): build atomic pipeline upserts for gift documents"
 **Files:**
 
 - Modify: `src/components/gift.ts`
+- Modify: `src/components/gift.spec.ts`
 
 **已確認的前提（不需要再查）**：cache-manager 6.1.1 的 `wrap()` 在
 `remainingTtl` 低於 `refreshThreshold` 時，以
@@ -2045,6 +2046,20 @@ describe("rebuildGiftPrices", () => {
       comboCount: { $gt: 0 },
     });
   });
+
+  it("orders the sweep so the recorded display name is the latest one", async () => {
+    windowRows([]);
+
+    await rebuildGiftPrices();
+
+    // `$last: "$giftName"` only means "most recently seen" if the documents
+    // arrive at the group stage in time order.
+    const [pipeline] = aggregate.mock.calls[0] as [Record<string, unknown>[]];
+    expect(pipeline[1]).toEqual({ $sort: { timestamp: 1 } });
+    expect((pipeline[2] as any).$group.giftName).toEqual({
+      $last: "$giftName",
+    });
+  });
 });
 ```
 
@@ -2109,6 +2124,10 @@ export async function collectGiftPriceObservations(): Promise<
           comboCount: { $gt: 0 },
         },
       },
+      // `$last` below only means "the most recently observed display name" if
+      // the documents reach the group stage in time order; without this sort
+      // it would pick whatever the storage engine happened to emit last.
+      { $sort: { timestamp: 1 } },
       {
         $group: {
           _id: {
@@ -2221,7 +2240,7 @@ export async function rebuildGiftPrices(): Promise<void> {
 - [ ] **Step 4: 執行測試確認通過**
 
 Run: `npm run test -- src/components/gift-price.spec.ts`
-Expected: PASS，13 個 test 全綠。
+Expected: PASS，14 個 test 全綠。
 
 - [ ] **Step 5: 在 manager 註冊這個 component**
 
