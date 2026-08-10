@@ -6,6 +6,7 @@ import { HoneybeeStatus, VideoStatsType } from "../interfaces.js";
 import { recalcVideoHbStats } from "./video-stats.js";
 import BanAction from "../models/BanAction.js";
 import Chat from "../models/Chat.js";
+import Gift from "../models/Gift.js";
 import Membership from "../models/Membership.js";
 import MembershipGift from "../models/MembershipGift.js";
 import MembershipGiftPurchase from "../models/MembershipGiftPurchase.js";
@@ -42,6 +43,7 @@ async function cleanVideos(videoIds: string[]) {
   await SuperSticker.deleteMany({ originVideoId: { $in: videoIds } });
   await MembershipGift.deleteMany({ originVideoId: { $in: videoIds } });
   await MembershipGiftPurchase.deleteMany({ originVideoId: { $in: videoIds } });
+  await Gift.deleteMany({ originVideoId: { $in: videoIds } });
   await Chat.deleteMany({ originVideoId: { $in: videoIds } });
   await VideoUserStats.deleteMany({ videoId: { $in: videoIds } });
   await Video.updateMany(
