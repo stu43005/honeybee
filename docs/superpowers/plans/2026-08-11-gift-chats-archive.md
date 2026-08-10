@@ -605,6 +605,19 @@ Since r1, `JsonlRow` has one further member. Readers written against r0 skip it
 under the existing "unknown `type` values" rule.
 
 ```ts
+type JsonlRow =
+  | ChatRow
+  | SuperChatRow
+  | SuperStickerRow
+  | GiftRow // since r1
+  | MembershipRow
+  | MembershipGiftRow
+  | MembershipGiftPurchaseRow
+  | MilestoneRow
+  | PollRow
+  | RaidRow
+  | RaidOutgoingRow;
+
 interface GiftRow extends AuthorRowBase {
   type: "gift";
   giftName?: string; // display name; absent outside the English locale
@@ -659,7 +672,7 @@ actual file):」。
 
 - [ ] **Step 5: 更新 Reader guidance**
 
-在 `### Reader guidance` 的項目清單中做三處修改。
+在 `### Reader guidance` 的項目清單中做四處修改。
 
 其一，把
 
@@ -679,22 +692,18 @@ actual file):」。
   carries no badge information.
 ```
 
-其二，把
+其二，「May be absent on author rows」那一項保持原樣不動 —— 它描述的是 r0 就有
+的欄位。
+
+其三，在「May be absent on author rows」那一項之後插入一項。這個標題與
+`since rN` 標注是固定寫法，用來讓契約審查辨識出隨 revision 新增的欄位：
 
 ```markdown
-- **May be absent on author rows:** `authorName`, `authorPhoto`,
-  `membership`, plus the per-type optional extras shown above.
+- **May be absent depending on revision:** `giftName`, `assetName`, `image`,
+  `amount` on `gift` rows — `since r1`.
 ```
 
-改成
-
-```markdown
-- **May be absent on author rows:** `authorName`, `authorPhoto`,
-  `membership`, plus the per-type optional extras shown above; and, since r1,
-  `giftName`, `assetName`, `image`, `amount` on `gift` rows.
-```
-
-其三，在「Always present on poll rows」那一項之前插入一項：
+其四，在「Always present on poll rows」那一項之前插入一項：
 
 ```markdown
 - **`amount` on `gift` rows:** the Jewels a single gift cost. Absent when that
@@ -704,8 +713,13 @@ actual file):」。
 
 - [ ] **Step 6: 確認 format 通過**
 
-Run: `npm run format:check`
-Expected: 成功。若失敗，執行 `npm run format` 後重跑。
+Run: `npx prettier --check docs/data-contract/video-chats.md`
+Expected: `All matched files use Prettier code style!`。若失敗，執行
+`npx prettier --write docs/data-contract/video-chats.md` 後重跑。
+
+直接指定檔案而不是跑 `npm run format:check` —— 後者是
+`prettier --check src/`，涵蓋範圍不含 `docs/`，對這個 Task 唯一動到的檔案不會做
+任何檢查。既有的契約文件本來就是照 prettier 格式寫的，新增的段落必須跟上。
 
 - [ ] **Step 7: Commit**
 
