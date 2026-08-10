@@ -16,3 +16,30 @@ export function parseGiftAssetName(
   const withoutExtension = withoutSizeSuffix.replace(/\.[^.]+$/, "");
   return withoutExtension || undefined;
 }
+
+export interface GiftAmountFields {
+  assetName?: string;
+  jewelCount?: number;
+  comboCount?: number;
+}
+
+/**
+ * Jewels for one gift. Every document is exactly one gift — a connected wave
+ * shows up as several separate ids — so this is always a unit price and must
+ * never be multiplied by `comboCount`.
+ *
+ * A `comboed xN … for J Jewels` message states that wave's summary figure, and
+ * `J` means different things depending on whether the item carried its own
+ * image, so it can never be used as this document's amount. Only a message
+ * with no `comboCount` states a unit price outright.
+ */
+export function deriveGiftAmount(
+  fields: GiftAmountFields,
+  priceTable: Map<string, number>
+): number | undefined {
+  const { assetName, jewelCount, comboCount } = fields;
+  if (comboCount == null && jewelCount != null) {
+    return jewelCount;
+  }
+  return assetName ? priceTable.get(assetName) : undefined;
+}
