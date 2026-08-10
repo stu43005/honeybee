@@ -29,6 +29,19 @@
   badge 資訊，因此 `authorType` 恆為 `"other"`、`isVerified` / `isOwner` /
   `isModerator` 恆為 `false` —— 這些不是觀測結果，而是為了滿足 author row 的
   必填保證而填的定值。
+- **封存與清除共用同一個 2 小時邊界，不另設保留期**。
+  - 顧慮：封存失敗時旗標不會設定、留待下一輪重試，但影片跨過邊界後就同時離開
+    封存的挑選窗口、進入清除的資格範圍。若失敗一路持續到跨界，那支影片的 gift
+    文件會被刪除而永遠不會被封存；封存工作延遲或 cursor 跑太久也可能與刪除
+    交錯，產出不完整的封存檔卻仍視為成功。
+  - 決定：不加交接保證（不讓 cleanup 等待 `ChatsArchiveProcessed`，也不拉長
+    gift 的保留期）。
+  - 理由：這是既有封存管線本來就有的性質，對 superchat、會籍、里程碑一體適用，
+    加入 gift 並沒有使它變差。兩個窗口互補，且封存每分鐘跑一次 —— 窗口內約有
+    120 次機會，要真的損失資料得在邊界前連續失敗到跨界。只為 gift 加一條特殊
+    刪除條件，會讓它成為唯一有例外的 collection，且永遠不會被封存的影片
+    （例如 `hbIgnore`）會累積永不刪除的 gift 文件；改成全面修正則是重新設計
+    保留與封存的交接機制，遠超出「把 gift 加進 chats-archive」的範圍。
 
 ## 事實基準
 
@@ -51,6 +64,17 @@
 rename `.meta.json`，確保讀者拿到 meta 時 jsonl 已就位；一列都沒有時丟棄
 `.jsonl.tmp`、只寫 meta。
 
+### 禮物已經會產生 `VideoStats` 的 `MessageTotal` 列
+
+上述挑選條件查的是 `VideoStats`，因此把 `MessageType.Gift` 加進去只有在「收到
+禮物真的會寫出對應的 `VideoStats` 列」時才有作用。這一點已經成立：
+`src/components/video-stats.ts` 對 `messageTypes` 陣列的**每一項**都註冊一條
+`updateStats(VideoStatsType.MessageTotal, type.messageType, type.model, …)` 的
+cron，而該陣列已含 `{ messageType: MessageType.Gift, model: GiftModel }`。因此
+一支收到禮物的直播必定有 `type = MessageTotal`、`messageType = "gift"` 的
+`VideoStats` 列，`updatedAt` 隨禮物持續進來而更新。
+`src/components/video-stats.spec.ts` 已針對這條 cron 的註冊做了斷言。
+
 `buildJsonlRow` 以 `doc.collection.name` 分派。author 類的訊息共用
 `makeAuthorRow(type, doc, extra)`，它把文件的 `id` / `timestamp` /
 `authorName` / `authorPhoto` / `authorChannelId` / `authorType` / `membership` /
@@ -62,8 +86,12 @@ rename `.meta.json`，確保讀者拿到 meta 時 jsonl 已就位；一列都沒
 
 `cleanup` 的 `cleanEndedStreams` 每 5 分鐘跑一次，刪除結束超過
 `MAX_HOURS_BEFORE_CLEANUP`（2 小時）的影片文件，其中已包含
-`Gift.deleteMany({ originVideoId: ... })`。封存的挑選窗口用的是同一個常數，且
-封存每分鐘跑一次，因此 gift 文件在封存時尚未被清除。
+`Gift.deleteMany({ originVideoId: ... })`。
+
+兩邊的窗口是互補的，用的是同一個常數：cleanup 要求「該影片 `MessageTotal` 的
+最後 `updatedAt` 早於 2 小時前」才刪，而封存挑的是「`updatedAt` 在 2 小時內」。
+同一瞬間一支影片只會落在其中一邊，因此正常情況下 gift 文件在封存時尚未被清除。
+邊界失敗的情形見「已接受的限制」。
 
 ### `Gift` model 的欄位
 
