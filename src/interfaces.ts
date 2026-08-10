@@ -14,6 +14,7 @@ export enum MessageType {
   MembershipGiftPurchase = "membershipGiftPurchase",
   SuperChat = "superChat",
   SuperSticker = "superSticker",
+  Gift = "gift",
   Chat = "chat",
 
   // Actions
