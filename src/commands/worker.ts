@@ -26,12 +26,18 @@ import {
   MessageAuthorType,
   type HoneybeeJob,
 } from "../interfaces.js";
+import {
+  buildGiftUpsertOps,
+  getGiftPriceTable,
+  mergeGiftActions,
+} from "../components/gift.js";
 import BanActionModel, { type BanAction } from "../models/BanAction.js";
 import BannerActionModel, {
   type BannerAction,
 } from "../models/BannerAction.js";
 import ChatModel, { type Chat } from "../models/Chat.js";
 import ErrorLogModel, { type ErrorLog } from "../models/ErrorLog.js";
+import GiftModel from "../models/Gift.js";
 import MembershipModel, { type Membership } from "../models/Membership.js";
 import MembershipGiftModel, {
   type MembershipGift,
@@ -234,6 +240,12 @@ async function handleJob(
   async function handleActions(actions: Action[]) {
     const groupedActions = groupBy(actions, "type");
     const actionTypes = Object.keys(groupedActions) as Action["type"][];
+    // Gifts ship no timestamp of their own when their id does not decode, so
+    // fall back to one reading per batch rather than per document.
+    const batchReceivedAt = new Date();
+    // The loop below iterates per action type, but the item and the ticker of
+    // one gift have to be written together — see the gift case.
+    let giftBatchHandled = false;
 
     for (const type of actionTypes) {
       try {
@@ -841,6 +853,32 @@ async function handleJob(
           // case "addSuperStickerTickerAction":
           // case "moderationMessageAction":
           //   break;
+          case "addGiftItemAction":
+          case "addGiftTickerAction": {
+            // Both types fall through to here, but one gift's item and ticker
+            // must land in a single write: webhooks only fire on inserts, so
+            // writing them separately would strand the ticker's
+            // authorChannelId on an update nobody reads.
+            if (giftBatchHandled) break;
+            giftBatchHandled = true;
+
+            const upserts = mergeGiftActions(
+              groupedActions["addGiftItemAction"] ?? [],
+              groupedActions["addGiftTickerAction"] ?? [],
+              {
+                originVideoId: mc.videoId,
+                originChannelId: mc.channelId,
+                isReplay,
+                receivedAt: batchReceivedAt,
+              },
+              await getGiftPriceTable()
+            );
+            const ops = buildGiftUpsertOps(upserts);
+            if (ops.length > 0) {
+              await GiftModel.bulkWrite(ops, insertOptions);
+            }
+            break;
+          }
           case "unknown": {
             const payload = groupedActions[type]
               .filter((action) => {
