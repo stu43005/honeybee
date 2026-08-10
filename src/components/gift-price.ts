@@ -1,3 +1,11 @@
+import assert from "node:assert";
+import type { mongo } from "mongoose";
+import GiftModel from "../models/Gift.js";
+import GiftPriceModel from "../models/GiftPrice.js";
+import { setIfDefine } from "../util.js";
+import type { Application } from "../modules/application.js";
+import type { AgendaModule } from "../modules/schedule.js";
+
 export interface GiftPriceObservation {
   assetName: string;
   /** Jewels per single gift, from a wave summary's total divided by its size. */
@@ -62,4 +70,155 @@ export function decideGiftPriceUpdate(
     price: observation.price,
     sampleCount: observation.count,
   };
+}
+
+// A price can only be read off a wave summary, and gifts are deleted two hours
+// after their stream ends, so the window has to be swept often enough that an
+// observation is not lost before it is ever seen.
+const GIFT_PRICE_REBUILD_INTERVAL = "10 minutes";
+
+export default function giftPrice(app: Application) {
+  const { agenda } = app.get<AgendaModule>("agenda") ?? {};
+  assert(agenda, "agenda should be defined.");
+
+  agenda.define("gift price rebuild", rebuildGiftPrices);
+  void agenda.every(GIFT_PRICE_REBUILD_INTERVAL, "gift price rebuild");
+}
+
+/**
+ * Unit prices supported by the documents currently in the collection, one entry
+ * per asset: whichever price the most documents agree on.
+ *
+ * `hasGiftImageUrl: true` is load-bearing. An asset name can also come from a
+ * ticker's sticker url, and on those documents `jewelCount` may be a unit price
+ * rather than a wave total — dividing it would learn a price several times too
+ * low and the cache would spread that to every later gift.
+ */
+export async function collectGiftPriceObservations(): Promise<
+  GiftPriceObservation[]
+> {
+  const rows = await GiftModel.aggregate<{
+    _id: { assetName: string; price: number };
+    count: number;
+    giftName?: string;
+  }>(
+    [
+      {
+        $match: {
+          hasGiftImageUrl: true,
+          assetName: { $exists: true },
+          jewelCount: { $exists: true },
+          comboCount: { $gt: 0 },
+        },
+      },
+      // `$last` below only means "the most recently observed display name" if
+      // the documents reach the group stage in time order; without this sort
+      // it would pick whatever the storage engine happened to emit last.
+      { $sort: { timestamp: 1 } },
+      {
+        $group: {
+          _id: {
+            assetName: "$assetName",
+            price: { $divide: ["$jewelCount", "$comboCount"] },
+          },
+          count: { $sum: 1 },
+          giftName: { $last: "$giftName" },
+        },
+      },
+    ],
+    { readPreference: "secondaryPreferred" }
+  );
+
+  const best = new Map<string, GiftPriceObservation>();
+  for (const row of rows) {
+    const { assetName, price } = row._id;
+    const current = best.get(assetName);
+    // Most-supported price wins. The lower price settles a tie so that
+    // rerunning over an unchanged window always lands on the same value —
+    // relying on the group stage's output order would not.
+    if (
+      current &&
+      (current.count > row.count ||
+        (current.count === row.count && current.price <= price))
+    ) {
+      continue;
+    }
+    best.set(assetName, {
+      assetName,
+      price,
+      count: row.count,
+      giftName: row.giftName,
+    });
+  }
+  return Array.from(best.values());
+}
+
+/**
+ * Fold this window's observations into the price table.
+ *
+ * Only ever adds or corrects: gifts are pruned two hours after a stream ends,
+ * so recomputing the table from the window would wipe every asset that nobody
+ * happened to send lately.
+ *
+ * Plain update operators rather than an aggregation pipeline — a pipeline
+ * update skips mongoose's schema defaults and `createdAt`, and this job has no
+ * concurrent writer (Agenda's lock admits one instance), so read-then-write is
+ * safe and the tiering reads better in TypeScript than in `$cond`.
+ */
+export async function rebuildGiftPrices(): Promise<void> {
+  const observations = await collectGiftPriceObservations();
+  if (observations.length === 0) return;
+
+  // The whole table, not just the assets in this window: it is the same few
+  // hundred rows the worker already caches, and reading it in one go keeps the
+  // tiering decisions in plain TypeScript.
+  const existingDocs = await GiftPriceModel.find(
+    {},
+    { assetName: 1, price: 1, sampleCount: 1, manual: 1 },
+    { readPreference: "secondaryPreferred" }
+  );
+  const existingByAsset = new Map(
+    existingDocs.map((doc) => [doc.assetName, doc])
+  );
+
+  const bulk: mongo.AnyBulkWriteOperation[] = [];
+  for (const observation of observations) {
+    const existing = existingByAsset.get(observation.assetName);
+    const decision = decideGiftPriceUpdate(existing, observation);
+
+    if (decision.action === "keep") {
+      console.log(
+        `<!> [GIFT PRICE] keeping ${observation.assetName} at ${existing?.price}; ` +
+          `${observation.count} observation(s) suggested ${observation.price}`
+      );
+      continue;
+    }
+    if (decision.action === "overwrite") {
+      console.log(
+        `<!> [GIFT PRICE] ${observation.assetName} ${existing?.price} -> ` +
+          `${decision.price} (${observation.count} observation(s))`
+      );
+    }
+
+    bulk.push({
+      updateOne: {
+        filter: { assetName: observation.assetName },
+        update: {
+          $set: {
+            ...(decision.action === "confirm" ? {} : { price: decision.price }),
+            sampleCount: decision.sampleCount,
+            ...setIfDefine("giftName", observation.giftName),
+          },
+          $setOnInsert: { assetName: observation.assetName },
+          // Observations now back this value, so it is no longer hand-entered.
+          $unset: { manual: "" },
+        },
+        upsert: true,
+      },
+    });
+  }
+
+  if (bulk.length > 0) {
+    await GiftPriceModel.bulkWrite(bulk);
+  }
 }

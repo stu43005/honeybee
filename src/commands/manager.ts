@@ -1,5 +1,6 @@
 import chatsArchive from "../components/chats-archive.js";
 import cleanup from "../components/cleanup.js";
+import giftPrice from "../components/gift-price.js";
 import trackOperator from "../components/track-operator.js";
 import videoScaler from "../components/video-scaler.js";
 import videoStats from "../components/video-stats.js";
@@ -20,6 +21,7 @@ export async function runManager() {
   trackOperator(app);
   webhookPrepare(app);
   youtubeDmOperator(app);
+  giftPrice(app);
   videoStats(app);
   videoScaler(app);
   chatsArchive(app);
