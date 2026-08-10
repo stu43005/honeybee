@@ -164,7 +164,9 @@ interface GiftTickerContent {
 `SuperChat<T>`**（沒有 `amount` / `currency` / `color` / `significance`）。
 
 masterchat 的 doc comment 明示：同一份禮物會同時產生 item 與 ticker 兩個 action、
-共用同一個 `id`，且 masterchat **不做去重**，由消費端自行處理。
+共用同一個 `id`，且 masterchat **不做去重**，由消費端自行處理。共用的那個 id 在
+item 上是 `item.id`，在 ticker 上是 **`ticker.contents.id`**；`ticker.id` 是跑馬燈
+本身的 renderer id，與禮物無關，拿它去對應會對不上。
 
 `message` 由 masterchat 內部的 `GIFT_TEXT_RE`
 （`/^(?:sent|comboed x(\d+)) (.+?)(?: for ([\d,]+) Jewels?)?$/i`）解析成
