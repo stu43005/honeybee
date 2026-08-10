@@ -42,6 +42,24 @@
     刪除條件，會讓它成為唯一有例外的 collection，且永遠不會被封存的影片
     （例如 `hbIgnore`）會累積永不刪除的 gift 文件；改成全面修正則是重新設計
     保留與封存的交接機制，遠超出「把 gift 加進 chats-archive」的範圍。
+- **封存觸發只認 `VideoStats`，不另設直接查 `gifts` 的備援**。
+  - 顧慮：`MessageType.Gift` 加進挑選條件後，gift-only 直播的封存完全取決於
+    `MessageTotal` 那條 cron 有沒有跑出對應的 `VideoStats` 列。該 cron 延遲、
+    失敗或首次部署時尚未跑過，那支影片就不會被挑中，禮物在清除後永久消失。
+  - 決定：不加備援查詢。
+  - 理由：所有訊息型別的封存觸發都走 `VideoStats`，那條 cron 失效是全面性的
+    失效，不是 gift 獨有的破口。只為 gift 加一條直接掃 `gifts` 的備援，會讓它
+    成為唯一有兩條觸發路徑的型別，而且那條查詢沒有 `VideoStats.updatedAt`
+    可用來限縮範圍，等於每輪都要掃整個 collection。
+- **封存沒有一致的讀取快照**。
+  - 顧慮：新增的 gift cursor 與既有 cursor 一樣走 `secondaryPreferred`，沒有
+    固定的 cutoff 時間、沒有統一的 read concern、寫旗標前也不核對來源筆數。
+    禮物仍在寫入、複製延遲、或各 collection 落在不同 secondary 時，k-way merge
+    可能漏列，產出的檔案不對應任何一個真實的時間點。
+  - 決定：不建立快照機制。
+  - 理由：現有 10 條 cursor 全部都是這個樣子，gift 只是第 11 條，並沒有讓情況
+    變差。要修就得重新設計整個封存的讀取一致性，並把所有型別從 secondary 搬回
+    primary（增加 primary 負載）—— 那是另一份 spec 的題目。
 
 ## 事實基準
 
