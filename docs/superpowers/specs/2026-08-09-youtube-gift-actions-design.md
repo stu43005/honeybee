@@ -55,6 +55,18 @@ Gift 是 YouTube 以 **Jewels 虛擬代幣**購買的打賞道具，行為近似
   不在 masterchat 初始回應的範圍，而它的 ticker 仍掛在 ticker bar 上），該次
   送禮仍會靠 ticker 被記錄並計入統計，但這只可能發生在單價 ≥ 100 Jewels 的
   禮物上 —— 低單價禮物沒有 ticker，同樣情境下就整筆漏掉。
+- **item 先到、ticker 後到且 item 無 `timestamp` 時，`timestamp` 會停在接收
+  時間**。
+  - 顧慮：`timestamp` 走 `$ifNull` 補缺，先寫的贏。若某份禮物的 item 在自己
+    那一批單獨到達、且 `id` 不符 `timestampUsecFromChatItemId` 的形狀（拿不到
+    真實時間），文件會存下該批的接收時間；日後 ticker 帶著真實的
+    `contents.timestamp` 到達時，已經無法覆蓋它。
+  - 決定：不修。
+  - 理由：要修必須額外存一個「這個 timestamp 是不是退回值」的來源旗標，才能讓
+    後到的真實時間有條件地覆蓋 —— 為此在 schema 與寫入路徑各加一個欄位的代價，
+    與偏差量不相稱。實際偏差是該批的接收延遲（秒級），不是量級錯誤；且觸發條件
+    要同時滿足「item 的 id 解不出時間」與「item 與 ticker 不在同一批」，兩者都
+    不常見。
 - **webhook 覆蓋率低**。track / DM 的 preset 都以 `authorChannelId` 過濾，而該
   欄位只有 ticker（單價 ≥ 100 Jewels）才有；加上 `followUpdate` 預設關閉、只有
   insert 事件會觸發，因此只有「ticker 與 item 落在同一批次而被合併」或「ticker
