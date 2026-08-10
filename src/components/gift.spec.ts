@@ -1,5 +1,10 @@
 /// <reference types="jest" />
 import { describe, expect, it, jest } from "@jest/globals";
+import type {
+  AddGiftItemAction,
+  AddGiftTickerAction,
+} from "@stu43005/masterchat";
+import { MessageAuthorType } from "../interfaces.js";
 
 // Read at module load by src/constants.ts, so it has to be set before anything
 // pulls the cache module in. Empty keeps getCacheInstance memory-only.
@@ -13,7 +18,8 @@ jest.unstable_mockModule("../models/GiftPrice.js", () => ({
 
 // Dynamic import so the mock above is registered first — the project's ESM
 // Jest setup has no hoisted jest.mock.
-const { deriveGiftAmount, parseGiftAssetName } = await import("./gift.js");
+const { deriveGiftAmount, mergeGiftActions, parseGiftAssetName } =
+  await import("./gift.js");
 
 const PREFIX = "https://www.gstatic.com/youtube/img/pdg/gift/assets";
 
@@ -97,5 +103,170 @@ describe("deriveGiftAmount", () => {
     expect(
       deriveGiftAmount({ jewelCount: 80, comboCount: 8 }, PRICES)
     ).toBeUndefined();
+  });
+});
+
+const CTX = {
+  originVideoId: "9hFxGFgx8Pc",
+  originChannelId: "UCchannel",
+  isReplay: undefined,
+  receivedAt: new Date("2026-08-09T00:00:00.000Z"),
+};
+
+function giftItem(overrides: Partial<AddGiftItemAction>): AddGiftItemAction {
+  return {
+    type: "addGiftItemAction",
+    id: "gift-1",
+    authorName: "sender",
+    message: "sent Heart for 10 Jewels",
+    jewelCount: 10,
+    ...overrides,
+  } as AddGiftItemAction;
+}
+
+function giftTicker(
+  overrides: Partial<AddGiftTickerAction> = {}
+): AddGiftTickerAction {
+  return {
+    type: "addGiftTickerAction",
+    id: "gift-1",
+    authorChannelId: "UCsender",
+    durationSec: 300,
+    fullDurationSec: 300,
+    contents: {
+      id: "gift-1",
+      timestamp: new Date("2026-08-09T00:00:05.000Z"),
+      timestampUsec: "1786492805000000",
+      authorChannelId: "UCsender",
+      authorName: "sender",
+      giftName: "Heart",
+      stickerUrl: `${PREFIX}/heart.png`,
+    },
+    startBackgroundColor: 0,
+    endBackgroundColor: 0,
+    ...overrides,
+  } as AddGiftTickerAction;
+}
+
+describe("mergeGiftActions", () => {
+  it("merges the item and the ticker of one gift into a single write", () => {
+    const merged = mergeGiftActions(
+      [giftItem({ giftImageUrl: `${PREFIX}/heart.png=w640-h640` })],
+      [giftTicker()],
+      CTX,
+      PRICES
+    );
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toEqual({
+      id: "gift-1",
+      complement: {
+        // The item states no timestamp here, so the ticker's stands in.
+        timestamp: new Date("2026-08-09T00:00:05.000Z"),
+        authorName: "sender",
+        authorPhoto: undefined,
+        authorChannelId: "UCsender",
+        authorType: MessageAuthorType.Other,
+        giftName: "Heart",
+        image: `${PREFIX}/heart.png=w640-h640`,
+        assetName: "heart",
+        currency: "JEWEL",
+        originVideoId: "9hFxGFgx8Pc",
+        originChannelId: "UCchannel",
+        isReplay: undefined,
+      },
+      amount: 10,
+      combo: {
+        message: "sent Heart for 10 Jewels",
+        jewelCount: 10,
+        comboCount: undefined,
+        hasGiftImageUrl: true,
+      },
+    });
+  });
+
+  it("emits a ticker-only write with no combo state but a looked-up amount", () => {
+    const merged = mergeGiftActions([], [giftTicker()], CTX, PRICES);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0].combo).toBeUndefined();
+    expect(merged[0].amount).toBe(10);
+    expect(merged[0].complement.authorChannelId).toBe("UCsender");
+    expect(merged[0].complement.assetName).toBe("heart");
+    expect(merged[0].complement.timestamp).toEqual(
+      new Date("2026-08-09T00:00:05.000Z")
+    );
+  });
+
+  it("prefers the item timestamp and falls back to the batch time", () => {
+    const withTimestamp = mergeGiftActions(
+      [giftItem({ timestamp: new Date("2026-08-09T00:00:01.000Z") })],
+      [giftTicker()],
+      CTX,
+      PRICES
+    );
+    expect(withTimestamp[0].complement.timestamp).toEqual(
+      new Date("2026-08-09T00:00:01.000Z")
+    );
+
+    const itemOnly = mergeGiftActions([giftItem({})], [], CTX, PRICES);
+    expect(itemOnly[0].complement.timestamp).toEqual(CTX.receivedAt);
+  });
+
+  it("keeps the newest combo state when one id is delivered twice", () => {
+    const merged = mergeGiftActions(
+      [
+        giftItem({ message: "sent Star", jewelCount: undefined }),
+        giftItem({
+          message: "comboed x4 Star for 8 Jewels",
+          jewelCount: 8,
+          comboCount: 4,
+        }),
+      ],
+      [],
+      CTX,
+      PRICES
+    );
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0].combo).toEqual({
+      message: "comboed x4 Star for 8 Jewels",
+      jewelCount: 8,
+      comboCount: 4,
+      hasGiftImageUrl: false,
+    });
+  });
+
+  it("keeps the delivery that states a figure when the combo count ties", () => {
+    const merged = mergeGiftActions(
+      [
+        giftItem({ message: "sent Heart", jewelCount: undefined }),
+        giftItem({ message: "sent Heart for 10 Jewels", jewelCount: 10 }),
+      ],
+      [],
+      CTX,
+      PRICES
+    );
+
+    expect(merged[0].combo?.jewelCount).toBe(10);
+  });
+
+  it("does not let a later delivery walk the combo state backwards", () => {
+    const merged = mergeGiftActions(
+      [
+        giftItem({
+          message: "comboed x8 Heart for 80 Jewels",
+          jewelCount: 80,
+          comboCount: 8,
+        }),
+        giftItem({ message: "sent Heart for 10 Jewels", jewelCount: 10 }),
+      ],
+      [],
+      CTX,
+      PRICES
+    );
+
+    expect(merged[0].combo?.comboCount).toBe(8);
+    expect(merged[0].combo?.jewelCount).toBe(80);
   });
 });
