@@ -35,6 +35,7 @@ describe("transformYoutubeDmBinding", () => {
       colls: [
         "superchats",
         "superstickers",
+        "gifts",
         "memberships",
         "milestones",
         "membershipgiftpurchases",

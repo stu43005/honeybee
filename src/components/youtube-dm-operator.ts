@@ -11,6 +11,7 @@ import type { AgendaModule } from "../modules/schedule.js";
 const DM_COLLS = [
   "superchats",
   "superstickers",
+  "gifts",
   "memberships",
   "milestones",
   "membershipgiftpurchases",
