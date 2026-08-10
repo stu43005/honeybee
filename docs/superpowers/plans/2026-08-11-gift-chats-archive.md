@@ -272,8 +272,11 @@ Expected: FAIL —— 兩個新測試都失敗，`buildJsonlRow` 對未知的 co
 字母順序）：
 
 ```ts
-import GiftModel, { type Gift } from "../../models/Gift.js";
+import type { Gift } from "../../models/Gift.js";
 ```
+
+本 Task 只用得到型別，因此是 type-only import —— 這個 repo 的 ESLint 會把未使用
+的值 import 視為錯誤。Task 4 接上 cursor 時才會改成含 default import 的形式。
 
 並把 `ChatRowDoc` 聯集中的 `SuperSticker` 之後加入 `Gift`：
 
@@ -291,10 +294,6 @@ export type ChatRowDoc = DocumentType<
   | Raid
 >;
 ```
-
-`GiftModel` 這個 import 在本 Task 還沒有用到，Task 4 接上 cursor 時才會用；若
-lint 因未使用而報錯，先只 import 型別（`import { type Gift } from ...`），Task 4
-再改成含 default import 的形式。
 
 - [ ] **Step 4: 新增 `case "gifts"`**
 
@@ -445,15 +444,21 @@ git commit -m "fix(chats-archive): keep every author row's required fields prese
 
 - Modify: `src/components/chats-archive/archive-video.ts`
 
-- [ ] **Step 1: 確保 `GiftModel` 是 default import**
+- [ ] **Step 1: 把 import 改成含 default import 的形式**
 
-確認 `src/components/chats-archive/archive-video.ts` 的 import 是：
+把 `src/components/chats-archive/archive-video.ts` 的
+
+```ts
+import type { Gift } from "../../models/Gift.js";
+```
+
+改成
 
 ```ts
 import GiftModel, { type Gift } from "../../models/Gift.js";
 ```
 
-（Task 2 若為了避開未使用變數而只 import 了型別，這一步改回上面的形式。）
+`GiftModel` 到這一步才第一次被當成值使用（下一步的 cursor）。
 
 - [ ] **Step 2: 新增 cursor**
 
@@ -583,7 +588,7 @@ git commit -m "feat(chats-archive): archive streams whose only messages are gift
 在修訂歷史表格末端追加：
 
 ```markdown
-| 2 | r1 | 2026-08-11 | — | Add the `gift` row type (YouTube Gifts, bought with Jewels). |
+| 2 | r1 | 2026-08-10 | — | Add the `gift` row type (YouTube Gifts, bought with Jewels). |
 ```
 
 `PR` 欄用 `—`，與既有兩列一致。
