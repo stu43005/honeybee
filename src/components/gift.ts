@@ -5,6 +5,8 @@ import type {
 import type { mongo } from "mongoose";
 import { MessageAuthorType } from "../interfaces.js";
 import type { Gift } from "../models/Gift.js";
+import GiftPriceModel from "../models/GiftPrice.js";
+import { getCacheInstance } from "../modules/cache.js";
 
 /**
  * Gift images are served as
@@ -299,4 +301,50 @@ export function buildGiftUpsertOps(
       upsert: true,
     },
   }));
+}
+
+const GIFT_PRICE_CACHE_KEY = "giftPriceTable";
+// Bounds how long a worker keeps serving prices the manager has already
+// rebuilt. The rebuild runs every 10 minutes, so 5 minutes means a newly
+// learned price reaches every worker within one rebuild cycle.
+const GIFT_PRICE_CACHE_TTL_MS = 5 * 60 * 1000;
+// Verified in cache-manager 6.1.1: crossing this threshold kicks off the reload
+// as a detached promise and returns the cached value straight away, so pricing
+// a gift never waits on the round-trip.
+const GIFT_PRICE_CACHE_REFRESH_MS = 60 * 1000;
+
+// Built on first use rather than at module load, so merely importing this file
+// does not open a Redis connection in processes that never price a gift.
+let giftPriceCache: ReturnType<typeof getCacheInstance> | undefined;
+
+function getGiftPriceCache(): ReturnType<typeof getCacheInstance> {
+  return (giftPriceCache ??= getCacheInstance({
+    ttl: GIFT_PRICE_CACHE_TTL_MS,
+    refreshThreshold: GIFT_PRICE_CACHE_REFRESH_MS,
+    // CacheableMemory's sweep interval is never unref'd and would keep the
+    // process alive; expired entries are still evicted lazily on read.
+    checkInterval: 0,
+  }));
+}
+
+/**
+ * The whole `assetName -> price` table. Assets number in the hundreds, so one
+ * round-trip for everything beats a lookup per gift.
+ *
+ * Cached as pairs rather than as a `Map`, because the Redis layer serialises
+ * through JSON and a `Map` would come back as `{}`.
+ */
+export async function getGiftPriceTable(): Promise<Map<string, number>> {
+  const entries = await getGiftPriceCache().wrap(
+    GIFT_PRICE_CACHE_KEY,
+    async () => {
+      const docs = await GiftPriceModel.find(
+        {},
+        { assetName: 1, price: 1 },
+        { readPreference: "secondaryPreferred" }
+      );
+      return docs.map((doc): [string, number] => [doc.assetName, doc.price]);
+    }
+  );
+  return new Map(entries);
 }

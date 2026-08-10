@@ -1,5 +1,5 @@
 /// <reference types="jest" />
-import { describe, expect, it, jest } from "@jest/globals";
+import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import type {
   AddGiftItemAction,
   AddGiftTickerAction,
@@ -21,6 +21,7 @@ jest.unstable_mockModule("../models/GiftPrice.js", () => ({
 const {
   buildGiftUpsertOps,
   deriveGiftAmount,
+  getGiftPriceTable,
   mergeGiftActions,
   parseGiftAssetName,
 } = await import("./gift.js");
@@ -679,5 +680,32 @@ describe("applying gift upserts in sequence", () => {
 
     const stillPriced = applyOp(priced, opFor([], [giftTicker()], noPrices));
     expect(stillPriced.amount).toBe(10);
+  });
+});
+
+describe("getGiftPriceTable", () => {
+  beforeEach(() => {
+    find.mockReset();
+  });
+
+  it("rebuilds the map from stored rows and serves repeats from cache", async () => {
+    find.mockResolvedValue([
+      { assetName: "heart", price: 10 },
+      { assetName: "star", price: 2 },
+    ]);
+
+    const first = await getGiftPriceTable();
+    const second = await getGiftPriceTable();
+
+    expect(first).toEqual(
+      new Map([
+        ["heart", 10],
+        ["star", 2],
+      ])
+    );
+    // Cached as pairs and rebuilt into a Map on the way out, because the Redis
+    // layer serialises through JSON and a Map would come back as {}.
+    expect(second).toEqual(first);
+    expect(find).toHaveBeenCalledTimes(1);
   });
 });
