@@ -2,7 +2,9 @@ import type {
   AddGiftItemAction,
   AddGiftTickerAction,
 } from "@stu43005/masterchat";
+import type { mongo } from "mongoose";
 import { MessageAuthorType } from "../interfaces.js";
+import type { Gift } from "../models/Gift.js";
 
 /**
  * Gift images are served as
@@ -193,4 +195,108 @@ export function mergeGiftActions(
   return Array.from(byId.values(), ({ item, ticker }) =>
     buildGiftUpsert(item, ticker, ctx, priceTable)
   );
+}
+
+// Driven by an `as const` tuple of `keyof Gift` so a renamed field breaks the
+// build instead of silently writing nothing at runtime.
+const GIFT_COMPLEMENT_FIELDS = [
+  "timestamp",
+  "authorName",
+  "authorPhoto",
+  "authorChannelId",
+  "authorType",
+  "giftName",
+  "image",
+  "assetName",
+  "currency",
+  "originVideoId",
+  "originChannelId",
+  "isReplay",
+] as const satisfies readonly (keyof Gift)[];
+
+const GIFT_COMBO_FIELDS = [
+  "message",
+  "jewelCount",
+  "comboCount",
+  "hasGiftImageUrl",
+] as const satisfies readonly (keyof Gift)[];
+
+function buildGiftUpdateStage(upsert: GiftUpsert): Record<string, unknown> {
+  const stage: Record<string, unknown> = {};
+
+  // Whoever writes first wins; a later write only fills the gaps it can. Every
+  // value goes through `$literal` because a raw string starting with `$` would
+  // otherwise be read as a field path.
+  for (const field of GIFT_COMPLEMENT_FIELDS) {
+    const value = upsert.complement[field];
+    if (value === undefined) continue;
+    stage[field] = { $ifNull: [`$${field}`, { $literal: value }] };
+  }
+
+  // Recomputed on every write. Omitting the field when the price is unknown
+  // preserves whatever an earlier write managed to work out.
+  if (upsert.amount !== undefined) {
+    stage.amount = upsert.amount;
+  }
+
+  if (upsert.combo) {
+    const incomingCombo = upsert.combo.comboCount ?? 1;
+    const storedCombo = { $ifNull: ["$comboCount", 1] };
+    const isNewer = {
+      $or: [
+        // Nothing stored yet — this flag is written by every item delivery and
+        // by nothing else, so its absence means the document has only ever
+        // seen a ticker. Without this clause a first delivery carrying neither
+        // a combo count nor a jewel figure would tie against the empty
+        // document and store no combo state at all, losing the raw message.
+        { $eq: [{ $ifNull: ["$hasGiftImageUrl", null] }, null] },
+        { $gt: [incomingCombo, storedCombo] },
+        // Same wave size: prefer the delivery that states a jewel figure.
+        ...(upsert.combo.jewelCount != null
+          ? [
+              {
+                $and: [
+                  { $eq: [incomingCombo, storedCombo] },
+                  { $eq: [{ $ifNull: ["$jewelCount", null] }, null] },
+                ],
+              },
+            ]
+          : []),
+      ],
+    };
+
+    // These four are the price rebuild's input and only make sense together, so
+    // they swap as one unit rather than each gap-filling on its own.
+    for (const field of GIFT_COMBO_FIELDS) {
+      const value = upsert.combo[field];
+      stage[field] = {
+        $cond: [
+          isNewer,
+          value === undefined ? "$$REMOVE" : { $literal: value },
+          `$${field}`,
+        ],
+      };
+    }
+  }
+
+  return stage;
+}
+
+/**
+ * One `updateOne` per gift, as an aggregation pipeline so gap-filling and the
+ * all-or-nothing combo swap happen in a single atomic update — replicas write
+ * the same ids concurrently.
+ */
+export function buildGiftUpsertOps(
+  upserts: GiftUpsert[]
+): mongo.AnyBulkWriteOperation[] {
+  return upserts.map((upsert) => ({
+    updateOne: {
+      // MongoDB seeds the inserted document from this equality condition, which
+      // is where the new document's `id` comes from.
+      filter: { id: upsert.id },
+      update: [{ $set: buildGiftUpdateStage(upsert) }],
+      upsert: true,
+    },
+  }));
 }
