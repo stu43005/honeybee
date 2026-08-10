@@ -76,19 +76,31 @@ export const templatePreset: Readonly<
                   },
                 ],
               }
-            : parameters.collection === "milestones"
+            : parameters.collection === "gifts"
               ? {
                   fields: [
                     {
-                      name: "Milestone",
-                      value: `${
-                        parameters.level ? `${parameters.level}, ` : ""
-                      }since ${parameters.since}`,
+                      name: "Gift",
+                      value: parameters.amount
+                        ? `${parameters.giftName ?? "Gift"}, ${parameters.amount} Jewels`
+                        : (parameters.giftName ?? "Gift"),
                       inline: true,
                     },
                   ],
                 }
-              : {}),
+              : parameters.collection === "milestones"
+                ? {
+                    fields: [
+                      {
+                        name: "Milestone",
+                        value: `${
+                          parameters.level ? `${parameters.level}, ` : ""
+                        }since ${parameters.since}`,
+                        inline: true,
+                      },
+                    ],
+                  }
+                : {}),
           footer: {
             text: parameters.video.title,
             icon_url: parameters.channel.avatarUrl,
@@ -549,6 +561,11 @@ function getMessage(parameters: Record<string, any>) {
     return parameters.channelName
       ? `送出了 ${parameters.amount} 個「${parameters.channelName}」的會籍`
       : `送出了 ${parameters.amount} 個會籍`;
+  }
+  if (parameters.collection === "gifts") {
+    // Only reached for ticker-only documents; anything with a chat item has
+    // already returned its raw text above.
+    return parameters.giftName ? `送出了 ${parameters.giftName}` : "送出了禮物";
   }
   if (parameters.collection === "superstickers") {
     return `[Sticker]:${parameters.text}:`;
