@@ -192,6 +192,7 @@ export const trackFeatures: Readonly<Record<string, TrackFeaturesConfig>> =
             ...(withoutNormalChats ? [] : ["chats"]),
             "superchats",
             "superstickers",
+            "gifts",
             "memberships",
             "milestones",
             "membershipgiftpurchases",
