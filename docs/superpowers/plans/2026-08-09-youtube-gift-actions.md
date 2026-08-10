@@ -1896,7 +1896,12 @@ const aggregate =
 
 // A stateful stand-in for the collection: writes have to be observable by the
 // next read, otherwise the idempotency test proves nothing.
-const bulkWrite = jest.fn(async (ops: any[]) => {
+//
+// Not `async`, even though the real methods are: an async body with no `await`
+// trips `@typescript-eslint/require-await` (on via `recommendedTypeChecked`).
+// The callers await the return either way, and awaiting a plain value resolves
+// immediately.
+const bulkWrite = jest.fn((ops: any[]) => {
   for (const op of ops) {
     const key = op.updateOne.filter.assetName;
     const current = store.get(key);
@@ -1909,7 +1914,7 @@ const bulkWrite = jest.fn(async (ops: any[]) => {
   }
 });
 
-const find = jest.fn(async () => Array.from(store.values()));
+const find = jest.fn(() => Array.from(store.values()));
 
 jest.unstable_mockModule("../models/Gift.js", () => ({
   default: { aggregate },
