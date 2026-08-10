@@ -119,7 +119,7 @@ function buildGiftUpsert(
   const image = item?.giftImageUrl ?? contents?.stickerUrl;
   const assetName = parseGiftAssetName(image);
   return {
-    id: (item?.id ?? ticker?.id)!,
+    id: (item?.id ?? contents?.id)!,
     complement: {
       // Both sides recover the same instant from the shared id, but a ticker
       // only exists above 100 Jewels, so the item is the primary source.
@@ -178,9 +178,11 @@ export function mergeGiftActions(
   >();
 
   for (const ticker of tickers) {
-    const entry = byId.get(ticker.id) ?? {};
+    // A ticker's own `id` belongs to the ticker chip renderer; the id it shares
+    // with the chat item is the one on `contents`.
+    const entry = byId.get(ticker.contents.id) ?? {};
     entry.ticker = ticker;
-    byId.set(ticker.id, entry);
+    byId.set(ticker.contents.id, entry);
   }
   for (const item of items) {
     const entry = byId.get(item.id) ?? {};

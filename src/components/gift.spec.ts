@@ -129,7 +129,9 @@ function giftTicker(
 ): AddGiftTickerAction {
   return {
     type: "addGiftTickerAction",
-    id: "gift-1",
+    // The ticker chip's own renderer id, deliberately different from the id
+    // the gift is keyed by — that one lives on `contents`.
+    id: "ticker-chip-1",
     authorChannelId: "UCsender",
     durationSec: 300,
     fullDurationSec: 300,
@@ -189,6 +191,8 @@ describe("mergeGiftActions", () => {
     const merged = mergeGiftActions([], [giftTicker()], CTX, PRICES);
 
     expect(merged).toHaveLength(1);
+    // Keyed by the gift's id, not by the ticker chip's own renderer id.
+    expect(merged[0].id).toBe("gift-1");
     expect(merged[0].combo).toBeUndefined();
     expect(merged[0].amount).toBe(10);
     expect(merged[0].complement.authorChannelId).toBe("UCsender");
