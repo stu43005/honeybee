@@ -7,6 +7,7 @@ import { MessageType, VideoStatsType } from "../interfaces.js";
 import VideoModel from "../models/Video.js";
 import BanActionModel from "../models/BanAction.js";
 import ChatModel from "../models/Chat.js";
+import GiftModel from "../models/Gift.js";
 import MembershipModel from "../models/Membership.js";
 import MembershipGiftModel from "../models/MembershipGift.js";
 import MembershipGiftPurchaseModel from "../models/MembershipGiftPurchase.js";
@@ -65,6 +66,13 @@ const messageTypes: MessageTypeModel[] = [
     calcUsersTotal: true,
     calcAmount: true,
     calcJpyAmount: true,
+  },
+  {
+    messageType: MessageType.Gift,
+    model: GiftModel,
+    // Jewels are not a fiat currency, so no jpy conversion; and authorChannelId
+    // is missing on all but the highest-priced gifts, so no user counts.
+    calcAmount: true,
   },
 ];
 const actionTypes: MessageTypeModel[] = [
