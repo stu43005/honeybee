@@ -19,9 +19,16 @@ export type GiftPriceDecision =
  * The first observation of a brand-new asset takes effect immediately — having
  * a price beats having none — but it is only an unbacked seed that any single
  * disagreeing observation can overturn. Once one rebuild has seen two
- * observations agree, replacing the price costs the same weight of evidence.
- * Without that tiering, one anomalous parse would pin a wrong price on an asset
- * forever, and `giftprices` is never cleaned.
+ * observations agree, overturning the price takes two agreeing observations of
+ * its own.
+ *
+ * The bar is that fixed count, not the stored `sampleCount` — `sampleCount`
+ * only separates the unbacked tier from the backed one. Requiring a challenger
+ * to out-count whatever the stored value accumulated would make a well
+ * observed price nearly impossible to replace: gifts are pruned two hours
+ * after a stream ends, so a window only ever holds recent observations and
+ * their count tracks traffic. A repriced asset would then keep serving the old
+ * price indefinitely, and nothing else ever corrects this table.
  *
  * A hand-entered price sits in the unbacked tier (its `sampleCount` is 0) and
  * gets no exemption: a price that can never be corrected automatically would
