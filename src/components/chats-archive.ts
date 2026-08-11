@@ -57,6 +57,7 @@ async function archiveAllChats(job?: Job) {
             $in: [
               MessageType.SuperChat,
               MessageType.SuperSticker,
+              MessageType.Gift,
               MessageType.Membership,
               MessageType.MembershipGift,
               MessageType.MembershipGiftPurchase,
