@@ -314,7 +314,10 @@ type VideoAggregates = {
 
 type JsonlRow = { type: string; [key: string]: unknown };
 
-function buildJsonlRow(doc: ChatRowDoc, videoId: string): JsonlRow | null {
+export function buildJsonlRow(
+  doc: ChatRowDoc,
+  videoId: string
+): JsonlRow | null {
   switch (doc.collection.name) {
     case "chats": {
       const d = doc as DocumentType<Chat>;
