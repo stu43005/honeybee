@@ -82,12 +82,16 @@ async function archiveAllChats(job?: Job) {
     VideoStatsFlags.ChatsArchiveProcessed
   );
 
-  for (const { videoId, statsId } of stats) {
+  for (const { videoId, statsId, lastId } of stats) {
     try {
       await archiveVideo(videoId);
+      // Guarded on lastId: if messages arrived while this video was being
+      // archived, the stat has moved on and the flag is left unset, so the
+      // next run picks the video up and archives it again.
       await VideoStatsModel.setFlag(
         statsId,
-        VideoStatsFlags.ChatsArchiveProcessed
+        VideoStatsFlags.ChatsArchiveProcessed,
+        lastId
       );
     } catch (error) {
       console.error(`Failed to archive chats for video ${videoId}:`, error);
