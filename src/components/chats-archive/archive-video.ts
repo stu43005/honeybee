@@ -8,7 +8,7 @@ import assert from "node:assert";
 import { CHAT_ARCHIVE_DIR } from "../../constants.js";
 import { MessageType, VideoStatsType } from "../../interfaces.js";
 import ChatModel, { type Chat } from "../../models/Chat.js";
-import type { Gift } from "../../models/Gift.js";
+import GiftModel, { type Gift } from "../../models/Gift.js";
 import MembershipModel, { type Membership } from "../../models/Membership.js";
 import MembershipGiftModel, {
   type MembershipGift,
@@ -203,6 +203,10 @@ export async function archiveVideo(
     .sort({ timestamp: 1 })
     .setOptions({ readPreference: "secondaryPreferred" })
     .cursor();
+  const giftCursor = GiftModel.find({ originVideoId: videoId })
+    .sort({ timestamp: 1 })
+    .setOptions({ readPreference: "secondaryPreferred" })
+    .cursor();
   const membershipCursor = MembershipModel.find({ originVideoId: videoId })
     .sort({ timestamp: 1 })
     .setOptions({ readPreference: "secondaryPreferred" })
@@ -253,6 +257,7 @@ export async function archiveVideo(
     moderatorChatCursor,
     superChatCursor,
     superStickerCursor,
+    giftCursor,
     membershipCursor,
     membershipGiftCursor,
     membershipGiftPurchaseCursor,
