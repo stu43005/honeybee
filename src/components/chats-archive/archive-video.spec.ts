@@ -69,4 +69,77 @@ describe("buildJsonlRow", () => {
       buildJsonlRow(doc("banactions", { id: "b-1" }), VIDEO_ID)
     ).toBeNull();
   });
+
+  it("turns a gift document into a gift row", () => {
+    const row = buildJsonlRow(
+      doc("gifts", {
+        id: "gift-1",
+        timestamp: new Date("2026-08-09T00:00:05.000Z"),
+        authorName: "sender",
+        authorPhoto: "https://example.test/sender.jpg",
+        authorChannelId: "UCsender",
+        authorType: "other",
+        giftName: "Heart",
+        assetName: "heart",
+        image:
+          "https://www.gstatic.com/youtube/img/pdg/gift/assets/heart.png=w640-h640",
+        amount: 10,
+        currency: "JEWEL",
+        // Present on the document, deliberately not carried into the row.
+        message: "comboed x8 Heart for 80 Jewels",
+        jewelCount: 80,
+        comboCount: 8,
+        hasGiftImageUrl: true,
+        originVideoId: VIDEO_ID,
+        originChannelId: "UCchannel",
+        isVerified: false,
+        isOwner: false,
+        isModerator: false,
+      }),
+      VIDEO_ID
+    );
+
+    // toEqual rather than toMatchObject: the point is that the price-derivation
+    // scaffolding and the raw wave-summary text do not leak into the archive.
+    expect(row).toEqual({
+      type: "gift",
+      id: "gift-1",
+      timestamp: new Date("2026-08-09T00:00:05.000Z"),
+      authorName: "sender",
+      authorPhoto: "https://example.test/sender.jpg",
+      authorChannelId: "UCsender",
+      authorType: "other",
+      isVerified: false,
+      isOwner: false,
+      isModerator: false,
+      giftName: "Heart",
+      assetName: "heart",
+      image:
+        "https://www.gstatic.com/youtube/img/pdg/gift/assets/heart.png=w640-h640",
+      amount: 10,
+      currency: "JEWEL",
+    });
+  });
+
+  it("leaves out the gift fields the document does not carry", () => {
+    const row = buildJsonlRow(
+      doc("gifts", {
+        id: "gift-2",
+        timestamp: new Date("2026-08-09T00:00:06.000Z"),
+        authorType: "other",
+        currency: "JEWEL",
+        originVideoId: VIDEO_ID,
+        originChannelId: "UCchannel",
+      }),
+      VIDEO_ID
+    );
+
+    // Asserting the key is absent, not that its value is undefined: only an
+    // absent key is dropped by JSON.stringify, and the two are indistinguishable
+    // to toEqual.
+    for (const field of ["giftName", "assetName", "image", "amount"]) {
+      expect(row).not.toHaveProperty(field);
+    }
+    expect(row).toHaveProperty("currency", "JEWEL");
+  });
 });

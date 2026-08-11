@@ -8,6 +8,7 @@ import assert from "node:assert";
 import { CHAT_ARCHIVE_DIR } from "../../constants.js";
 import { MessageType, VideoStatsType } from "../../interfaces.js";
 import ChatModel, { type Chat } from "../../models/Chat.js";
+import type { Gift } from "../../models/Gift.js";
 import MembershipModel, { type Membership } from "../../models/Membership.js";
 import MembershipGiftModel, {
   type MembershipGift,
@@ -31,6 +32,7 @@ export type ChatRowDoc = DocumentType<
   | Chat
   | SuperChat
   | SuperSticker
+  | Gift
   | Membership
   | MembershipGift
   | MembershipGiftPurchase
@@ -346,6 +348,16 @@ export function buildJsonlRow(
         jpyAmount: d.jpyAmount,
         ...setIfDefine("significance", d.significance),
         ...setIfDefine("color", d.color),
+      });
+    }
+    case "gifts": {
+      const d = doc as DocumentType<Gift>;
+      return makeAuthorRow("gift", d, {
+        ...setIfDefine("giftName", d.giftName),
+        ...setIfDefine("assetName", d.assetName),
+        ...setIfDefine("image", d.image),
+        ...setIfDefine("amount", d.amount),
+        currency: d.currency,
       });
     }
     case "memberships": {
