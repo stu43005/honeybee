@@ -8,7 +8,7 @@ this file (which has no JSON version field of its own) by reading the
 companion's `archiveVersion` field.
 **Writer:** `src/components/chats-archive/archive-video.ts`
 **Version field in JSON:** none — version comes from companion file.
-**Current writer emits:** version 2, revision r0
+**Current writer emits:** version 2, revision r1
 
 ## Revision history
 
@@ -16,6 +16,7 @@ companion's `archiveVersion` field.
 | ------- | -------- | ---------- | --- | --------------------------------------------------------------------- |
 | 1       | r0       | (legacy)   | —   | Pre-v2 jsonl output. Files may still exist on S3 from earlier runs.   |
 | 2       | r0       | 2026-05-30 | —   | Initial documentation of the existing v2 jsonl row union (bootstrap). |
+| 2       | r1       | 2026-08-10 | —   | Add the `gift` row type (YouTube Gifts, bought with Jewels).          |
 
 ## version 1 (legacy)
 
@@ -142,9 +143,49 @@ interface RaidOutgoingRow {
 }
 ```
 
-### Cumulative JSON example (r0)
+### Additive row type (r1)
 
-A representative sequence of three rows (one per line in the actual file):
+Since r1, `JsonlRow` has one further member. Readers written against r0 skip it
+under the existing "unknown `type` values" rule.
+
+```ts
+type JsonlRow =
+  | ChatRow
+  | SuperChatRow
+  | SuperStickerRow
+  | GiftRow // since r1
+  | MembershipRow
+  | MembershipGiftRow
+  | MembershipGiftPurchaseRow
+  | MilestoneRow
+  | PollRow
+  | RaidRow
+  | RaidOutgoingRow;
+
+interface GiftRow extends AuthorRowBase {
+  type: "gift";
+  giftName?: string; // display name; absent outside the English locale
+  assetName?: string; // gift image file name, e.g. "finger_heart"
+  image?: string; // gift image URL
+  amount?: number; // Jewels for this one gift; absent when the price is unknown
+  currency: string; // always "JEWEL"
+}
+```
+
+One gift is one row. YouTube rewrites one message of a connected wave into a
+`comboed xN … for J Jewels` summary, but that message still stands for a single
+gift, so `amount` is a unit price and is never the wave total. The raw text is
+not archived, because a row carries nothing that would let a reader tell a
+rewritten message apart from a plain one.
+
+`authorChannelId` is an empty string on a gift row unless the gift cost 100
+Jewels or more — only those produce the ticker that carries the sender's channel
+id. A gift also carries no badge information, so `authorType` is always
+`"other"` and `isVerified` / `isOwner` / `isModerator` are always `false`.
+
+### Cumulative JSON example (r1)
+
+A representative sequence of four rows (one per line in the actual file):
 
 ```json
 {
@@ -191,13 +232,41 @@ A representative sequence of three rows (one per line in the actual file):
 }
 ```
 
+```json
+{
+  "type": "gift",
+  "id": "GiftJkl012",
+  "timestamp": "2026-05-29T12:12:00.000Z",
+  "authorName": "Gifter",
+  "authorChannelId": "",
+  "authorType": "other",
+  "isVerified": false,
+  "isOwner": false,
+  "isModerator": false,
+  "giftName": "Heart",
+  "assetName": "heart",
+  "image": "https://www.gstatic.com/youtube/img/pdg/gift/assets/heart.png=w640-h640",
+  "amount": 10,
+  "currency": "JEWEL"
+}
+```
+
 ### Reader guidance
 
 - **Discriminator:** read `type` first; the per-type schema applies.
 - **Always present on every author row:** `type`, `id`, `timestamp`,
-  `authorChannelId`, `authorType`, `isVerified`, `isOwner`, `isModerator`.
+  `authorChannelId`, `authorType`, `isVerified`, `isOwner`, `isModerator`. On
+  `gift` rows (since r1) `authorChannelId` is an empty string unless the gift
+  cost 100 Jewels or more, and `authorType` / `isVerified` / `isOwner` /
+  `isModerator` are always `"other"` / `false` / `false` / `false` — a gift
+  carries no badge information.
 - **May be absent on author rows:** `authorName`, `authorPhoto`,
   `membership`, plus the per-type optional extras shown above.
+- **May be absent depending on revision:** `giftName`, `assetName`, `image`,
+  `amount` on `gift` rows — `since r1`.
+- **`amount` on `gift` rows:** the Jewels a single gift cost. Absent when that
+  gift's price was not yet known at archive time — a price is only derivable
+  from a combo summary, and the archive is written once and never revised.
 - **Always present on poll rows:** `type`, `id`, `timestamp`, `choices`.
 - **Always present on raid/raidOutgoing rows:** `type`, `timestamp`, plus
   `sourceName` (raid) or `originVideoId` (raidOutgoing); `id` may be
