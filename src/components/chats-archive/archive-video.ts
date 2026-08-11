@@ -446,12 +446,18 @@ function makeAuthorRow(
     timestamp: r.timestamp as Date,
     ...setIfDefine("authorName", r.authorName),
     ...setIfDefine("authorPhoto", r.authorPhoto),
-    authorChannelId: r.authorChannelId,
+    // A gift action carries no badge information at all, and only its ticker
+    // (>= 100 Jewels) carries a channel id, so these four can arrive
+    // undefined. JSON.stringify drops undefined-valued keys, so without a
+    // fallback the row would be missing fields every author row is supposed to
+    // have. Every other collection always populates them, so this is inert
+    // there.
+    authorChannelId: r.authorChannelId ?? "",
     authorType: r.authorType,
     ...setIfDefine("membership", r.membership),
-    isVerified: r.isVerified,
-    isOwner: r.isOwner,
-    isModerator: r.isModerator,
+    isVerified: r.isVerified ?? false,
+    isOwner: r.isOwner ?? false,
+    isModerator: r.isModerator ?? false,
     ...extra,
   };
 }

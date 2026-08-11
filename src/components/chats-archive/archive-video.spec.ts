@@ -142,4 +142,32 @@ describe("buildJsonlRow", () => {
     }
     expect(row).toHaveProperty("currency", "JEWEL");
   });
+
+  it("fills the author fields a gift document never carries", () => {
+    const row = buildJsonlRow(
+      doc("gifts", {
+        id: "gift-3",
+        timestamp: new Date("2026-08-09T00:00:07.000Z"),
+        authorType: "other",
+        currency: "JEWEL",
+        originVideoId: VIDEO_ID,
+        originChannelId: "UCchannel",
+      }),
+      VIDEO_ID
+    );
+
+    // A gift action carries no badge information and only the ticker (>= 100
+    // Jewels) carries a channel id, so these four arrive undefined — and
+    // JSON.stringify drops undefined-valued keys, which would produce a row
+    // missing fields every author row is supposed to have.
+    expect(row).toEqual(
+      expect.objectContaining({
+        authorChannelId: "",
+        authorType: "other",
+        isVerified: false,
+        isOwner: false,
+        isModerator: false,
+      })
+    );
+  });
 });
