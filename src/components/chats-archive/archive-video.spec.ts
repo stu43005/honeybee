@@ -1,6 +1,11 @@
 /// <reference types="jest" />
 import { describe, expect, it } from "@jest/globals";
-import { buildJsonlRow, type ChatRowDoc } from "./archive-video.js";
+import {
+  buildJsonlRow,
+  bumpAggregate,
+  type ChatRowDoc,
+  type VideoAggregates,
+} from "./archive-video.js";
 
 const VIDEO_ID = "9hFxGFgx8Pc";
 
@@ -169,5 +174,52 @@ describe("buildJsonlRow", () => {
         isModerator: false,
       })
     );
+  });
+});
+
+describe("bumpAggregate", () => {
+  function zeroed(): VideoAggregates {
+    return {
+      chatCount: 0,
+      superChatCount: 0,
+      superStickerCount: 0,
+      membershipCount: 0,
+      giftCount: 0,
+      giftPurchaseCount: 0,
+      totalGiftAmount: 0,
+      jewelGiftCount: 0,
+      milestoneCount: 0,
+      pollCount: 0,
+      raidCount: 0,
+    };
+  }
+
+  it("counts a jewels gift without touching the membership gift counters", () => {
+    const agg = zeroed();
+
+    bumpAggregate(agg, doc("gifts", { id: "g-1", amount: 40 }));
+    bumpAggregate(agg, doc("gifts", { id: "g-2" }));
+
+    expect(agg).toEqual({
+      ...zeroed(),
+      jewelGiftCount: 2,
+    });
+  });
+
+  it("keeps counting membership gifts under giftCount", () => {
+    const agg = zeroed();
+
+    bumpAggregate(agg, doc("membershipgifts", { id: "mg-1" }));
+    bumpAggregate(
+      agg,
+      doc("membershipgiftpurchases", { id: "mgp-1", amount: 5 })
+    );
+
+    expect(agg).toEqual({
+      ...zeroed(),
+      giftCount: 1,
+      giftPurchaseCount: 1,
+      totalGiftAmount: 5,
+    });
   });
 });

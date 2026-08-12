@@ -247,6 +247,7 @@ export async function archiveVideo(
     giftCount: 0,
     giftPurchaseCount: 0,
     totalGiftAmount: 0,
+    jewelGiftCount: 0,
     milestoneCount: 0,
     pollCount: 0,
     raidCount: 0,
@@ -306,14 +307,21 @@ export async function archiveVideo(
   }
 }
 
-type VideoAggregates = {
+export type VideoAggregates = {
   chatCount: number;
   superChatCount: number;
   superStickerCount: number;
   membershipCount: number;
+  /** Membership gifts, not Jewels gifts — see `jewelGiftCount` for those. */
   giftCount: number;
   giftPurchaseCount: number;
   totalGiftAmount: number;
+  /**
+   * Jewels gifts. Counted rather than summed: a gift's `amount` is absent
+   * until the price table learns its asset, and the archive is never
+   * rewritten afterwards, so a total would freeze an undercount.
+   */
+  jewelGiftCount: number;
   milestoneCount: number;
   pollCount: number;
   raidCount: number;
@@ -467,7 +475,7 @@ function makeAuthorRow(
   };
 }
 
-function bumpAggregate(agg: VideoAggregates, doc: ChatRowDoc): void {
+export function bumpAggregate(agg: VideoAggregates, doc: ChatRowDoc): void {
   switch (doc.collection.name) {
     case "chats":
       agg.chatCount++;
@@ -490,6 +498,9 @@ function bumpAggregate(agg: VideoAggregates, doc: ChatRowDoc): void {
       agg.totalGiftAmount += d.amount;
       break;
     }
+    case "gifts":
+      agg.jewelGiftCount++;
+      break;
     case "milestones":
       agg.milestoneCount++;
       break;
