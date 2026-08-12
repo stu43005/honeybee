@@ -8,7 +8,7 @@ of the file with no JSON version field by reading the companion's version
 field.
 **Writer:** `src/components/chats-archive/archive-video.ts`
 **Version field in JSON:** `archiveVersion`
-**Current writer emits:** version 2, revision r0
+**Current writer emits:** version 2, revision r1
 
 ## Revision history
 
@@ -16,6 +16,7 @@ field.
 | ------- | -------- | ---------- | --- | --------------------------------------------------------------------- |
 | 1       | r0       | (legacy)   | —   | Pre-v2 archive output. Files may still exist on S3 from earlier runs. |
 | 2       | r0       | 2026-05-30 | —   | Initial documentation of the existing v2 writer output (bootstrap).   |
+| 2       | r1       | 2026-08-12 | —   | Add `aggregates.jewelGiftCount` (YouTube Gifts, bought with Jewels).  |
 
 ## version 1 (legacy)
 
@@ -58,7 +59,7 @@ interface VideoAggregates {
   superChatCount: number;
   superStickerCount: number;
   membershipCount: number;
-  giftCount: number;
+  giftCount: number; // membership gifts, not Jewels gifts
   giftPurchaseCount: number;
   totalGiftAmount: number;
   milestoneCount: number;
@@ -75,7 +76,26 @@ interface CurrencyAgg {
 }
 ```
 
-### Cumulative JSON example (r0)
+### Additive field (r1)
+
+Since r1, `VideoAggregates` carries one further count. Readers written against
+r0 ignore it under the existing unknown-extra-fields rule.
+
+```ts
+interface VideoAggregates {
+  // ...every r0 field, unchanged
+  jewelGiftCount: number; // since r1
+}
+```
+
+`jewelGiftCount` is the number of `gift` rows in the companion `.jsonl` — the
+YouTube Gifts bought with Jewels, distinct from the membership gifts counted by
+`giftCount` / `giftPurchaseCount`. It is a count and not a Jewels total on
+purpose: a gift row's `amount` is absent until the price table learns that
+asset, and the archive is written once and never rewritten, so a total would
+freeze whatever undercount happened to hold at archive time.
+
+### Cumulative JSON example (r1)
 
 ```json
 {
@@ -107,6 +127,7 @@ interface CurrencyAgg {
     "giftCount": 7,
     "giftPurchaseCount": 2,
     "totalGiftAmount": 20,
+    "jewelGiftCount": 143,
     "milestoneCount": 3,
     "pollCount": 1,
     "raidCount": 0,
@@ -124,7 +145,8 @@ interface CurrencyAgg {
 - **Always present in this version:** `id`, `title`, `channel.id`,
   `channel.name`, `status`, `duration`, `availableAt`, `archiveVersion`,
   `stats.superChatTotalJpy`, `stats.memberCount`, `stats.giftCount`,
-  `aggregates.*` (all `*Count` fields, `currencyTable`, `jpyTotal`).
+  `aggregates.*` (all `*Count` fields, `currencyTable`, `jpyTotal`) —
+  plus `aggregates.jewelGiftCount` since r1.
 - **May be absent depending on writer state:** `channel.avatarUrl`,
   `scheduledStart`, `actualStart`, `actualEnd`, `publishedAt`.
 - **Empty-stream variant:** when no chat rows were written, the writer
