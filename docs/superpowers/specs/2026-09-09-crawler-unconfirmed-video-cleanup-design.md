@@ -1,8 +1,8 @@
-# crawler 未確認影片清理與批次隔離設計
+# crawler 已消失影片的標記與批次隔離設計
 
 修掉 `crawler youtube update` 每分鐘失敗一次的 `Video validation failed`，並讓
 單筆影片的失敗不再中止整批更新。不動 `Video` / `Channel` 的 schema，不動對外的
-data-contract。
+data-contract，也不刪除任何文件。
 
 ## 問題
 
@@ -43,130 +43,101 @@ Video validation failed: channelId: Path `channelId` is required., title: Path `
   文件的 `hbStatus` 正是 `Created`；且該任務對 Video 只設 `hbCleanedAt`，從不
   刪除文件。全 `src/` 沒有任何刪除 videos 文件的程式碼。這些文件會永久留存。
 
-### 為什麼判定條件要涵蓋「欄位不存在」
+### 無效文件的其他來源
 
-`noticeFromRaid` 是目前唯一會寫出無效文件的路徑，而它用的是空字串。判定條件
-仍要一併涵蓋「欄位根本不存在」，因為 `updateFromHolodex()` 的 `title` 走
-`setIfDefine`（值為 `undefined` / `null` 時整個 key 都不會出現在
-`$setOnInsert` 裡），`availableAt` 同理。這條路徑今天不會觸發——holodex.js 的
-`Video` 宣告 `get title(): string`，型別上排除了 undefined——但判定條件涵蓋兩種
-形狀的成本是零，而漏掉它的代價是同一個永久迴圈重新出現。
+`noticeFromRaid` 是目前唯一會寫出兩欄皆空文件的路徑，但問題的形狀比它更廣：
+任何繞過 validator 的 upsert 都可能寫出 `save()` 過不了的文件。
+`VideoModel.updateFromHolodex()` 的 `title` 走 `setIfDefine`（值為 `undefined`
+/ `null` 時整個 key 都不會出現在 `$setOnInsert` 裡）、`availableAt` 同理；
+`title` 若是空字串則會照樣寫入。因此修正不該建立在「哪些欄位、由哪條路徑寫成
+什麼形狀」的窮舉上——那份清單會隨著上游改變而過期。
+
+同一個結構也存在於 channel：`ChannelModel.updateFromHolodex()` 是
+`findOneAndUpdate` + `upsert`，`name`（`required`）同樣走 `setIfDefine`。缺
+`name` 的 channel 文件之後只要被 YouTube 省略，`save()` 就會失敗、`crawledAt`
+寫不進去，於是每輪都被 `ChannelModel.find({ crawledAt: null })` 重新撿到——與
+video 端同構的永久迴圈。因此兩邊套用相同的處理，見變更 1 與變更 3。
 
 ## 目標
 
-1. 任何因缺 `channelId` / `title` 而必定驗證失敗的文件，都能在一輪內被刪除，
-   不再永久佔據候選清單。
+1. 「YouTube 已經查不到」這個事實，無論文件本身是否通過驗證，都必須能被寫進
+   資料庫，讓文件離開候選清單。video 與 channel 兩邊以相同的方式處理。
 2. 單筆影片或頻道的失敗不再中止整批。
 3. 永久卡死、無法被填實也無法被消化的文件，不再獨占候選名額。
 
 目標 3 刻意不涵蓋「任何類別都無法獨占名額」——即將開播那條查詢在尖峰時佔滿名額
 是正確的優先級，理由見「Non-goals / Accepted limitations」。
 
-不改 schema、不改 `noticeFromRaid`、不改 data-contract 是硬約束——詳見
-「Non-goals / Accepted limitations」。
+不改 schema、不改 `noticeFromRaid`、不改 data-contract、不刪除任何文件是硬約束
+——詳見「Non-goals / Accepted limitations」。
 
-## 變更 1：未確認空殼在確認消失時刪除
+## 變更 1：確認消失時跳過驗證寫入
 
-檔案：`src/modules/youtube.ts`，`updateVideoFromYoutube()` 的 per-video 迴圈開頭。
+檔案：`src/modules/youtube.ts`，`updateVideoFromYoutube()` 的 per-video 迴圈結尾。
 
-把現有的守衛擴充為：
+`save()` 改為在「YouTube 查不到這支影片」時跳過驗證：
 
 ```ts
-const existing = await VideoModel.findByVideoId(targetVideo);
-if (!ytInfo) {
-  if (!existing) continue;
-  if (!existing.channelId || !existing.title) {
-    await VideoModel.deleteOne({
-      id: targetVideo,
-      // 缺席欄位、null、空字串三種寫入來源都要涵蓋。
-      $or: [
-        { channelId: { $in: ["", null] } },
-        { channelId: { $exists: false } },
-        { title: { $in: ["", null] } },
-        { title: { $exists: false } },
-      ],
-    });
-    continue;
-  }
-}
-const video = existing ?? new VideoModel({ id: targetVideo });
+// YouTube 查不到時要寫入的只有「已消失」這個事實，而文件可能因為它被建立的
+// 方式（繞過 validator 的 upsert）而缺少 required 欄位。驗證會擋下這次寫入，
+// 讓文件永遠停在原本的狀態、每輪重新被選中。
+await video.save({ validateBeforeSave: !!ytInfo });
 ```
 
-判定語意是「**YouTube 從未確認過它，而且 YouTube 現在也查不到它**」——這種文件
-沒有任何值得保存的內容，也永遠無法通過驗證，直接刪除。
+其餘部分維持原狀：`if (!ytInfo && !existing) continue;` 的守衛仍然擋掉「從未
+見過又已消失」的 id（那種情況沒有文件可標記，建立一份全空的新文件毫無意義）。
 
-符合這個條件的實際上只有 raid 佔位文件一種：
+### 為什麼這樣就夠
 
-- raid 佔位文件：`$setOnInsert` 寫入 `channelId: ""` / `title: ""` → 符合，
-  刪除。
-- pubsub 建立的文件：`$set` 一定帶非空的 `channelId` 與 `title` → 不符合，保留。
-- holodex 建立的文件：`channelId` 是無條件寫入，`title` 由 holodex.js 的型別
-  保證存在 → 不符合，保留。
-- 曾被 YouTube 確認過的文件：兩個欄位都有值 → 不符合，走既有的 else 分支留下
-  `deleted` 墓碑。
+`else` 分支寫入的是 `status = Missing`、`deleted = true`、`detectedDeletionAt`，
+迴圈結尾再統一寫 `crawledAt = new Date()`。這些欄位一旦落盤，文件就同時離開
+候選清單的兩條無界查詢：`status` 不再是 `New`，`crawledAt` 不再是 `null`。
+永久迴圈就此中斷，而且不需要辨識文件是由哪條路徑、寫成什麼形狀建立的。
 
-### 為什麼刪除條件要在 mongo 端重新檢查一次
+### 為什麼不刪除文件
 
-記憶體中的 `existing` 只是一個快照。在 `findByVideoId` 與刪除之間，
-`noticeFromNotification` 可能收到 pubsub 通知而補上 `channelId` / `title`，或是
-另一個行程的 `/mod crawl` 成功寫入完整資料。crawler 服務本身就同時跑 pubsub
-listener 與這個 agenda job，兩者會交錯。若刪除只比對 id，就會依據過期的快照刪掉
-一份剛被修好的文件。
+`deleted` 是**可逆狀態**，而刪除不是。影片恢復（從私人轉回公開）後，下一次
+crawl 會查到它，既有程式碼把 `deleted` 設回 `false`、清掉 `detectedDeletionAt`，
+爬取自動接續。刪除文件則會連帶抹掉「raid 曾經指向這支影片」這件事，之後只能
+等另一次外部通知重新發現它。
 
-因此缺欄位條件整份放進 `deleteOne` 的 filter，由 mongo 在單一操作內原子地重新
-檢查：條件不再成立時 `deletedCount` 為 0，什麼都不會發生。此時直接 `continue`，
-不拿舊快照去 `save()`（那會用過期資料覆蓋剛寫入的內容），下一輪自然會用新資料
-重新處理。`deletedCount` 為 0 是預期內的結果，不是錯誤。
+這也與 `hbIgnore` 的語意明確區隔：`hbIgnore` 是「把這支影片永久排除在系統之外」，
+`deleted` 是「這支影片現在看不到了，看得到就繼續」。兩者不可互相取代。
 
-`$or` 同時列出 `$in: ["", null]` 與 `$exists: false`，是為了讓條件自我說明地涵蓋
-三種來源——空字串、null、欄位根本不存在——而不依賴 null 相等匹配是否延伸到缺席
-欄位。
+### 為什麼跳過驗證是安全的
 
-### 為什麼不再比對 lifecycle 狀態
+- **只在 `!ytInfo` 時跳過。** 有 `ytInfo` 的路徑照常驗證，資料品質不受影響。
+  跳過驗證的那次寫入不引入任何新的欄位值——`status` / `deleted` /
+  `detectedDeletionAt` / `crawledAt` 都是既有 else 分支本來就要寫的。
+- **競態下比刪除安全。** `save()` 對既有文件走 `$__delta()`，只送出這次真正
+  修改過的路徑，不會拿記憶體中的舊快照覆蓋整份文件。所以就算 pubsub 或
+  `/mod crawl` 在 `findByVideoId` 之後補上了 `channelId` / `title`，那些欄位
+  不會被抹掉。最壞情況是一支剛恢復的影片被短暫標成 `deleted`，下一輪 crawl
+  就會自動修正。
+- **無效文件不會流進 archive writer。** 標記後的佔位文件是
+  `status: Missing`、沒有 `actualStart`、沒有 `hbEnd`，而每個
+  `buildVideoSummary()` 的呼叫端都會先被過濾掉：
+  - `gen-daily-videos-file` 的 finalize filter 要求
+    `actualStart: { $exists: true, $ne: null }`
+  - `gen-index-file` 走 `findLiveVideos()`（`status` ∈ `Upcoming` / `Live`）與
+    `findRecentlyEndedVideos()`（Missing 分支要求 `hbEnd` 落在窗口內）
+  - `gen-realtime-file` 只取 `status` 為 `Live` / `Upcoming` 的文件
+  - `gen-channel-index-file` 以 `channelId` 查詢，且有 `if (!channel) return;`
+    的早退保護
+    因此 `getChannel()` 的 `assert` 不會被觸發，index / daily-videos / realtime
+    的產生流程都不受影響。
+- **不會觸發 webhook。** webhook 服務沒有訂閱 videos collection 的變更，它只用
+  `findByVideoId` 解析訊息事件的參數。
+- **不會被 scheduler 排程。** `Missing` 不在 `LiveStatus`，`isLive()` 為假；
+  它也不是 `Past`，不符合 need-replay。
 
-一個直覺的加強是在 filter 裡再要求 `status: New` + `hbStatus: Created`，藉此
-確保刪除的是「從未被排程或處理過」的文件。這兩個條件在「缺 `channelId` 或
-`title`」的前提下恆為真，因此是冗餘的：
+### 對既有正常影片的行為不變
 
-- `status` 只能經由 `video.save()` 改變（`updateVideoFromYoutube` 內全部是
-  document 賦值），而 `save()` 對缺欄位文件必定驗證失敗、不落盤。
-  `updateFromHolodex()` 對已存在文件的 `$set` 不含 `status`，只有
-  `$setOnInsert` 有。所以缺欄位文件的 `status` 永遠停在建立時寫入的 `New`。
-- `hbStatus` 雖然可以被 `updateStatus()` / `updateStatusFailed()` /
-  `updateResult()` 以 `updateOne` 繞過驗證改寫，但這三者的呼叫端都在 worker 與
-  scheduler，而進入 Bee-Queue 的前提是 `isLive()`（`status` 為 `Upcoming` /
-  `Live`）或 need-replay（`status` 為 `Past`）。`New` 兩者都不符合，永遠不會被
-  排程，所以 `hbStatus` 必然停在 `Created`。
-
-加上它們不只沒有效果，還會製造死角：萬一真的出現一份缺欄位但 lifecycle 不符的
-文件，`deleteOne` 不匹配、程式碼 `continue`，它會永遠留在候選清單，每輪重複一次
-無效的刪除嘗試——正是這份設計要消滅的狀態。缺欄位這個條件本身已經足夠精確，
-再疊 lifecycle 條件只會讓謂詞比它要辨識的事實更窄。
-
-判定鍵選用 `channelId` 與 `title` 而非其他候選：
-
-- 這兩個欄位正是 `save()` 實際會擋下來的欄位，判定條件與失敗原因一對一對應。
-- 不用 `validateSync()`：任何其他欄位的驗證問題都會導致誤刪有價值的文件，風險
-  不對稱。
-- 不用 `crawledAt == null`：holodex 建立的正常文件也是 `crawledAt: null`。
-
-曾正常上架過的影片這兩個欄位必有值，所以仍走既有的 else 分支留下 `deleted`
-墓碑，行為完全不變。該墓碑是被依賴的功能：daily-videos 的 finalize pass 用
-`status: Missing` + `detectedDeletionAt` 在 48 小時窗口內決定要重新產生哪些
-日期的檔案，webhook 的串流結束 embed 用 `deleted` 切換成 "No VOD is
-available."。
-
-### 刪除的安全性
-
-- `CollectionWatcher` 只支援 `insert` 與 `update`，沒有任何消費者監聽 delete，
-  所以刪除不會觸發 scheduler 或 webhook 的副作用。
-- `/mod crawl` 只統計回傳陣列中 `!video.deleted` 的筆數，其餘一律回覆
-  "Cannot find the video."。被刪除的 id 不出現在回傳陣列，效果等同既有的
-  「從未見過的 id」路徑，訊息仍然正確。
-- 被刪除的文件不可能有排程中的工作。如上一節所述，缺 `channelId` / `title` 的
-  文件其 `status` 必然停在 `New`，而 `New` 不在 `LiveStatus`，`isLive()` 為假，
-  insert 與 rearrange 兩條路徑都不會排程它。
-- raid 記錄本身存放在 `raids` collection，不受影響。
+欄位完整、曾正常上架的影片走的是同一段程式碼，`validateBeforeSave` 對它們沒有
+可觀察的差別（它們本來就通過驗證）。既有的 `deleted` 墓碑語意完全保留：
+daily-videos 的 finalize pass 用 `status: Missing` + `detectedDeletionAt` 在
+48 小時窗口內決定要重新產生哪些日期的檔案，webhook 的串流結束 embed 用
+`deleted` 切換成 "No VOD is available."。
 
 ## 變更 2：per-video try/catch
 
@@ -176,28 +147,40 @@ available."。
 videoId 與錯誤後繼續下一筆。`continue` 在 try 區塊內仍作用於外層 for，語意不變。
 
 失敗的那一筆不會更新 `crawledAt`，下一輪會重試。這是刻意的：會造成永久重試的
-驗證失敗已由變更 1 刪除掉，剩下能走到這個 catch 的是 mongo 暫時性錯誤這類本來
+驗證失敗已由變更 1 消除，剩下能走到這個 catch 的是 mongo 暫時性錯誤這類本來
 就該重試的狀況。
 
 `needUpdateChannels.push()` 位於 try 區塊內，失敗的那筆不會把 channelId 推進
 待更新清單——那正是想要的行為。
 
-## 變更 3：per-channel try/catch
+## 變更 3：channel 端做完全對稱的處理
 
 檔案：`src/modules/youtube.ts`，`updateChannelFromYoutube()`。
 
-同樣把 per-channel 迴圈的 body 包進 try/catch。
+channel 端有與 video 端同構的問題。`Channel.name` 是 `required`，而
+`ChannelModel.updateFromHolodex()` 是 `findOneAndUpdate` + `upsert`，`name` 走
+`setIfDefine`——holodex 沒給 name 時，插入的文件根本沒有 `name` 欄位，而 upsert
+不跑 validator。這種 channel 之後只要被 YouTube 省略，`save()` 就會拋
+`Channel validation failed: name is required`，`crawledAt` 寫不進去，於是每輪
+都會被 `ChannelModel.find({ crawledAt: null })` 重新撿到——與 video 端完全一樣
+的永久迴圈。
 
-`Channel.name` 也是 `required`，而該函式在「部分 channel 查得到、部分查不到」
-時，會對查不到的那個執行 `new ChannelModel({ id })` 後 `save()`，拋出
-`Channel validation failed: name is required`。此函式在
-`updateVideoFromYoutube()` 結尾被呼叫，一旦拋出就會把整批 video 更新一起拖垮
-（那批 video 其實都已成功寫入）。
+此外，`updateChannelFromYoutube()` 在 `updateVideoFromYoutube()` 結尾被呼叫，
+一旦拋出就會把整批 video 更新一起拖垮（那批 video 其實都已成功寫入）。
 
-這條路徑實務上罕見（需要某個 video 的 channelId 在 DB 查不到，且該 channel
-同時被 YouTube 省略；`if (!ytChannelItems?.length) return []` 已擋掉「全部查
-不到」的情形），而且失敗的 `new ChannelModel(...)` 不會落盤，不會累積垃圾。
-因此只做批次隔離，不加刪除邏輯。
+因此套用與 video 端相同的三項處理：
+
+1. **跳過驗證寫入**：`await channel.save({ validateBeforeSave: !!ytInfo })`。
+2. **不建立幽靈文件**：加上與 video 端對稱的守衛，`ytInfo` 與既有文件都不存在
+   時直接 `continue`，不要 `new ChannelModel({ id }).save()` 出一份只有 id 的
+   文件。這需要把現有的「先取文件、再找 ytInfo」順序對調。
+3. **per-channel try/catch**：迴圈 body 包進 try/catch，`console.error` 帶上該
+   channelId 後繼續下一筆。
+
+同時移除 `if (!ytChannelItems?.length) return [];` 這個提前 return，改成
+`const ytChannelItems = response?.data?.items ?? [];` 並照常進入迴圈——這正是
+video 端已經採用的形狀。保留它的話，「整批 channel 都查不到」時一個都不會被
+標記為 `deleted`，卡死的文件也永遠不會離開候選清單，處理就不對稱了。
 
 ## 變更 4：候選清單加界
 
@@ -222,9 +205,9 @@ videoId 與錯誤後繼續下一筆。`continue` 在 try 區塊內仍作用於�
 
 - **為何要 sort**：只加 limit 而不排序，natural order 下的選取結果不確定，
   難以推理哪些文件會被處理到。`_id` 排序讓選取變成確定的 FIFO。要注意排序本身
-  不保證進展——真正讓候選集縮小的是被選中的文件在處理後離開候選集（被填實而
-  改變 `status` / `crawledAt`，或被變更 1 刪除）。永遠無法離開候選集的文件正是
-  變更 1 要根除的對象。
+  不保證進展——真正讓候選集縮小的是被選中的文件在處理後離開候選集（被填實或被
+  標記為已消失，兩者都會改變 `status` / `crawledAt`）。永遠無法離開候選集的
+  文件正是變更 1 要根除的對象。
 - **為何用 `_id`**：ObjectId 單調遞增，排序等價於插入順序 FIFO；`_id` 有預設
   索引，不會產生 in-memory SORT stage。`createdAt` 雖然也可用（`Video` 繼承的
   `TimeStamps` 基底類啟用了 timestamps，mongoose 會在 `updateOne` upsert 插入
@@ -240,26 +223,41 @@ videoId 與錯誤後繼續下一筆。`continue` 在 try 區塊內仍作用於�
 沿用既有的 `jest.unstable_mockModule("googleapis")` + `spyOn(VideoModel, ...)`
 模式，新增以下案例：
 
-1. **佔位文件被刪除**：`findByVideoId` 回傳 `channelId: ""` / `title: ""` 的
-   文件，YouTube 回傳空 items。斷言 `deleteOne` 被呼叫、該文件的 `save` 未被
-   呼叫、回傳陣列為 `[]`。
-2. **刪除條件在 mongo 端重新檢查**：以 `toEqual` 比對 `deleteOne` 收到的整個
-   filter 物件，確認它含 `id` 以及涵蓋空字串 / null / 欄位不存在的 `$or`。
-   這保證有競爭寫入者填實文件時，mongo 會拒絕刪除。
-3. **缺席欄位與空字串同樣被涵蓋**：`findByVideoId` 回傳 `channelId` 與 `title`
-   兩個 key 都不存在（而非空字串）的文件。斷言 `deleteOne` 被呼叫。
-4. **有完整欄位的影片不走這條分支**（回歸保護）：`findByVideoId` 回傳
+1. **查不到的影片以跳過驗證的方式寫入**：`findByVideoId` 回傳
+   `channelId: ""` / `title: ""` / `status: New` 的文件，YouTube 回傳空 items。
+   以 `toEqual` 比對 `save` 收到的 options 為 `{ validateBeforeSave: false }`，
+   並斷言該文件的 `status` 為 `Missing`、`deleted` 為 `true`、`crawledAt` 是
+   `Date`——後兩者是它離開候選清單兩條查詢的依據。
+2. **查得到的影片照常驗證**：YouTube 回傳該影片的 item。斷言 `save` 收到的
+   options 為 `{ validateBeforeSave: true }`。
+3. **有完整欄位但已下架的影片行為不變**（回歸保護）：`findByVideoId` 回傳
    `channelId: "UC..."` / `title: "..."` 的文件，YouTube 回傳空 items。斷言
-   `deleteOne` 未被呼叫、`deleted` 為 `true`、`detectedDeletionAt` 是 `Date`、
-   回傳陣列含該文件。
-5. **單筆失敗不影響同批其他影片**：同批兩筆，第一筆的 `save` 拋錯。斷言第二筆
+   `deleted` 為 `true`、`detectedDeletionAt` 是 `Date`、回傳陣列以 `toEqual`
+   比對含該文件。
+4. **首次偵測才寫入 `detectedDeletionAt`**：既有案例已涵蓋，確認跳過驗證的
+   寫法不改變這個行為。
+5. **從未見過又已消失的 id 仍然被跳過**：既有案例已涵蓋，確認不會建立新文件。
+6. **單筆失敗不影響同批其他影片**：同批兩筆，第一筆的 `save` 拋錯。斷言第二筆
    的 `save` 有被呼叫，且回傳陣列只含第二筆。
-6. **單一 channel 失敗不影響同批其他 channel**：`updateChannelFromYoutube` 同批
-   兩筆，第一筆的 `save` 拋錯。斷言第二筆的 `save` 有被呼叫，且回傳陣列只含
-   第二筆。
 
-每個案例都帶結構性斷言（`toEqual` 比對回傳陣列內容或 filter 物件、欄位值比對），
-不只 `toHaveBeenCalled`。
+channel 端以 `spyOn(ChannelModel, "findByChannelId")` 加上 mock 的
+`channels.list` 做對稱覆蓋：
+
+1. **查不到的頻道以跳過驗證的方式寫入**：`findByChannelId` 回傳沒有 `name` 的
+   文件，YouTube 回傳空 items。斷言 `save` 收到
+   `{ validateBeforeSave: false }`、該文件的 `deleted` 為 `true`、`crawledAt`
+   是 `Date`。
+2. **查得到的頻道照常驗證**：斷言 `save` 收到 `{ validateBeforeSave: true }`。
+3. **從未見過又已消失的頻道不建立文件**：`findByChannelId` 回傳 `null`，
+   YouTube 回傳空 items。斷言沒有任何 `save` 被呼叫、回傳陣列為 `[]`。
+4. **整批都查不到時仍逐筆標記**：兩筆都不在 YouTube 回應中，且兩筆在 DB 都
+   存在。斷言兩筆的 `deleted` 都是 `true`——這是移除提前 return 後才成立的
+   行為。
+5. **單一 channel 失敗不影響同批其他 channel**：同批兩筆，第一筆的 `save`
+   拋錯。斷言第二筆的 `save` 有被呼叫，且回傳陣列只含第二筆。
+
+每個案例都帶結構性斷言（`toEqual` 比對回傳陣列內容或 `save` 的 options、欄位值
+比對），不只 `toHaveBeenCalled`。
 
 變更 4 的候選清單加界不在此檔測試範圍內——它是 `src/commands/crawler.ts` 中
 agenda job 定義內的查詢串接，沒有可獨立呼叫的匯出，為它建立測試接縫需要重構
@@ -269,31 +267,36 @@ agenda job 定義內的查詢串接，沒有可獨立呼叫的匯出，為它建
 
 ### 非目標
 
-- **不放寬 `Video` / `Channel` 的 `required`**。放寬會讓空值文件流進下游：
-  `Video.getChannel()` 的 `assert` 會在 worker 的 job 開頭與
+- **不放寬 `Video` / `Channel` 的 `required`**。放寬是全域性的，會讓空值文件從
+  任何路徑流進下游：`Video.getChannel()` 的 `assert` 會在 worker 的 job 開頭與
   `buildVideoSummary()` 內拋出；`gen-index-file.ts` 呼叫 `buildVideoSummary`
   的位置不在 try/catch 內，一拋就整份 `index.json` 產不出來；六份 data-contract
   文件明文宣告 `title` 與 `channel.id` 為 Always present；Discord embed 的空
-  字串 title 會被 API 回 400。刪除方案讓這些下游完全不受影響。
+  字串 title 會被 API 回 400。變更 1 的 `validateBeforeSave: false` 是逐次呼叫
+  的局部豁免，只套用在「寫入已消失這個事實」的那一次 `save()`，schema 的保證
+  對其他所有寫入路徑維持不變。
+- **不刪除任何 video 文件**。`deleted` 是可逆狀態，刪除不是；詳見變更 1 的
+  「為什麼不刪除文件」。
 - **不改 `noticeFromRaid`**。佔位文件的用途是把 videoId 丟進候選清單，讓
-  crawler 下一分鐘去查：查得到就填實並開始收集，查不到就被變更 1 刪除。改成
+  crawler 下一分鐘去查：查得到就填實並開始收集，查不到就被標記為已消失。改成
   「worker 先查 YouTube 再建文件」會讓 worker 多一個 API 依賴與 quota 消耗，
   且失去 crawler 每分鐘批次合併查詢的優勢。
 - **不改對外 data-contract**。本設計不改變任何封存輸出的欄位或語意。
-- **不寫一次性清理腳本**。既有的空殼文件本來就永遠落在候選清單裡，變更 1 上線
-  後會被逐輪自動刪除。
+- **不寫一次性清理腳本**。既有的無效文件本來就永遠落在候選清單裡，變更 1 上線
+  後會被逐輪自動標記並離開清單。
 
 ### 已接受的限制
 
-- **既有殘留的清除速度受 limit 限制**。變更 4 把前兩條查詢各限制在 25 筆，
-  若正式環境已累積大量空殼，需要多輪才能清完（每輪最多 25 筆，每分鐘一輪）。
-  這是可接受的：清除期間 live 影片的名額已經被保障，而累積量不會再成長。
+- **既有殘留的消化速度受 limit 限制**。變更 4 把前兩條查詢各限制在 25 筆，
+  若正式環境已累積大量無效文件，需要多輪才能全部標記完（每輪最多 25 筆，每分鐘
+  一輪）。這是可接受的：期間 live 影片的名額已經被保障，而累積量不會再成長。
+- **被標記的文件永久留在 collection 裡**。它們的 `channelId` / `title`
+  （channel 則是 `name`）仍是空的，只是不再進入任何候選清單或 archive 查詢。
+  這是刻意的取捨：保留「這個 videoId 曾被 raid 指向過」的痕跡，以及影片或頻道
+  恢復後自動接續爬取的能力，代價是 collection 裡多出一些永遠不會被讀取的列。
 - **失敗的影片會被無限重試**。變更 2 的 catch 不記錄失敗次數、不推遲下次撿取。
-  會永久失敗的驗證錯誤已由變更 1 刪除掉，其餘是暫時性錯誤，重試是正確行為。
+  會永久失敗的驗證錯誤已由變更 1 消除，其餘是暫時性錯誤，重試是正確行為。
   加入失敗計數需要新增 schema 欄位，對目前已知的問題是多餘的機制。
-- **`updateChannelFromYoutube` 的「全部查不到就不標記 deleted」不一致仍保留**。
-  該函式在 `!ytChannelItems?.length` 時提前 return，與 video 端「查不到就標記
-  deleted」的處理不對稱。這不是當前故障的成因，修正它會擴大範圍。
 - **即將開播那條候選查詢不加界，尖峰時仍可能佔滿全部名額**。
   - 顧慮：候選清單第三條選出 `scheduledStart` 落在前後 5 分鐘內、尚未開始的
     直播，沒有 limit 且排在 recently-ended 與一般 live 之前。若同時有 100 支
