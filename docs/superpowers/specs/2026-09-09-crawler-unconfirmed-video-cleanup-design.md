@@ -336,8 +336,25 @@ agenda job 定義內的查詢串接，沒有可獨立呼叫的匯出，為它建
     發生。在 archive 邊界加守衛會碰到 chats-archive 與 data-contract 的檢查
     清單，範圍遠大於本次修正。
 - **失敗的影片會被無限重試**。變更 2 的 catch 不記錄失敗次數、不推遲下次撿取。
-  會永久失敗的驗證錯誤已由變更 1 消除，其餘是暫時性錯誤，重試是正確行為。
-  加入失敗計數需要新增 schema 欄位，對目前已知的問題是多餘的機制。
+  變更 1 消除的是「YouTube 查不到」那條路徑上的永久驗證失敗；有 `ytInfo` 的
+  `save()` 仍然照常驗證，仍可能因為文件本身無效而反覆失敗（例如 YouTube 回了
+  item 但沒有 `snippet`，而既有文件缺 `channelId` / `title`）。這種情況極罕見，
+  且下一輪只要 YouTube 回應正常就會自癒。加入失敗計數需要新增 schema 欄位，
+  對目前已知的問題是多餘的機制。
+- **不為「pubsub 通知與 crawl 交錯」加並行防護**。
+  - 顧慮：`noticeFromNotification()` 對既有文件會 `$set { crawledAt: null }`
+    把它排回候選清單，而 pubsub 只在 `upsertedCount > 0` 時才立即 crawl。批次
+    是先發一次 `videos.list`、再逐筆讀取與寫入，所以 API 回應與某一筆的
+    `save()` 之間隔著前面最多 49 筆的處理時間。若通知落在這個區間，這次寫入會
+    把 `crawledAt` 蓋回 `now`，那個重排請求就消失了。另外，既有的卡死迴圈其實
+    副作用地充當了「重試到 YouTube API 同步為止」的機制，修掉它就失去這個效果。
+  - 決定：不加 compare-and-set 或其他並行防護。
+  - 理由：這個情境對 raid 佔位文件不成立。raid 的 `originVideoId` 是「正在直播
+    中、被主播 raid 過去」的影片，它在 YouTube 上早已存在，不是剛發布的新影片，
+    因此不適用 API 傳播延遲；而 pubsub 只在頻道發布新影片時觸發，不會在那個
+    時刻對一支進行中的直播重發通知。crawler 查不到它，就是它真的被設為私人或
+    刪除了。可行的防護手段則要放棄 `save()` 對 `availableAt` / `duration` /
+    `hbStatus` 的統一處理，把那些欄位在兩處重複維護。
 - **即將開播那條候選查詢不加界，尖峰時仍可能佔滿全部名額**。
   - 顧慮：候選清單第三條選出 `scheduledStart` 落在前後 5 分鐘內、尚未開始的
     直播，沒有 limit 且排在 recently-ended 與一般 live 之前。若同時有 100 支
