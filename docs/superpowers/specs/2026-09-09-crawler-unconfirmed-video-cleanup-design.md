@@ -96,10 +96,15 @@ await video.save({ validateBeforeSave: !!ytInfo });
 
 ### 為什麼不刪除文件
 
-`deleted` 是**可逆狀態**，而刪除不是。影片恢復（從私人轉回公開）後，下一次
-crawl 會查到它，既有程式碼把 `deleted` 設回 `false`、清掉 `detectedDeletionAt`，
-爬取自動接續。刪除文件則會連帶抹掉「raid 曾經指向這支影片」這件事，之後只能
-等另一次外部通知重新發現它。
+`deleted` 是**可逆狀態**，而刪除不是。文件留著，「這個 videoId 曾被 raid 指向
+過」的痕跡就留著；只要它再次被 crawl 到（`/mod crawl`、pubsub 對該影片的新
+通知，或未來新增的重查機制），既有程式碼就會把 `deleted` 設回 `false`、清掉
+`detectedDeletionAt`，爬取自動接續。刪除文件則連這個可能性都沒有。
+
+要注意的是，目前**沒有**任何機制會定期重查已標記的影片——候選清單五條查詢都
+不會選中 `status: Missing` 且沒有 `hbEnd` 的文件。這是既有行為（正常影片被
+標成 `Missing` 後也一樣），本設計不改變它，詳見「已接受的限制」。差別在於
+標記保留了恢復的可能，刪除則永久關閉了它。
 
 這也與 `hbIgnore` 的語意明確區隔：`hbIgnore` 是「把這支影片永久排除在系統之外」，
 `deleted` 是「這支影片現在看不到了，看得到就繼續」。兩者不可互相取代。
@@ -114,9 +119,9 @@ crawl 會查到它，既有程式碼把 `deleted` 設回 `false`、清掉 `detec
   `/mod crawl` 在 `findByVideoId` 之後補上了 `channelId` / `title`，那些欄位
   不會被抹掉。最壞情況是一支剛恢復的影片被短暫標成 `deleted`，下一輪 crawl
   就會自動修正。
-- **無效文件不會流進 archive writer。** 標記後的佔位文件是
+- **raid 佔位文件不會流進 archive writer。** 標記後的佔位文件是
   `status: Missing`、沒有 `actualStart`、沒有 `hbEnd`，而每個
-  `buildVideoSummary()` 的呼叫端都會先被過濾掉：
+  `buildVideoSummary()` 的呼叫端都會先把它過濾掉：
   - `gen-daily-videos-file` 的 finalize filter 要求
     `actualStart: { $exists: true, $ne: null }`
   - `gen-index-file` 走 `findLiveVideos()`（`status` ∈ `Upcoming` / `Live`）與
@@ -124,8 +129,12 @@ crawl 會查到它，既有程式碼把 `deleted` 設回 `false`、清掉 `detec
   - `gen-realtime-file` 只取 `status` 為 `Live` / `Upcoming` 的文件
   - `gen-channel-index-file` 以 `channelId` 查詢，且有 `if (!channel) return;`
     的早退保護
-    因此 `getChannel()` 的 `assert` 不會被觸發，index / daily-videos / realtime
-    的產生流程都不受影響。
+
+  因此 `getChannel()` 的 `assert` 不會被觸發，index / daily-videos / realtime
+  的產生流程都不受影響。這個論證依賴的是佔位文件沒有 `actualStart` / `hbEnd`，
+  不是「所有無效文件都會被隔離」——一份同時缺 `title` 又有 `actualStart` 的
+  假想文件不在此保證範圍內，見「已接受的限制」。
+
 - **不會觸發 webhook。** webhook 服務沒有訂閱 videos collection 的變更，它只用
   `findByVideoId` 解析訊息事件的參數。
 - **不會被 scheduler 排程。** `Missing` 不在 `LiveStatus`，`isLive()` 為假；
@@ -150,8 +159,11 @@ videoId 與錯誤後繼續下一筆。`continue` 在 try 區塊內仍作用於�
 驗證失敗已由變更 1 消除，剩下能走到這個 catch 的是 mongo 暫時性錯誤這類本來
 就該重試的狀況。
 
-`needUpdateChannels.push()` 位於 try 區塊內，失敗的那筆不會把 channelId 推進
-待更新清單——那正是想要的行為。
+`needUpdateChannels.push()` 發生在 `save()` **之前**，所以 save 失敗的那一筆
+仍可能已經把 channelId 推進了待更新清單。這是刻意不動的：更新 channel 是獨立
+且冪等的操作，與該 video 這次是否寫入成功無關，多更新一個 channel 沒有壞處。
+不要為了「失敗就不 push」而把 push 移到 save 之後——那會讓成功路徑的行為也跟著
+改變，卻換不到任何東西。
 
 ## 變更 3：channel 端做完全對稱的處理
 
@@ -293,7 +305,29 @@ agenda job 定義內的查詢串接，沒有可獨立呼叫的匯出，為它建
 - **被標記的文件永久留在 collection 裡**。它們的 `channelId` / `title`
   （channel 則是 `name`）仍是空的，只是不再進入任何候選清單或 archive 查詢。
   這是刻意的取捨：保留「這個 videoId 曾被 raid 指向過」的痕跡，以及影片或頻道
-  恢復後自動接續爬取的能力，代價是 collection 裡多出一些永遠不會被讀取的列。
+  日後被重新 crawl 到時自動接續的能力，代價是 collection 裡多出一些永遠不會被
+  讀取的列。
+- **標記後不會被自動重查，恢復需要外部觸發**。
+  - 顧慮：標記後的文件是 `status: Missing`、`crawledAt` 已更新、沒有 `hbEnd`，
+    候選清單五條查詢沒有一條會選中它（`findRecentlyEndedVideos` 的 Missing
+    分支要求 `hbEnd` 落在窗口內）。因此影片或頻道即使恢復，也要等 `/mod crawl`
+    或 pubsub 的新通知才會回到系統，`deleted` 的可逆性在實務上不會自動兌現。
+  - 決定：接受，不新增定期重查的候選查詢。
+  - 理由：這是既有行為——正常影片被標成 `Missing` 之後本來就不會被自動重查，
+    本設計沒有讓它變差。新增一條 `{ status: Missing, deleted: true }` 的重查
+    查詢是新增行為，會讓每輪固定花費名額去重查已消失的影片，超出「修掉每分鐘
+    失敗一次的 crawler」這個範圍。
+- **畸形文件仍可能流進 archive 輸出**。
+  - 顧慮：若 holodex 給出缺 `title` 但有 `actualStart` 的文件，它被標記成
+    `Missing` + `detectedDeletionAt` 之後會落入 daily-videos 的 finalize 窗口，
+    `buildVideoSummary()` 會輸出空的 `title`，違反 data-contract 的 Always
+    present 條款。
+  - 決定：不在 archive 邊界加欄位完整性守衛。
+  - 理由：這個風險與本次變更無關且現在就存在——一份缺 `title`、有
+    `actualStart`、`status: Past` 的 holodex 文件，本來就會被 daily-videos
+    撿到並輸出空 title。而觸發前提（holodex 回傳缺 title 的影片）實務上不會
+    發生。在 archive 邊界加守衛會碰到 chats-archive 與 data-contract 的檢查
+    清單，範圍遠大於本次修正。
 - **失敗的影片會被無限重試**。變更 2 的 catch 不記錄失敗次數、不推遲下次撿取。
   會永久失敗的驗證錯誤已由變更 1 消除，其餘是暫時性錯誤，重試是正確行為。
   加入失敗計數需要新增 schema 欄位，對目前已知的問題是多餘的機制。
