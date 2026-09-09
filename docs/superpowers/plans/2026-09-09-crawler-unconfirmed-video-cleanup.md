@@ -203,18 +203,48 @@ describe("updateVideoFromYoutube batch isolation", () => {
 
     expect(ok.save).toHaveBeenCalled();
     expect(result).toEqual([ok]);
-    expect(errorSpy).toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("boom1"),
+      expect.any(Error)
+    );
   });
 });
 ```
 
-- [ ] **Step 2: 跑測試確認失敗**
+- [ ] **Step 2: 強化既有的 never-seen 測試**
+
+既有案例 `skips a never-seen id that is already gone (no phantom record)` 目前只斷言回傳空陣列，並在註解中說明「真的建立文件的話 save 會因為缺少 DB 而失敗」。加上 catch 之後這個假設不再成立——phantom save 的錯誤會被吞掉，回傳仍是空陣列。把該案例整段替換成：
+
+```ts
+it("skips a never-seen id that is already gone (no phantom record)", async () => {
+  // findByVideoId returns null (never tracked); YouTube omits it (deleted).
+  const findSpy = jest
+    .spyOn(VideoModel, "findByVideoId")
+    .mockImplementation((() => null) as any);
+  // Spying the prototype observes a `new VideoModel(...).save()` attempt
+  // directly. An empty result is not enough on its own: once per-video
+  // errors are caught, a phantom save that rejects would be swallowed and
+  // the result would still be empty.
+  const protoSaveSpy = jest
+    .spyOn(VideoModel.prototype, "save")
+    .mockResolvedValue(undefined as never);
+  mockVideosList.mockResolvedValue({ data: { items: [] } });
+
+  const result = await updateVideoFromYoutube(["neverseen1"]);
+
+  expect(protoSaveSpy).not.toHaveBeenCalled();
+  expect(result).toEqual([]);
+  expect(findSpy).toHaveBeenCalledWith("neverseen1");
+});
+```
+
+- [ ] **Step 3: 跑測試確認失敗**
 
 Run: `npm run test -- src/modules/youtube.spec.ts -t "batch isolation"`
 
-Expected: FAIL，錯誤是未被捕捉的 `save failed`（整個 `updateVideoFromYoutube` 被拒絕）。
+Expected: FAIL，錯誤是未被捕捉的 `save failed`（整個 `updateVideoFromYoutube` 被拒絕）。強化後的 never-seen 案例此時仍然通過——它要防的迴歸要等 catch 加上去之後才可能發生。
 
-- [ ] **Step 3: 實作**
+- [ ] **Step 4: 實作**
 
 把 `updateVideoFromYoutube()` 的 `for (const targetVideo of targetVideos) {` 迴圈 body 整段包進 try/catch。迴圈的開頭改成：
 
@@ -243,19 +273,19 @@ body 其餘內容維持原樣（整段縮排一層），迴圈結尾改成：
 
 `continue` 在 try 區塊內仍作用於外層 for，兩個既有守衛的語意不變。
 
-- [ ] **Step 4: 跑測試確認通過**
+- [ ] **Step 5: 跑測試確認通過**
 
 Run: `npm run test -- src/modules/youtube.spec.ts`
 
-Expected: PASS，全部案例。
+Expected: PASS，全部案例。特別確認 `skips a never-seen id that is already gone (no phantom record)` 仍然通過——它現在是靠 `protoSaveSpy` 而不是靠「save 會拋錯」在防守。
 
-- [ ] **Step 5: 型別檢查與 lint**
+- [ ] **Step 6: 型別檢查與 lint**
 
 Run: `npm run build && npm run lint`
 
 Expected: 兩者皆無錯誤輸出。
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src/modules/youtube.ts src/modules/youtube.spec.ts
@@ -388,12 +418,18 @@ describe("updateChannelFromYoutube validateBeforeSave", () => {
     const findSpy = jest
       .spyOn(ChannelModel, "findByChannelId")
       .mockImplementation((() => null) as any);
+    // Spying the prototype observes a `new ChannelModel(...).save()` attempt
+    // directly. An empty result is not enough on its own: once per-channel
+    // errors are caught, a phantom save that rejects would be swallowed and
+    // the result would still be empty.
+    const protoSaveSpy = jest
+      .spyOn(ChannelModel.prototype, "save")
+      .mockResolvedValue(undefined as never);
     mockChannelsList.mockResolvedValue({ data: { items: [] } });
 
-    // No `new ChannelModel(...).save()` is attempted (that would need a DB),
-    // so this resolves cleanly with an empty result rather than throwing.
     const result = await updateChannelFromYoutube(["UCneverseen"]);
 
+    expect(protoSaveSpy).not.toHaveBeenCalled();
     expect(result).toEqual([]);
     expect(findSpy).toHaveBeenCalledWith("UCneverseen");
   });
@@ -404,7 +440,12 @@ describe("updateChannelFromYoutube validateBeforeSave", () => {
 
 Run: `npm run test -- src/modules/youtube.spec.ts -t "updateChannelFromYoutube validateBeforeSave"`
 
-Expected: FAIL。前三個案例因為 `if (!ytChannelItems?.length) return [];` 提前 return 而完全沒有 save；第四個案例目前應該通過（同一個提前 return 恰好擋住它）。
+Expected: 四個案例中有三個 FAIL，各自的原因不同——確認錯誤訊息與下列相符，不相符代表是環境或設定問題而非預期的紅燈：
+
+1. `saves a vanished channel without validation…`：回應沒有 items，`if (!ytChannelItems?.length) return [];` 提前 return，`save` 完全沒被呼叫 → `toHaveBeenCalledWith` 收到 0 次呼叫。
+2. `validates the save when YouTube still returns the channel`：回應有 items，不會提前 return，實際會走到 `save()`，但目前呼叫時沒有帶任何參數 → `toHaveBeenCalledWith({ validateBeforeSave: true })` 收到 `[]`。
+3. `marks every channel when the whole batch is missing`：同第 1 點，提前 return 讓 `a.deleted` / `b.deleted` 維持 undefined。
+4. `skips a never-seen channel that is already gone`：**FAIL**。提前 return 發生在迴圈之前，`findByChannelId` 根本沒被呼叫 → `expect(findSpy).toHaveBeenCalledWith("UCneverseen")` 失敗。（`protoSaveSpy` 的斷言此時會通過，但要等實作完成後它才真正具有防護意義。）
 
 - [ ] **Step 4: 實作**
 
@@ -496,7 +537,10 @@ describe("updateChannelFromYoutube batch isolation", () => {
 
     expect(ok.save).toHaveBeenCalled();
     expect(result).toEqual([ok]);
-    expect(errorSpy).toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("UCboom"),
+      expect.any(Error)
+    );
   });
 });
 ```
@@ -578,10 +622,13 @@ git commit -m "fix(youtube): isolate per-channel failures from the rest of the b
 替換成：
 
 ```ts
-        // These two are the only unbounded entries and they sit first in the
-        // Set, so without a cap they can fill the whole 100-slot slice and
-        // push live videos out. _id ascending gives deterministic FIFO
-        // rotation off the default index, with no in-memory sort stage.
+        // These two collect documents that can never leave the candidate set
+        // on their own, and they sit first in the Set, so without a cap they
+        // fill the whole 100-slot slice and push live videos out. _id
+        // ascending gives deterministic FIFO rotation off the default index,
+        // with no in-memory sort stage. The scheduled-start query below stays
+        // unbounded on purpose: a stream about to go live has to be fetched
+        // now, and that spike drains within a round.
         ...mapToId(
           await VideoModel.find({ status: VideoStatus.New })
             .sort({ _id: 1 })
