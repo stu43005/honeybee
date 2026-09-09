@@ -440,12 +440,12 @@ describe("updateChannelFromYoutube validateBeforeSave", () => {
 
 Run: `npm run test -- src/modules/youtube.spec.ts -t "updateChannelFromYoutube validateBeforeSave"`
 
-Expected: 四個案例中有三個 FAIL，各自的原因不同——確認錯誤訊息與下列相符，不相符代表是環境或設定問題而非預期的紅燈：
+Expected: 四個案例全部 FAIL，各自的原因不同——確認錯誤訊息與下列相符，不相符代表是環境或設定問題而非預期的紅燈：
 
 1. `saves a vanished channel without validation…`：回應沒有 items，`if (!ytChannelItems?.length) return [];` 提前 return，`save` 完全沒被呼叫 → `toHaveBeenCalledWith` 收到 0 次呼叫。
 2. `validates the save when YouTube still returns the channel`：回應有 items，不會提前 return，實際會走到 `save()`，但目前呼叫時沒有帶任何參數 → `toHaveBeenCalledWith({ validateBeforeSave: true })` 收到 `[]`。
 3. `marks every channel when the whole batch is missing`：同第 1 點，提前 return 讓 `a.deleted` / `b.deleted` 維持 undefined。
-4. `skips a never-seen channel that is already gone`：**FAIL**。提前 return 發生在迴圈之前，`findByChannelId` 根本沒被呼叫 → `expect(findSpy).toHaveBeenCalledWith("UCneverseen")` 失敗。（`protoSaveSpy` 的斷言此時會通過，但要等實作完成後它才真正具有防護意義。）
+4. `skips a never-seen channel that is already gone`：提前 return 發生在迴圈之前，`findByChannelId` 根本沒被呼叫 → `expect(findSpy).toHaveBeenCalledWith("UCneverseen")` 失敗。（`protoSaveSpy` 的斷言此時會通過，但要等實作完成後它才真正具有防護意義。）
 
 - [ ] **Step 4: 實作**
 
