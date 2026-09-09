@@ -341,7 +341,8 @@ agenda job 定義內的查詢串接，沒有可獨立呼叫的匯出，為它建
   item 但沒有 `snippet`，而既有文件缺 `channelId` / `title`）。這種情況極罕見，
   且下一輪只要 YouTube 回應正常就會自癒。加入失敗計數需要新增 schema 欄位，
   對目前已知的問題是多餘的機制。
-- **不為「pubsub 通知與 crawl 交錯」加並行防護**。
+- **不為「陳舊的 missing 判定覆蓋較新狀態」加並行防護**（並行來源包含 pubsub
+  通知與 `/mod crawl`）。
   - 顧慮：`noticeFromNotification()` 對既有文件會 `$set { crawledAt: null }`
     把它排回候選清單，而 pubsub 只在 `upsertedCount > 0` 時才立即 crawl。批次
     是先發一次 `videos.list`、再逐筆讀取與寫入，所以 API 回應與某一筆的
@@ -352,9 +353,10 @@ agenda job 定義內的查詢串接，沒有可獨立呼叫的匯出，為它建
   - 理由：這個情境對 raid 佔位文件不成立。raid 的 `originVideoId` 是「正在直播
     中、被主播 raid 過去」的影片，它在 YouTube 上早已存在，不是剛發布的新影片，
     因此不適用 API 傳播延遲；而 pubsub 只在頻道發布新影片時觸發，不會在那個
-    時刻對一支進行中的直播重發通知。crawler 查不到它，就是它真的被設為私人或
-    刪除了。可行的防護手段則要放棄 `save()` 對 `availableAt` / `duration` /
-    `hbStatus` 的統一處理，把那些欄位在兩處重複維護。
+    時刻對一支進行中的直播重發通知。`/mod crawl` 這條並行來源更罕見——需要有人
+    恰好在同一個批次的處理區間內手動 crawl 同一支影片。crawler 查不到它，就是
+    它真的被設為私人或刪除了。可行的防護手段則要放棄 `save()` 對 `availableAt`
+    / `duration` / `hbStatus` 的統一處理，把那些欄位在兩處重複維護。
 - **即將開播那條候選查詢不加界，尖峰時仍可能佔滿全部名額**。
   - 顧慮：候選清單第三條選出 `scheduledStart` 落在前後 5 分鐘內、尚未開始的
     直播，沒有 limit 且排在 recently-ended 與一般 live 之前。若同時有 100 支
