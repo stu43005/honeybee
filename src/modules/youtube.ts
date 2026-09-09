@@ -182,7 +182,12 @@ export async function updateVideoFromYoutube(
       new Date();
     video.crawledAt = new Date();
     video.hbStatus ??= HoneybeeStatus.Created;
-    await video.save();
+    // YouTube omitting the id is the one fact worth persisting here, and the
+    // document may lack required fields because of how it was created (an
+    // upsert bypasses validators). Validating would reject this write and
+    // leave the document in its old state, so it would be picked up again on
+    // every round forever.
+    await video.save({ validateBeforeSave: !!ytInfo });
     result.push(video);
   }
 
