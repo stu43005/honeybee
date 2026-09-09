@@ -117,8 +117,15 @@ await video.save({ validateBeforeSave: !!ytInfo });
 - **競態下比刪除安全。** `save()` 對既有文件走 `$__delta()`，只送出這次真正
   修改過的路徑，不會拿記憶體中的舊快照覆蓋整份文件。所以就算 pubsub 或
   `/mod crawl` 在 `findByVideoId` 之後補上了 `channelId` / `title`，那些欄位
-  不會被抹掉。最壞情況是一支剛恢復的影片被短暫標成 `deleted`，下一輪 crawl
-  就會自動修正。
+  不會被抹掉。
+- **與 pubsub 通知交錯時寫入的仍是正確結論。** `noticeFromNotification()` 對
+  既有文件會 `$set { crawledAt: null }`，把它排回候選清單；若這發生在
+  `findByVideoId` 與 `save()` 之間，這次寫入會把 `crawledAt` 蓋回 `now`。這不
+  是資料遺失：`crawledAt: null` 表達的是「請重新爬取」這個排程請求，而 crawler
+  在同一個瞬間才剛向 YouTube——判定影片是否存在的權威來源——問過，得到的答案
+  是查不到。通知本身不會讓那支影片變得可爬取，立刻重爬一次也只會得到相同結果。
+  被省略的是一次重複工作，不是一個恢復信號。影片真正恢復時，YouTube 的回應會
+  跟著改變，`deleted` 也就會被設回 `false`。
 - **raid 佔位文件不會流進 archive writer。** 標記後的佔位文件是
   `status: Missing`、沒有 `actualStart`、沒有 `hbEnd`，而每個
   `buildVideoSummary()` 的呼叫端都會先把它過濾掉：
