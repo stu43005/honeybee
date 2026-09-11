@@ -243,24 +243,32 @@ export async function updateChannelFromYoutube(
     hl: "ja",
     maxResults: 50,
   });
-  const ytChannelItems = response?.data?.items;
-  if (!ytChannelItems?.length) return [];
+  // A resolved response with no items means every requested id is gone
+  // (deleted / private / nonexistent) — API/quota errors throw before here — so
+  // fall through and let the per-channel loop mark the missing ids deleted.
+  const ytChannelItems = response?.data?.items ?? [];
 
   const result: DocumentType<Channel>[] = [];
   for (const targetChannel of targetChannels) {
-    const channel =
-      (await ChannelModel.findByChannelId(targetChannel)) ??
-      new ChannelModel({ id: targetChannel });
     const ytInfo = ytChannelItems.find(
       (ytChannelItem) => ytChannelItem.id === targetChannel
     );
+    const existing = await ChannelModel.findByChannelId(targetChannel);
+    // A never-before-seen id that YouTube omits has no name to persist and is
+    // not a channel we track — skip it instead of creating an invalid phantom
+    // record that would fail validation.
+    if (!ytInfo && !existing) continue;
+    const channel = existing ?? new ChannelModel({ id: targetChannel });
     if (ytInfo) {
       applyYoutubeChannelInfo(channel, ytInfo);
     } else {
       channel.deleted = true;
     }
     channel.crawledAt = new Date();
-    await channel.save();
+    // Same reason as the video path: a channel inserted by a validator-
+    // bypassing upsert can lack the required name, and validating would reject
+    // this write and leave it stuck in the candidate list forever.
+    await channel.save({ validateBeforeSave: !!ytInfo });
     result.push(channel);
   }
 

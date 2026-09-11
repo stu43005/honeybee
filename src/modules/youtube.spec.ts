@@ -13,19 +13,21 @@ import { VideoStatus } from "holodex.js";
 process.env.GOOGLE_API_KEY = "test-key";
 
 const mockVideosList = jest.fn<() => Promise<unknown>>();
+const mockChannelsList = jest.fn<() => Promise<unknown>>();
 
 jest.unstable_mockModule("googleapis", () => ({
   google: {
     youtube: () => ({
       videos: { list: mockVideosList },
-      channels: { list: jest.fn() },
+      channels: { list: mockChannelsList },
     }),
   },
 }));
 
 const { default: VideoModel } = await import("../models/Video.js");
 const { default: ChannelModel } = await import("../models/Channel.js");
-const { updateVideoFromYoutube } = await import("./youtube.js");
+const { updateVideoFromYoutube, updateChannelFromYoutube } =
+  await import("./youtube.js");
 
 // A minimal mutable stand-in for a Video document.
 function fakeVideo(overrides: Record<string, unknown>) {
@@ -50,9 +52,30 @@ function foundItem(id: string) {
   };
 }
 
+// A minimal mutable stand-in for a Channel document.
+function fakeChannel(overrides: Record<string, unknown>) {
+  return {
+    id: "chan",
+    save: jest
+      .fn<(options?: { validateBeforeSave?: boolean }) => Promise<unknown>>()
+      .mockResolvedValue(undefined),
+    ...overrides,
+  } as any;
+}
+
+function foundChannelItem(id: string) {
+  return {
+    id,
+    snippet: { title: "A channel" },
+    statistics: {},
+    brandingSettings: {},
+  };
+}
+
 afterEach(() => {
   jest.restoreAllMocks();
   mockVideosList.mockReset();
+  mockChannelsList.mockReset();
 });
 
 describe("updateVideoFromYoutube detectedDeletionAt", () => {
@@ -225,5 +248,72 @@ describe("updateVideoFromYoutube batch isolation", () => {
       expect.stringContaining("boom1"),
       expect.any(Error)
     );
+  });
+});
+
+describe("updateChannelFromYoutube validateBeforeSave", () => {
+  it("saves a vanished channel without validation so the verdict lands", async () => {
+    const gone = fakeChannel({ id: "UCgone" });
+    jest
+      .spyOn(ChannelModel, "findByChannelId")
+      .mockImplementation((() => gone) as any);
+    mockChannelsList.mockResolvedValue({ data: { items: [] } });
+
+    await updateChannelFromYoutube(["UCgone"]);
+
+    expect(gone.save).toHaveBeenCalledWith({ validateBeforeSave: false });
+    expect(gone.deleted).toBe(true);
+    expect(gone.crawledAt).toBeInstanceOf(Date);
+  });
+
+  it("validates the save when YouTube still returns the channel", async () => {
+    const found = fakeChannel({ id: "UCfound" });
+    jest
+      .spyOn(ChannelModel, "findByChannelId")
+      .mockImplementation((() => found) as any);
+    mockChannelsList.mockResolvedValue({
+      data: { items: [foundChannelItem("UCfound")] },
+    });
+
+    await updateChannelFromYoutube(["UCfound"]);
+
+    expect(found.save).toHaveBeenCalledWith({ validateBeforeSave: true });
+    expect(found.name).toBe("A channel");
+  });
+
+  it("marks every channel when the whole batch is missing", async () => {
+    const a = fakeChannel({ id: "UCa" });
+    const b = fakeChannel({ id: "UCb" });
+    jest
+      .spyOn(ChannelModel, "findByChannelId")
+      .mockImplementation(((id: string) => (id === "UCa" ? a : b)) as any);
+    mockChannelsList.mockResolvedValue({ data: { items: [] } });
+
+    const result = await updateChannelFromYoutube(["UCa", "UCb"]);
+
+    expect(a.deleted).toBe(true);
+    expect(b.deleted).toBe(true);
+    expect(result).toEqual([a, b]);
+  });
+
+  it("skips a never-seen channel that is already gone", async () => {
+    // findByChannelId returns null (never tracked); YouTube omits it.
+    const findSpy = jest
+      .spyOn(ChannelModel, "findByChannelId")
+      .mockImplementation((() => null) as any);
+    // Spying the prototype observes a `new ChannelModel(...).save()` attempt
+    // directly. An empty result is not enough on its own: once per-channel
+    // errors are caught, a phantom save that rejects would be swallowed and
+    // the result would still be empty.
+    const protoSaveSpy = jest
+      .spyOn(ChannelModel.prototype, "save")
+      .mockResolvedValue(undefined as never);
+    mockChannelsList.mockResolvedValue({ data: { items: [] } });
+
+    const result = await updateChannelFromYoutube(["UCneverseen"]);
+
+    expect(protoSaveSpy).not.toHaveBeenCalled();
+    expect(result).toEqual([]);
+    expect(findSpy).toHaveBeenCalledWith("UCneverseen");
   });
 });
