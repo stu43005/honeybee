@@ -285,10 +285,25 @@ export async function runCrawler() {
   agenda.define(JOB_YOUTUBE_UPDATE_VIDEOS, async (_job: Job): Promise<void> => {
     const videoIds = Array.from(
       new Set<string>([
+        // These two collect documents that can never leave the candidate set
+        // on their own, and they sit first in the Set, so without a cap they
+        // fill the whole 100-slot slice and push live videos out. _id
+        // ascending gives deterministic FIFO rotation off the default index,
+        // with no in-memory sort stage. The scheduled-start query below stays
+        // unbounded on purpose: a stream about to go live has to be fetched
+        // now, and that spike drains within a round.
         ...mapToId(
-          await VideoModel.find({ status: VideoStatus.New }).select("id")
+          await VideoModel.find({ status: VideoStatus.New })
+            .sort({ _id: 1 })
+            .limit(25)
+            .select("id")
         ),
-        ...mapToId(await VideoModel.find({ crawledAt: null }).select("id")),
+        ...mapToId(
+          await VideoModel.find({ crawledAt: null })
+            .sort({ _id: 1 })
+            .limit(25)
+            .select("id")
+        ),
         ...mapToId(
           await VideoModel.findLiveVideos()
             .and([
