@@ -250,26 +250,35 @@ export async function updateChannelFromYoutube(
 
   const result: DocumentType<Channel>[] = [];
   for (const targetChannel of targetChannels) {
-    const ytInfo = ytChannelItems.find(
-      (ytChannelItem) => ytChannelItem.id === targetChannel
-    );
-    const existing = await ChannelModel.findByChannelId(targetChannel);
-    // A never-before-seen id that YouTube omits has no name to persist and is
-    // not a channel we track — skip it instead of creating an invalid phantom
-    // record that would fail validation.
-    if (!ytInfo && !existing) continue;
-    const channel = existing ?? new ChannelModel({ id: targetChannel });
-    if (ytInfo) {
-      applyYoutubeChannelInfo(channel, ytInfo);
-    } else {
-      channel.deleted = true;
+    try {
+      const ytInfo = ytChannelItems.find(
+        (ytChannelItem) => ytChannelItem.id === targetChannel
+      );
+      const existing = await ChannelModel.findByChannelId(targetChannel);
+      // A never-before-seen id that YouTube omits has no name to persist and is
+      // not a channel we track — skip it instead of creating an invalid phantom
+      // record that would fail validation.
+      if (!ytInfo && !existing) continue;
+      const channel = existing ?? new ChannelModel({ id: targetChannel });
+      if (ytInfo) {
+        applyYoutubeChannelInfo(channel, ytInfo);
+      } else {
+        channel.deleted = true;
+      }
+      channel.crawledAt = new Date();
+      // Same reason as the video path: a channel inserted by a validator-
+      // bypassing upsert can lack the required name, and validating would reject
+      // this write and leave it stuck in the candidate list forever.
+      await channel.save({ validateBeforeSave: !!ytInfo });
+      result.push(channel);
+    } catch (error) {
+      // This function runs at the end of the video update, so an escaping
+      // error would also drop a batch of videos that already saved fine.
+      console.error(
+        `[updateChannelFromYoutube] failed to update ${targetChannel}:`,
+        error
+      );
     }
-    channel.crawledAt = new Date();
-    // Same reason as the video path: a channel inserted by a validator-
-    // bypassing upsert can lack the required name, and validating would reject
-    // this write and leave it stuck in the candidate list forever.
-    await channel.save({ validateBeforeSave: !!ytInfo });
-    result.push(channel);
   }
 
   return result;

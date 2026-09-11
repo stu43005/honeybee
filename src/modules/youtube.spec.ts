@@ -317,3 +317,32 @@ describe("updateChannelFromYoutube validateBeforeSave", () => {
     expect(findSpy).toHaveBeenCalledWith("UCneverseen");
   });
 });
+
+describe("updateChannelFromYoutube batch isolation", () => {
+  it("keeps updating the rest of the batch when one channel fails to save", async () => {
+    const boom = fakeChannel({ id: "UCboom" });
+    boom.save.mockRejectedValue(new Error("save failed"));
+    const ok = fakeChannel({ id: "UCok" });
+    jest
+      .spyOn(ChannelModel, "findByChannelId")
+      .mockImplementation(((id: string) =>
+        id === "UCboom" ? boom : ok) as any);
+    mockChannelsList.mockResolvedValue({
+      data: {
+        items: [foundChannelItem("UCboom"), foundChannelItem("UCok")],
+      },
+    });
+    const errorSpy = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+
+    const result = await updateChannelFromYoutube(["UCboom", "UCok"]);
+
+    expect(ok.save).toHaveBeenCalled();
+    expect(result).toEqual([ok]);
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("UCboom"),
+      expect.any(Error)
+    );
+  });
+});
