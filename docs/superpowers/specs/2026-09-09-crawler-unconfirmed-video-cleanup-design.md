@@ -205,33 +205,38 @@ video 端已經採用的形狀。保留它的話，「整批 channel 都查不�
 
 檔案：`src/commands/crawler.ts`，`JOB_YOUTUBE_UPDATE_VIDEOS` 的候選清單。
 
-前兩條查詢各加上 `.sort({ _id: 1 }).limit(25)`：
+前兩條查詢各加上 `.sort({ _id: -1 }).limit(25)`：
 
 ```ts
 ...mapToId(
   await VideoModel.find({ status: VideoStatus.New })
-    .sort({ _id: 1 })
+    .sort({ _id: -1 })
     .limit(25)
     .select("id")
 ),
 ...mapToId(
   await VideoModel.find({ crawledAt: null })
-    .sort({ _id: 1 })
+    .sort({ _id: -1 })
     .limit(25)
     .select("id")
 ),
 ```
 
 - **為何要 sort**：只加 limit 而不排序，natural order 下的選取結果不確定，
-  難以推理哪些文件會被處理到。`_id` 排序讓選取變成確定的 FIFO。要注意排序本身
-  不保證進展——真正讓候選集縮小的是被選中的文件在處理後離開候選集（被填實或被
+  難以推理哪些文件會被處理到。排序讓選取變成確定的。要注意排序本身不保證
+  進展——真正讓候選集縮小的是被選中的文件在處理後離開候選集（被填實或被
   標記為已消失，兩者都會改變 `status` / `crawledAt`）。永遠無法離開候選集的
   文件正是變更 1 要根除的對象。
-- **為何用 `_id`**：ObjectId 單調遞增，排序等價於插入順序 FIFO；`_id` 有預設
-  索引，不會產生 in-memory SORT stage。`createdAt` 雖然也可用（`Video` 繼承的
-  `TimeStamps` 基底類啟用了 timestamps，mongoose 會在 `updateOne` upsert 插入
-  時透過 `$setOnInsert` 補上 `createdAt`），但它沒有索引，且早期或以
-  aggregation pipeline 建立的殘留文件可能沒有該欄位。
+- **為何是降序**：`_id` 不可變，所以升序加上限不提供任何輪替——若最舊的那批
+  id 始終存不進去（per-video 迴圈捕捉錯誤後繼續，失敗的文件持久狀態不變），
+  升序會永遠重選同一批，排在後面較新的影片被餓死。降序讓新影片優先，永遠
+  無法存檔的文件落到上限之外而不阻塞新影片的發現。能成功存檔的文件會自己
+  離開這兩條查詢、讓位給下一批，所以不會漏處理，只是處理順序反了。
+- **為何用 `_id`**：`_id` 有預設索引，不會產生 in-memory SORT stage，且
+  ObjectId 單調遞增，降序等價於插入順序的反向，語意清楚。`createdAt` 雖然也
+  可用（`Video` 繼承的 `TimeStamps` 基底類啟用了 timestamps，mongoose 會在
+  `updateOne` upsert 插入時透過 `$setOnInsert` 補上 `createdAt`），但它沒有
+  索引，且早期或以 aggregation pipeline 建立的殘留文件可能沒有該欄位。
 - **為何是 25**：兩條合計最多佔掉 100 個名額的一半，另一半保留給 live 與
   recently-ended 影片。
 

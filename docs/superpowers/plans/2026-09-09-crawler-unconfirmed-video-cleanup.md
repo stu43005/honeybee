@@ -622,22 +622,26 @@ git commit -m "fix(youtube): isolate per-channel failures from the rest of the b
 替換成：
 
 ```ts
-        // These two collect documents that can never leave the candidate set
-        // on their own, and they sit first in the Set, so without a cap they
-        // fill the whole 100-slot slice and push live videos out. _id
-        // ascending gives deterministic FIFO rotation off the default index,
-        // with no in-memory sort stage. The scheduled-start query below stays
-        // unbounded on purpose: a stream about to go live has to be fetched
-        // now, and that spike drains within a round.
+        // These two sit first in the Set, so without a cap they fill the whole
+        // 100-slot slice and push live videos out. Newest-first matters: _id is
+        // immutable, so an ascending cap would keep re-selecting the same
+        // oldest ids forever and starve newer videos behind them if those ids
+        // never manage to save. Descending puts new videos first and lets
+        // permanently unsavable ones fall past the cap instead of blocking
+        // discovery, and it runs off the default _id index with no in-memory
+        // sort stage. Documents that do save leave these queries on their own,
+        // so nothing is skipped — only the order changes. The scheduled-start
+        // query below stays unbounded on purpose: a stream about to go live has
+        // to be fetched now, and that spike drains within a round.
         ...mapToId(
           await VideoModel.find({ status: VideoStatus.New })
-            .sort({ _id: 1 })
+            .sort({ _id: -1 })
             .limit(25)
             .select("id")
         ),
         ...mapToId(
           await VideoModel.find({ crawledAt: null })
-            .sort({ _id: 1 })
+            .sort({ _id: -1 })
             .limit(25)
             .select("id")
         ),
@@ -653,7 +657,7 @@ Expected: 兩者皆無錯誤輸出。
 
 Run: `git diff src/commands/crawler.ts`
 
-Expected: 只有前兩條查詢加上 `.sort({ _id: 1 })` 與 `.limit(25)`，以及新增的註解。第三至第五條查詢（`scheduledStart` 窗口、`findRecentlyEndedVideos`、`findLiveVideos`）完全未變。
+Expected: 只有前兩條查詢加上 `.sort({ _id: -1 })` 與 `.limit(25)`，以及新增的註解。第三至第五條查詢（`scheduledStart` 窗口、`findRecentlyEndedVideos`、`findLiveVideos`）完全未變。
 
 - [ ] **Step 4: 跑完整測試套件**
 
