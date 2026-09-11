@@ -52,143 +52,156 @@ export async function updateVideoFromYoutube(
   const result: DocumentType<Video>[] = [];
   const needUpdateChannels: string[] = [];
   for (const targetVideo of targetVideos) {
-    const ytInfo = ytVideoItems.find(
-      (ytVideoItem) => ytVideoItem.id === targetVideo
-    );
-    const existing = await VideoModel.findByVideoId(targetVideo);
-    // A never-before-seen id that YouTube omits (deleted / private / nonexistent)
-    // has no channel/title to persist and is not a video we track — skip it
-    // instead of creating an invalid phantom record that would fail validation.
-    if (!ytInfo && !existing) continue;
-    const video = existing ?? new VideoModel({ id: targetVideo });
-    if (ytInfo) {
-      if (ytInfo.snippet?.channelId) video.channelId = ytInfo.snippet.channelId;
-      if (ytInfo.snippet?.title) video.title = ytInfo.snippet.title;
-      if (ytInfo.snippet?.description)
-        video.description = ytInfo.snippet.description;
-      if (ytInfo.snippet?.publishedAt)
-        video.publishedAt = new Date(ytInfo.snippet.publishedAt);
-      if (ytInfo.statistics?.likeCount)
-        video.likes = Math.max(video.likes ?? 0, +ytInfo.statistics.likeCount);
-
-      if (ytInfo.liveStreamingDetails) {
-        // live stream
-        video.scheduledStart = ytInfo.liveStreamingDetails.scheduledStartTime
-          ? new Date(ytInfo.liveStreamingDetails.scheduledStartTime)
-          : undefined;
-        video.actualStart = ytInfo.liveStreamingDetails.actualStartTime
-          ? new Date(ytInfo.liveStreamingDetails.actualStartTime)
-          : undefined;
-        video.actualEnd = ytInfo.liveStreamingDetails.actualEndTime
-          ? new Date(ytInfo.liveStreamingDetails.actualEndTime)
-          : undefined;
-        if (ytInfo.liveStreamingDetails.concurrentViewers) {
-          video.viewers = +ytInfo.liveStreamingDetails.concurrentViewers;
-          video.maxViewers = Math.max(
-            video.maxViewers ?? 0,
-            +ytInfo.liveStreamingDetails.concurrentViewers
+    try {
+      const ytInfo = ytVideoItems.find(
+        (ytVideoItem) => ytVideoItem.id === targetVideo
+      );
+      const existing = await VideoModel.findByVideoId(targetVideo);
+      // A never-before-seen id that YouTube omits (deleted / private / nonexistent)
+      // has no channel/title to persist and is not a video we track — skip it
+      // instead of creating an invalid phantom record that would fail validation.
+      if (!ytInfo && !existing) continue;
+      const video = existing ?? new VideoModel({ id: targetVideo });
+      if (ytInfo) {
+        if (ytInfo.snippet?.channelId)
+          video.channelId = ytInfo.snippet.channelId;
+        if (ytInfo.snippet?.title) video.title = ytInfo.snippet.title;
+        if (ytInfo.snippet?.description)
+          video.description = ytInfo.snippet.description;
+        if (ytInfo.snippet?.publishedAt)
+          video.publishedAt = new Date(ytInfo.snippet.publishedAt);
+        if (ytInfo.statistics?.likeCount)
+          video.likes = Math.max(
+            video.likes ?? 0,
+            +ytInfo.statistics.likeCount
           );
-        }
-        if (video.actualEnd) {
-          video.status = VideoStatus.Past;
-        } else if (video.actualStart) {
-          if (
-            ytInfo.liveStreamingDetails.concurrentViewers === undefined &&
-            utcDate.isAfter(moment(video.actualStart).add(2, "days"))
-          ) {
-            // assume that a Livestream is LIVE for more than 2 days without any viewers is MISSING.
-            video.status = VideoStatus.Missing;
-          } else {
-            video.status = VideoStatus.Live;
+
+        if (ytInfo.liveStreamingDetails) {
+          // live stream
+          video.scheduledStart = ytInfo.liveStreamingDetails.scheduledStartTime
+            ? new Date(ytInfo.liveStreamingDetails.scheduledStartTime)
+            : undefined;
+          video.actualStart = ytInfo.liveStreamingDetails.actualStartTime
+            ? new Date(ytInfo.liveStreamingDetails.actualStartTime)
+            : undefined;
+          video.actualEnd = ytInfo.liveStreamingDetails.actualEndTime
+            ? new Date(ytInfo.liveStreamingDetails.actualEndTime)
+            : undefined;
+          if (ytInfo.liveStreamingDetails.concurrentViewers) {
+            video.viewers = +ytInfo.liveStreamingDetails.concurrentViewers;
+            video.maxViewers = Math.max(
+              video.maxViewers ?? 0,
+              +ytInfo.liveStreamingDetails.concurrentViewers
+            );
           }
-        } else if (video.scheduledStart) {
-          if (utcDate.isSameOrAfter(video.scheduledStart)) {
+          if (video.actualEnd) {
+            video.status = VideoStatus.Past;
+          } else if (video.actualStart) {
             if (
-              utcDate.isAfter(moment(video.scheduledStart).add(2, "days")) &&
-              !video.isFreeChat()
+              ytInfo.liveStreamingDetails.concurrentViewers === undefined &&
+              utcDate.isAfter(moment(video.actualStart).add(2, "days"))
             ) {
-              // assume a live that is overslept for 48 hours is 'Missing'
+              // assume that a Livestream is LIVE for more than 2 days without any viewers is MISSING.
               video.status = VideoStatus.Missing;
             } else {
               video.status = VideoStatus.Live;
             }
+          } else if (video.scheduledStart) {
+            if (utcDate.isSameOrAfter(video.scheduledStart)) {
+              if (
+                utcDate.isAfter(moment(video.scheduledStart).add(2, "days")) &&
+                !video.isFreeChat()
+              ) {
+                // assume a live that is overslept for 48 hours is 'Missing'
+                video.status = VideoStatus.Missing;
+              } else {
+                video.status = VideoStatus.Live;
+              }
+            } else {
+              video.status = VideoStatus.Upcoming;
+            }
           } else {
-            video.status = VideoStatus.Upcoming;
+            if (utcDate.isAfter(moment(video.publishedAt).add(5, "days"))) {
+              video.status = VideoStatus.Missing;
+            } else {
+              video.status = VideoStatus.Upcoming;
+            }
           }
         } else {
-          if (utcDate.isAfter(moment(video.publishedAt).add(5, "days"))) {
-            video.status = VideoStatus.Missing;
-          } else {
-            video.status = VideoStatus.Upcoming;
+          // uploaded video
+          video.status = VideoStatus.Past;
+          video.uploadedVideo = true;
+        }
+        if (video.actualEnd && video.actualStart) {
+          video.duration = moment(video.actualEnd).diff(
+            video.actualStart,
+            "seconds"
+          );
+        }
+        if (ytInfo.contentDetails?.duration && !video.duration) {
+          const ytDuration = moment
+            .duration(ytInfo.contentDetails.duration)
+            .as("seconds");
+          if (ytDuration > 0) {
+            video.duration = ytDuration;
           }
         }
+        video.premiere =
+          video.premiere ||
+          ((ytInfo.snippet?.liveBroadcastContent === "upcoming" ||
+            ytInfo.snippet?.liveBroadcastContent === "live") &&
+            ytInfo.status?.uploadStatus === "processed");
+        video.memberLimited =
+          ytInfo.statistics && ytInfo.statistics.viewCount === undefined;
+        video.privacyStatus = ytInfo.status
+          ?.privacyStatus as Video["privacyStatus"];
+        video.uploadStatus = ytInfo.status
+          ?.uploadStatus as Video["uploadStatus"];
+        if (video.deleted) {
+          video.deleted = false;
+          video.detectedDeletionAt = undefined;
+        }
       } else {
-        // uploaded video
-        video.status = VideoStatus.Past;
-        video.uploadedVideo = true;
+        video.status = VideoStatus.Missing;
+        if (!video.deleted) video.detectedDeletionAt = new Date();
+        video.deleted = true;
       }
-      if (video.actualEnd && video.actualStart) {
-        video.duration = moment(video.actualEnd).diff(
-          video.actualStart,
-          "seconds"
-        );
-      }
-      if (ytInfo.contentDetails?.duration && !video.duration) {
-        const ytDuration = moment
-          .duration(ytInfo.contentDetails.duration)
-          .as("seconds");
-        if (ytDuration > 0) {
-          video.duration = ytDuration;
+
+      if (video.channelId && !video.channel) {
+        const channel = await ChannelModel.findByChannelId(video.channelId);
+        if (channel) {
+          video.channel = channel;
+        } else {
+          needUpdateChannels.push(video.channelId);
         }
       }
-      video.premiere =
-        video.premiere ||
-        ((ytInfo.snippet?.liveBroadcastContent === "upcoming" ||
-          ytInfo.snippet?.liveBroadcastContent === "live") &&
-          ytInfo.status?.uploadStatus === "processed");
-      video.memberLimited =
-        ytInfo.statistics && ytInfo.statistics.viewCount === undefined;
-      video.privacyStatus = ytInfo.status
-        ?.privacyStatus as Video["privacyStatus"];
-      video.uploadStatus = ytInfo.status?.uploadStatus as Video["uploadStatus"];
-      if (video.deleted) {
-        video.deleted = false;
-        video.detectedDeletionAt = undefined;
+      if (video.channel && isDocument(video.channel)) {
+        if (video.channel.hbIgnore) video.hbIgnore = true;
       }
-    } else {
-      video.status = VideoStatus.Missing;
-      if (!video.deleted) video.detectedDeletionAt = new Date();
-      video.deleted = true;
-    }
 
-    if (video.channelId && !video.channel) {
-      const channel = await ChannelModel.findByChannelId(video.channelId);
-      if (channel) {
-        video.channel = channel;
-      } else {
-        needUpdateChannels.push(video.channelId);
-      }
+      video.duration ??= 0;
+      video.availableAt =
+        video.actualStart ??
+        video.scheduledStart ??
+        video.publishedAt ??
+        video.availableAt ??
+        new Date();
+      video.crawledAt = new Date();
+      video.hbStatus ??= HoneybeeStatus.Created;
+      // YouTube omitting the id is the one fact worth persisting here, and the
+      // document may lack required fields because of how it was created (an
+      // upsert bypasses validators). Validating would reject this write and
+      // leave the document in its old state, so it would be picked up again on
+      // every round forever.
+      await video.save({ validateBeforeSave: !!ytInfo });
+      result.push(video);
+    } catch (error) {
+      // One bad document must not cost the rest of the batch its update.
+      console.error(
+        `[updateVideoFromYoutube] failed to update ${targetVideo}:`,
+        error
+      );
     }
-    if (video.channel && isDocument(video.channel)) {
-      if (video.channel.hbIgnore) video.hbIgnore = true;
-    }
-
-    video.duration ??= 0;
-    video.availableAt =
-      video.actualStart ??
-      video.scheduledStart ??
-      video.publishedAt ??
-      video.availableAt ??
-      new Date();
-    video.crawledAt = new Date();
-    video.hbStatus ??= HoneybeeStatus.Created;
-    // YouTube omitting the id is the one fact worth persisting here, and the
-    // document may lack required fields because of how it was created (an
-    // upsert bypasses validators). Validating would reject this write and
-    // leave the document in its old state, so it would be picked up again on
-    // every round forever.
-    await video.save({ validateBeforeSave: !!ytInfo });
-    result.push(video);
   }
 
   await updateChannelFromYoutube(needUpdateChannels);

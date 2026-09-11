@@ -119,13 +119,18 @@ describe("updateVideoFromYoutube detectedDeletionAt", () => {
     const findSpy = jest
       .spyOn(VideoModel, "findByVideoId")
       .mockImplementation((() => null) as any);
+    // Spying the prototype observes a `new VideoModel(...).save()` attempt
+    // directly. An empty result is not enough on its own: once per-video
+    // errors are caught, a phantom save that rejects would be swallowed and
+    // the result would still be empty.
+    const protoSaveSpy = jest
+      .spyOn(VideoModel.prototype, "save")
+      .mockResolvedValue(undefined as never);
     mockVideosList.mockResolvedValue({ data: { items: [] } });
 
-    // No `new VideoModel(...).save()` is attempted (that would need a DB and fail
-    // validation for the missing channelId/title), so this resolves cleanly with
-    // an empty result rather than throwing.
     const result = await updateVideoFromYoutube(["neverseen1"]);
 
+    expect(protoSaveSpy).not.toHaveBeenCalled();
     expect(result).toEqual([]);
     expect(findSpy).toHaveBeenCalledWith("neverseen1");
   });
@@ -193,5 +198,32 @@ describe("updateVideoFromYoutube validateBeforeSave", () => {
     expect(gone.deleted).toBe(true);
     expect(gone.detectedDeletionAt).toBeInstanceOf(Date);
     expect(result).toEqual([gone]);
+  });
+});
+
+describe("updateVideoFromYoutube batch isolation", () => {
+  it("keeps updating the rest of the batch when one video fails to save", async () => {
+    const boom = fakeVideo({ id: "boom1" });
+    boom.save.mockRejectedValue(new Error("save failed"));
+    const ok = fakeVideo({ id: "ok1" });
+    jest
+      .spyOn(VideoModel, "findByVideoId")
+      .mockImplementation(((id: string) =>
+        id === "boom1" ? boom : ok) as any);
+    mockVideosList.mockResolvedValue({
+      data: { items: [foundItem("boom1"), foundItem("ok1")] },
+    });
+    const errorSpy = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+
+    const result = await updateVideoFromYoutube(["boom1", "ok1"]);
+
+    expect(ok.save).toHaveBeenCalled();
+    expect(result).toEqual([ok]);
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("boom1"),
+      expect.any(Error)
+    );
   });
 });
