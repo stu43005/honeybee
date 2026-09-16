@@ -455,11 +455,24 @@ callback token 由 `YOUTUBE_PUBSUB_SECRET` 衍生，也不是新的環境變數�
 
 `YOUTUBE_PUBSUB_SECRET` 或 `PUBLIC_BASE_URL` 一旦變更，hub 端既有訂閱就會失效
 （簽章驗不過、或 callback 位址不再指向我們），但資料庫裡的 `pubsubExpiresAt` 不會
-自動知道這件事。變更時要一併清掉它，讓全部頻道回到候選：
+自動知道這件事。變更時要一併清掉它，讓全部頻道回到候選。
 
-```
-db.channels.updateMany({}, { $unset: { pubsubExpiresAt: "" } })
-```
+**順序很重要，而且只有一種正確順序：**
+
+1. 套用新設定並重新部署 crawler。
+2. **等 rollout 結束、舊 pod 完全終止**（`kubectl rollout status deploy/crawler`）。
+3. 才執行：
+
+   ```
+   db.channels.updateMany({}, { $unset: { pubsubExpiresAt: "" } })
+   ```
+
+先清再部署是錯的：舊設定的 process 還活著時，它送出的訂閱請求對應的
+verification 可能在清除**之後**才回來，而那個 handler 只檢查
+`pubsubRequestedAt` 的時間窗、不知道設定已經換了，於是會把描述舊 callback 的
+`pubsubExpiresAt` 寫回去——該頻道就被排除在續訂之外約 4 天。等舊 pod 終止之後再
+清，就沒有任何寫入者能污染清除後的狀態（crawler 是 `replicas: 1`，rollout 完成
+後不存在舊設定的寫入者）。
 
 清完之後不需要其他動作，續訂會按既有節奏在約 6 小時內重新鋪滿。這一步刻意留在
 運維程序而不是程式邏輯，理由見 Non-goals。
