@@ -157,6 +157,20 @@ rejection。
 - 目前 repo 沒有任何 XML parser 直接依賴，`xml2js@0.4.23` 只存在於
   `youtube-notification` 的依賴樹中。
 
+**googleapis 173.0.0 / gaxios 7.1.5（YouTube API 逾時）**
+
+- **gaxios 沒有預設逾時**：`common.d.ts` 的 `timeout?: number` 註解就是
+  「A timeout for the request, in milliseconds. No timeout by default.」，而
+  `#appendTimeoutToSignal` 只在 `opts.timeout` 有值時才建立
+  `AbortSignal.timeout(...)`。所以現行的 `youtube.videos.list(...)` 可以無限掛住。
+- 逾時可以在建立 client 時一次設定：`google.youtube({ version, auth, timeout })`
+  （`MethodOptions extends GaxiosOptions`，單次呼叫也能各自帶 `timeout`）。逾時是
+  以原生 `AbortSignal` 強制執行的。
+- **retry 預設是關閉的**（要明確給 `retry: true` 或 `retryConfig` 才會重試），所以
+  設定逾時不會變成「逾時 × 重試次數」。
+- 本專案用 API key 認證（`auth: GOOGLE_API_KEY`），不走 OAuth token 交換，所以
+  google-auth-library 那條同樣沒有逾時的 token 取得路徑在這裡不會發生。
+
 **PubSubHubbub / WebSub（W3C Recommendation + Google hub）**
 
 - hub 端點 `https://pubsubhubbub.appspot.com/subscribe`，topic 是
@@ -321,21 +335,43 @@ token 是多餘的；而保留無 token 的舊 POST 路徑，是為了讓上線�
 3. 簽章不符 → **回 200** + log warn。非 2xx 會讓 hub 在自訂上限內反覆重試同一筆
    通知（不會導致退訂），所以安全的忽略方式是回 200。
 4. 解析不出 feed 結構 → 回 200 + log warn。
-5. **逐一處理解析出來的每一個 entry**（見下方「為什麼是集合」）：
+5. **第一階段——逐一寫入解析出來的每一個 entry**（見下方「為什麼是集合」）：
    - 刪除類 entry → 略過（沿用現況忽略）。
-   - 影片類 entry → `noticeFromNotification`，其中 `upsertedCount > 0`（新影片）
-     才呼叫 `updateVideoFromYoutube`；`modifiedCount > 0` 只記 log。
+   - 影片類 entry → `noticeFromNotification`；把 `upsertedCount > 0`（新影片）的
+     id 記下來，`modifiedCount > 0` 只記 log。這一階段**只碰資料庫**。
 6. 任何一筆 `noticeFromNotification` 拋錯 → **回 500** + log error，讓 hub 重試
-   投遞。這是對現有行為的修正：現況是 catch 後回 200，而回 200 等於告訴 hub 投遞
-   成功、放棄重試。`[crawler youtube update]` 的候選查詢全都要求資料庫裡已經有該
-   影片的文件，Holodex 的 live／past 輪詢也補不到普通上傳，所以一次寫入失敗可以讓
-   一部影片**永久**不被發現。非 2xx 會讓 hub 在自訂上限內重試，而且已確認不會導致
-   退訂，所以回 500 是這裡唯一有持久重試能力的選項。重送整筆是安全的：
-   `noticeFromNotification` 是 upsert，已經寫成功的 entry 重放一次不會有副作用。
-7. `updateVideoFromYoutube` 拋錯 → 不影響回應碼（該 entry 記 warn 後繼續）。影片
-   文件此時已經寫進資料庫了，接手的是每分鐘一次的 `[crawler youtube update]`
-   （`crawledAt: null` 正是它的候選條件），不需要 hub 重送整筆通知。
-8. 所有 entry 都處理完且沒有寫入失敗 → 回 200。
+   投遞（不進第二階段）。這是對現有行為的修正：現況是 catch 後回 200，而回 200
+   等於告訴 hub 投遞成功、放棄重試。`[crawler youtube update]` 的候選查詢全都要求
+   資料庫裡已經有該影片的文件，Holodex 的 live／past 輪詢也補不到普通上傳，所以
+   一次寫入失敗可以讓一部影片**永久**不被發現。非 2xx 會讓 hub 在自訂上限內重試，
+   而且已確認不會導致退訂，所以回 500 是這裡唯一有持久重試能力的選項。重送整筆是
+   安全的：`noticeFromNotification` 是 upsert，已經寫成功的 entry 重放一次不會有
+   副作用。
+7. 全部寫入成功 → **回 200**。
+8. **第二階段——回應之後**，對第一階段記下的新影片 id 呼叫
+   `updateVideoFromYoutube` 補 metadata，整段包在 try/catch 裡，失敗只 log warn。
+
+**為什麼 enrichment 一定要在回應之後、而且一定要 catch。**
+
+- 放在回應之後：`updateVideoFromYoutube` 會 await YouTube Data API。就算加上逾時
+  （見下方「YouTube API 逾時」），一次慢回應仍然會把同一筆通知裡後面的 entry 擋在
+  資料庫外面——而那些影片沒有任何其他機制會補回來，正是第 6 點要避免的那種永久
+  遺失。逾時管的是「不會無限掛住」，順序管的是「不阻塞寫入與回應」，兩者互補。
+- 一定要 catch：回應之後的工作若拋出未處理的 rejection，會觸發
+  `process.on("unhandledRejection") → process.exit(1)`，那就是本案的根因。
+- 失敗或卡住的後果很輕：影片文件已經寫好了、`crawledAt` 是 null，每分鐘一次的
+  `[crawler youtube update]` 正是以此為候選條件，最多晚一分鐘補上 metadata。
+
+#### YouTube API 逾時
+
+`getYoutubeApi()` 建立 client 的地方加上 `timeout: YOUTUBE_API_TIMEOUT_MS`。這是
+整個 repo 唯一建立 youtube client 的位置，所以一處設定就涵蓋所有 YouTube API
+呼叫——包含每分鐘一次的 `[crawler youtube update]`（它同樣沒有 `job.touch()`，被
+無限掛住的請求擋住的話會以同樣的形狀卡死）。
+
+這一項嚴格說超出「修訂閱」的範圍，但它與本設計要修的 bug 是同一個形狀（沒有界限
+的 await 讓工作永遠不結束），而且已確認 gaxios 不會自己給任何逾時、retry 也預設
+關閉，所以成本是一行加一個常數。
 
 **為什麼解析結果是集合而不是單一影片。** YouTube 實務上每筆推播只帶一個
 `entry`（`youtube-notification` 也是直接取 `feed.entry[0]`），但 WebSub 允許 hub
@@ -386,15 +422,16 @@ upsert、本來就冪等，而且從 log 看重複通知極多、那段去重幾
 
 都放 `src/constants.ts`，依 `_MS` 慣例，每個帶一行說明選值理由的註解。
 
-| 常數                         | 值      | 理由                                                                                             |
-| ---------------------------- | ------- | ------------------------------------------------------------------------------------------------ |
-| `PUBSUB_RENEW_BEFORE_MS`     | 24 小時 | 提前一天續訂，容得下一整天的排程中斷仍不掉訂閱                                                   |
-| `PUBSUB_REQUEST_COOLDOWN_MS` | 15 分鐘 | 同一頻道的最短重試間隔，同時是 verification 的接受窗口；刻意大於 10 分鐘的排程間隔，確保候選輪替 |
-| `PUBSUB_RENEW_BATCH_SIZE`    | 5       | 單輪上限，也就是一次崩潰或限流的損失上限                                                         |
-| `PUBSUB_REQUEST_SPACING_MS`  | 250     | 單輪內請求之間的間隔                                                                             |
-| `PUBSUB_DEFAULT_LEASE_MS`    | 24 小時 | hub 未提供或提供了不合法的 `lease_seconds` 時的保守預設，確保仍會續訂而不是永不續訂              |
-| `PUBSUB_MAX_LEASE_MS`        | 10 天   | `lease_seconds` 的上界；取自規範安全章節建議的「10 days is a good default」，超過就 clamp        |
-| `PUBSUB_REQUEST_TIMEOUT_MS`  | 10 秒   | 單次 hub 請求的逾時；axios 預設是無限等待，必須明確設定                                          |
+| 常數                         | 值      | 理由                                                                                                                                               |
+| ---------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PUBSUB_RENEW_BEFORE_MS`     | 24 小時 | 提前一天續訂，容得下一整天的排程中斷仍不掉訂閱                                                                                                     |
+| `PUBSUB_REQUEST_COOLDOWN_MS` | 15 分鐘 | 同一頻道的最短重試間隔，同時是 verification 的接受窗口；刻意大於 10 分鐘的排程間隔，確保候選輪替                                                   |
+| `PUBSUB_RENEW_BATCH_SIZE`    | 5       | 單輪上限，也就是一次崩潰或限流的損失上限                                                                                                           |
+| `PUBSUB_REQUEST_SPACING_MS`  | 250     | 單輪內請求之間的間隔                                                                                                                               |
+| `PUBSUB_DEFAULT_LEASE_MS`    | 24 小時 | hub 未提供或提供了不合法的 `lease_seconds` 時的保守預設，確保仍會續訂而不是永不續訂                                                                |
+| `PUBSUB_MAX_LEASE_MS`        | 10 天   | `lease_seconds` 的上界；取自規範安全章節建議的「10 days is a good default」，超過就 clamp                                                          |
+| `PUBSUB_REQUEST_TIMEOUT_MS`  | 10 秒   | 單次 hub 請求的逾時；axios 預設是無限等待，必須明確設定                                                                                            |
+| `YOUTUBE_API_TIMEOUT_MS`     | 15 秒   | 所有 YouTube Data API 呼叫的逾時；gaxios 沒有預設值。取比 hub 請求寬鬆的值，因為單次呼叫最多帶 50 個 id，但仍遠短於 agenda 的 10 分鐘 lockLifetime |
 
 hub 端點與 topic 前綴是固定值，放 `hub-client.ts` 內部常數，不走環境變數。
 callback token 由 `YOUTUBE_PUBSUB_SECRET` 衍生，也不是新的環境變數。
@@ -404,22 +441,22 @@ callback token 由 `YOUTUBE_PUBSUB_SECRET` 衍生，也不是新的環境變數�
 
 ## 失效模式
 
-| 狀況                                     | 行為                                                                              |
-| ---------------------------------------- | --------------------------------------------------------------------------------- |
-| hub 429／503                             | 本輪中止、job 正常成功；最多 `PUBSUB_RENEW_BATCH_SIZE` 個頻道延後 10 分鐘         |
-| hub 400 或其他非 2xx                     | log warn、該頻道 `pubsubRequestedAt` 已更新（排到隊尾）、繼續下一個               |
-| hub 連線掛住不回應                       | `PUBSUB_REQUEST_TIMEOUT_MS` 逾時後歸類為一般失敗，繼續下一個；單輪總時長有上界    |
-| 請求送出但 verification 從未到達         | `pubsubExpiresAt` 不變 → 冷卻後回到候選；因最舊優先排序，不會霸佔隊首             |
-| verification 遲到超過窗口                | 404 拒絕、狀態不變 → 下一輪重訂                                                   |
-| 偽造的 verification（無 token）          | token 不符 → 404，不查 DB、不改狀態                                               |
-| verification 帶異常 `lease_seconds`      | 非正整數或缺失 → 用預設值；超過 `PUBSUB_MAX_LEASE_MS` → clamp 到上界              |
-| HMAC 不符／缺簽章                        | 不符回 200 忽略（避免 hub 反覆重試同一筆）、缺簽章回 403，都 log warn             |
-| Atom 形狀非預期                          | 解析回 null → 回 200 + log warn，不 throw                                         |
-| 一筆通知含多個 entry                     | 全部逐一處理；任一影片寫入失敗就回 500，重送時已成功的 entry 因 upsert 冪等而安全 |
-| 通知寫入影片文件失敗                     | log error + **回 500**，讓 hub 重試投遞（唯一有持久重試能力的路徑）               |
-| 寫入成功但 `updateVideoFromYoutube` 失敗 | log warn + 回 200；文件已在，交給每分鐘的 `[crawler youtube update]`              |
-| challenge 回應後寫 DB 失敗               | log warn；該頻道 15 分鐘後回到候選，重訂一次（hub 端冪等）                        |
-| process 崩潰                             | 最多損失本輪的頻道；下一輪 10 分鐘後自動接上                                      |
+| 狀況                                           | 行為                                                                                                      |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| hub 429／503                                   | 本輪中止、job 正常成功；最多 `PUBSUB_RENEW_BATCH_SIZE` 個頻道延後 10 分鐘                                 |
+| hub 400 或其他非 2xx                           | log warn、該頻道 `pubsubRequestedAt` 已更新（排到隊尾）、繼續下一個                                       |
+| hub 連線掛住不回應                             | `PUBSUB_REQUEST_TIMEOUT_MS` 逾時後歸類為一般失敗，繼續下一個；單輪總時長有上界                            |
+| 請求送出但 verification 從未到達               | `pubsubExpiresAt` 不變 → 冷卻後回到候選；因最舊優先排序，不會霸佔隊首                                     |
+| verification 遲到超過窗口                      | 404 拒絕、狀態不變 → 下一輪重訂                                                                           |
+| 偽造的 verification（無 token）                | token 不符 → 404，不查 DB、不改狀態                                                                       |
+| verification 帶異常 `lease_seconds`            | 非正整數或缺失 → 用預設值；超過 `PUBSUB_MAX_LEASE_MS` → clamp 到上界                                      |
+| HMAC 不符／缺簽章                              | 不符回 200 忽略（避免 hub 反覆重試同一筆）、缺簽章回 403，都 log warn                                     |
+| Atom 形狀非預期                                | 解析回 null → 回 200 + log warn，不 throw                                                                 |
+| 一筆通知含多個 entry                           | 全部逐一處理；任一影片寫入失敗就回 500，重送時已成功的 entry 因 upsert 冪等而安全                         |
+| 通知寫入影片文件失敗                           | log error + **回 500**，讓 hub 重試投遞（唯一有持久重試能力的路徑）                                       |
+| 寫入成功但 `updateVideoFromYoutube` 失敗或卡住 | 已回 200；catch 後 log warn（不 catch 會殺掉 process），文件已在，交給每分鐘的 `[crawler youtube update]` |
+| challenge 回應後寫 DB 失敗                     | log warn；該頻道 15 分鐘後回到候選，重訂一次（hub 端冪等）                                                |
+| process 崩潰                                   | 最多損失本輪的頻道；下一輪 10 分鐘後自動接上                                                              |
 
 ## 測試策略
 
@@ -445,9 +482,14 @@ callback token 由 `YOUTUBE_PUBSUB_SECRET` 衍生，也不是新的環境變數�
   `noticeFromNotification`。其中 challenge 案例要斷言**回應 body 完全等於
   `hub.challenge`**（body 不符會讓 hub 判定驗證失敗）。另外要有這幾個對照案例：
   `noticeFromNotification` 拋錯時回 **500**，而 `updateVideoFromYoutube` 拋錯時仍
-  回 **200**；含兩個 entry 的通知會寫入兩部影片（斷言兩次呼叫的參數）；以及**第二
-  個 entry 寫入失敗 → 回 500，重送同一筆 body 後兩部影片都在**（用 stateful fake
-  記錄寫入，驗證重放補齊而不是重複建立）。
+  回 **200**；含兩個 entry 的通知會寫入兩部影片（斷言兩次呼叫的參數）；**第二個
+  entry 寫入失敗 → 回 500，重送同一筆 body 後兩部影片都在**（用 stateful fake
+  記錄寫入，驗證重放補齊而不是重複建立）；以及**`updateVideoFromYoutube` 永遠不
+  resolve 時，兩個 entry 仍然都已寫入資料庫且回應已經送出**（證明 enrichment 不在
+  寫入與回應的路徑上）。
+- **`src/modules/youtube.spec.ts`**（既有檔案）—— 斷言 `getYoutubeApi()` 建立
+  client 時帶了 `timeout: YOUTUBE_API_TIMEOUT_MS`。這是唯一建立 client 的位置，
+  漏掉就等於所有 YouTube 呼叫都沒有逾時。
 
 ## 部署行為
 
