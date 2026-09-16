@@ -159,6 +159,14 @@ In addition to the global rules in `~/.claude/CLAUDE.md`, the following are
 project-specific common pitfalls. Each spec/plan review subagent must check for
 these before reporting OKAY.
 
+### Language
+
+- **Specs** (`docs/superpowers/specs/`) are written in 繁體中文.
+- **Plans** (`docs/superpowers/plans/`) are written in English — prose, step
+  titles and expectations included, not just the code blocks.
+- **Code comments are English**, in every file and in every code block a spec or
+  plan contains (including test code and `describe`/`it` strings).
+
 ### Document reference leaks (zero tolerance, recurring)
 
 Code blocks (including JSDoc, inline comments, test `describe`/`it` strings, and
