@@ -362,17 +362,6 @@ token 是多餘的；而保留無 token 的舊 POST 路徑，是為了讓上線�
 - 失敗或卡住的後果很輕：影片文件已經寫好了、`crawledAt` 是 null，每分鐘一次的
   `[crawler youtube update]` 正是以此為候選條件，最多晚一分鐘補上 metadata。
 
-#### YouTube API 逾時
-
-`getYoutubeApi()` 建立 client 的地方加上 `timeout: YOUTUBE_API_TIMEOUT_MS`。這是
-整個 repo 唯一建立 youtube client 的位置，所以一處設定就涵蓋所有 YouTube API
-呼叫——包含每分鐘一次的 `[crawler youtube update]`（它同樣沒有 `job.touch()`，被
-無限掛住的請求擋住的話會以同樣的形狀卡死）。
-
-這一項嚴格說超出「修訂閱」的範圍，但它與本設計要修的 bug 是同一個形狀（沒有界限
-的 await 讓工作永遠不結束），而且已確認 gaxios 不會自己給任何逾時、retry 也預設
-關閉，所以成本是一行加一個常數。
-
 **為什麼解析結果是集合而不是單一影片。** YouTube 實務上每筆推播只帶一個
 `entry`（`youtube-notification` 也是直接取 `feed.entry[0]`），但 WebSub 允許 hub
 投遞整份 topic 內容而不只是差異，而 `videos.xml` 這個 topic feed 本身含有該頻道
@@ -417,6 +406,17 @@ body 根本不是 feed 時回 null。單一 entry 是長度 1 的陣列，呼叫
 
 順手丟掉套件的記憶體去重（`_recieved` 陣列）：`noticeFromNotification` 是
 upsert、本來就冪等，而且從 log 看重複通知極多、那段去重幾乎沒生效。
+
+### YouTube API 逾時
+
+`getYoutubeApi()` 建立 client 的地方加上 `timeout: YOUTUBE_API_TIMEOUT_MS`。這是
+整個 repo 唯一建立 youtube client 的位置，所以一處設定就涵蓋所有 YouTube API
+呼叫——包含每分鐘一次的 `[crawler youtube update]`（它同樣沒有 `job.touch()`，被
+無限掛住的請求擋住的話會以同樣的形狀卡死）。
+
+這一項嚴格說超出「修訂閱」的範圍，但它與本設計要修的 bug 是同一個形狀（沒有界限
+的 await 讓工作永遠不結束），而且已確認 gaxios 不會自己給任何逾時、retry 也預設
+關閉，所以成本是一行加一個常數。
 
 ## 新增常數
 
