@@ -1214,12 +1214,10 @@ describe("verification GET", () => {
 
   it("echoes the challenge and stores the expiry for a channel we just asked about", async () => {
     const requestedAt = new Date("2026-09-17T00:00:00.000Z");
-    const findSpy = jest
-      .spyOn(ChannelModel, "findOne")
-      .mockResolvedValue({
-        id: "UCabc",
-        pubsubRequestedAt: requestedAt,
-      } as never);
+    const findSpy = jest.spyOn(ChannelModel, "findOne").mockResolvedValue({
+      id: "UCabc",
+      pubsubRequestedAt: requestedAt,
+    } as never);
     const updateSpy = jest
       .spyOn(ChannelModel, "updateOne")
       .mockResolvedValue({ acknowledged: true } as never);
