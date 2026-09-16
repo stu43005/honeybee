@@ -441,22 +441,22 @@ callback token 由 `YOUTUBE_PUBSUB_SECRET` 衍生，也不是新的環境變數�
 
 ## 失效模式
 
-| 狀況                                           | 行為                                                                                                      |
-| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| hub 429／503                                   | 本輪中止、job 正常成功；最多 `PUBSUB_RENEW_BATCH_SIZE` 個頻道延後 10 分鐘                                 |
-| hub 400 或其他非 2xx                           | log warn、該頻道 `pubsubRequestedAt` 已更新（排到隊尾）、繼續下一個                                       |
-| hub 連線掛住不回應                             | `PUBSUB_REQUEST_TIMEOUT_MS` 逾時後歸類為一般失敗，繼續下一個；單輪總時長有上界                            |
-| 請求送出但 verification 從未到達               | `pubsubExpiresAt` 不變 → 冷卻後回到候選；因最舊優先排序，不會霸佔隊首                                     |
-| verification 遲到超過窗口                      | 404 拒絕、狀態不變 → 下一輪重訂                                                                           |
-| 偽造的 verification（無 token）                | token 不符 → 404，不查 DB、不改狀態                                                                       |
-| verification 帶異常 `lease_seconds`            | 非正整數或缺失 → 用預設值；超過 `PUBSUB_MAX_LEASE_MS` → clamp 到上界                                      |
-| HMAC 不符／缺簽章                              | 不符回 200 忽略（避免 hub 反覆重試同一筆）、缺簽章回 403，都 log warn                                     |
-| Atom 形狀非預期                                | 解析回 null → 回 200 + log warn，不 throw                                                                 |
-| 一筆通知含多個 entry                           | 全部逐一處理；任一影片寫入失敗就回 500，重送時已成功的 entry 因 upsert 冪等而安全                         |
-| 通知寫入影片文件失敗                           | log error + **回 500**，讓 hub 重試投遞（唯一有持久重試能力的路徑）                                       |
-| 寫入成功但 `updateVideoFromYoutube` 失敗或卡住 | 已回 200；catch 後 log warn（不 catch 會殺掉 process），文件已在，交給每分鐘的 `[crawler youtube update]` |
-| challenge 回應後寫 DB 失敗                     | log warn；該頻道 15 分鐘後回到候選，重訂一次（hub 端冪等）                                                |
-| process 崩潰                                   | 最多損失本輪的頻道；下一輪 10 分鐘後自動接上                                                              |
+| 狀況                                           | 行為                                                                                                                          |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| hub 429／503                                   | 本輪中止、job 正常成功；最多 `PUBSUB_RENEW_BATCH_SIZE` 個頻道延後到之後的某一輪（同頻道受 15 分鐘冷卻限制，實際至少 20 分鐘） |
+| hub 400 或其他非 2xx                           | log warn、該頻道 `pubsubRequestedAt` 已更新（排到隊尾）、繼續下一個                                                           |
+| hub 連線掛住不回應                             | `PUBSUB_REQUEST_TIMEOUT_MS` 逾時後歸類為一般失敗，繼續下一個；單輪總時長有上界                                                |
+| 請求送出但 verification 從未到達               | `pubsubExpiresAt` 不變 → 冷卻後回到候選；因最舊優先排序，不會霸佔隊首                                                         |
+| verification 遲到超過窗口                      | 404 拒絕、狀態不變 → 下一輪重訂                                                                                               |
+| 偽造的 verification（無 token）                | token 不符 → 404，不查 DB、不改狀態                                                                                           |
+| verification 帶異常 `lease_seconds`            | 非正整數或缺失 → 用預設值；超過 `PUBSUB_MAX_LEASE_MS` → clamp 到上界                                                          |
+| HMAC 不符／缺簽章                              | 不符回 200 忽略（避免 hub 反覆重試同一筆）、缺簽章回 403，都 log warn                                                         |
+| Atom 形狀非預期                                | 解析回 null → 回 200 + log warn，不 throw                                                                                     |
+| 一筆通知含多個 entry                           | 全部逐一處理；任一影片寫入失敗就回 500，重送時已成功的 entry 因 upsert 冪等而安全                                             |
+| 通知寫入影片文件失敗                           | log error + **回 500**，讓 hub 重試投遞（唯一有持久重試能力的路徑）                                                           |
+| 寫入成功但 `updateVideoFromYoutube` 失敗或卡住 | 已回 200；catch 後 log warn（不 catch 會殺掉 process），文件已在，交給每分鐘的 `[crawler youtube update]`                     |
+| challenge 回應後寫 DB 失敗                     | log warn；該頻道 15 分鐘後回到候選，重訂一次（hub 端冪等）                                                                    |
+| process 崩潰                                   | 最多損失本輪的頻道；下一次排程 10 分鐘後就繼續處理候選（受影響的頻道本身仍受 15 分鐘冷卻限制）                                |
 
 ## 測試策略
 
