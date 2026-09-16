@@ -98,6 +98,25 @@ rejection。
 - **過渡期的重複通知不做抑制。** 舊 callback 的訂閱過期前，新舊訂閱並存會讓同一
   部影片收到兩份通知；`noticeFromNotification` 冪等，代價只是多一次 DB 寫入，
   最長 5 天後自然消失。
+- **不為設定變更建立訂閱狀態的自動失效機制。**
+  - 概念：訂閱的唯一鍵是 `(topic, callback URL)`，而 callback token 由
+    `YOUTUBE_PUBSUB_SECRET` 衍生。若之後輪換該 secret 或更改 `PUBLIC_BASE_URL`，
+    hub 端既有訂閱的通知會驗不過簽章（被回 200 忽略），而 `pubsubExpiresAt` 看起來
+    仍然有效，於是該頻道要等到續訂窗口才會重訂——以 5 天 lease 計最長約 4 天。
+  - 決策：不新增 config fingerprint 欄位，也不做「輪換期間保留舊 secret 並行驗證」
+    的雙 secret 機制。
+  - 理由：這是為了一個幾乎不發生的運維動作，增加永久的狀態欄位與驗證分支，與這個
+    服務的規模不相稱。改以運維程序處理（見「部署行為」），代價是一條 mongo 更新，
+    效果與自動失效相同。
+- **單輪執行時間的上界不涵蓋 MongoDB 操作。**
+  - 概念：候選查詢與 `pubsubRequestedAt` 寫入都會 await MongoDB，而
+    `MongodbModule` 是裸的 `mongoose.connect(MONGO_URI)`，沒有設定 operation
+    timeout。一個卡住的 DB 操作可以讓本輪超過 agenda 的 lockLifetime。
+  - 決策：不為這兩個操作加 `maxTimeMS`，也不設批次 deadline。
+  - 理由：Mongo 卡住時 agenda 自己也靠 Mongo 鎖 job、寫 `lastRunAt`，整個 crawler
+    會一起停擺，替單一 job 加逾時不會改變系統行為；而 crawler 是
+    `replicas: 1`，沒有「另一個 worker 搶走過期鎖、原批次稍後復活」的並發情境。
+    真要處理 DB 逾時，那是 `MongodbModule` 層級的獨立議題。
 
 ## 已驗證的第三方行為
 
@@ -231,10 +250,16 @@ findPubsubRenewalCandidates(limit, now)
 - **每個請求都必須有逾時。** axios 的預設是 `timeout: 0`，也就是無限等待——一個
   永遠不回應的連線會讓整輪卡住而且永遠進不了 catch，那正是本次要修掉的 bug 的
   同一種形狀。
-- **不需要 `job.touch()`，而且這個結論有上界可算。** 單輪最壞情況是
+- **不需要 `job.touch()`。** 單輪在 hub 請求這一側的最壞情況是
   `PUBSUB_RENEW_BATCH_SIZE × (PUBSUB_REQUEST_TIMEOUT_MS + PUBSUB_REQUEST_SPACING_MS)`
   ＝ 5 ×（10 秒 + 250 毫秒）≈ 51 秒，遠短於 agenda 的 10 分鐘 lockLifetime。
-  因為逐項逾時已經把總時長封住，所以不再額外設一個批次總預算計時器。
+  這個上界**只涵蓋 hub 請求**，不涵蓋候選查詢與 `pubsubRequestedAt` 寫入所等待的
+  MongoDB 操作（本專案沒有設定 operation timeout）；為什麼不另外處理，見
+  Non-goals。
+
+同一個頻道的實際重試間隔是**至少 20 分鐘**，不是 10 分鐘：冷卻 15 分鐘大於排程
+間隔 10 分鐘，所以最快要等到第二次排程才會再被選中，前面還有其他候選時會更久。
+這是刻意的——冷卻的目的就是讓候選輪替，而不是讓同一個頻道連續重試。
 
 `hub-client.ts` 匯出的結果是 discriminated union：`ok` / `rateLimited`
 （429、503）/ `failed`（其餘非 2xx、逾時、連線錯誤）。所有失敗都在函式內被
@@ -404,6 +429,19 @@ callback token 由 `YOUTUBE_PUBSUB_SECRET` 衍生，也不是新的環境變數�
    `noticeFromNotification` 是 upsert、冪等，所以後果只是多一次 DB 寫入。舊訂閱
    最長在 5 天後（既有 lease 上限）全部自然過期，屆時無 token 的 POST route 就
    可以移除。
+
+### 日後變更 secret 或 base URL 時的運維程序
+
+`YOUTUBE_PUBSUB_SECRET` 或 `PUBLIC_BASE_URL` 一旦變更，hub 端既有訂閱就會失效
+（簽章驗不過、或 callback 位址不再指向我們），但資料庫裡的 `pubsubExpiresAt` 不會
+自動知道這件事。變更時要一併清掉它，讓全部頻道回到候選：
+
+```
+db.channels.updateMany({}, { $unset: { pubsubExpiresAt: "" } })
+```
+
+清完之後不需要其他動作，續訂會按既有節奏在約 6 小時內重新鋪滿。這一步刻意留在
+運維程序而不是程式邏輯，理由見 Non-goals。
 
 ## 移除清單
 
