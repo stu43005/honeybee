@@ -119,7 +119,9 @@ VideoModel.noticeFromNotification()                     upsert，status = New、
 
 本子系統沒有這個需求：feed 發現本身已經落後最多 45 分鐘，UUMO 影片抓不到聊天，再省下的幾分鐘沒有任何價值。而代價很具體：`updateVideoFromYoutube()` 是**每個呼叫**至少消耗 1 unit（`videos.list` 一批最多 50 支），所以在發現當下逐頻道呼叫，配額用量會正比於「有新影片的頻道數」，而那個數字在首次上線、新增訂閱、或長時間停機後的回補時會急遽上升——固定批次大小完全保護不到它。
 
-交給既有的 `crawler youtube update` 之後，補 metadata 的配額是**每分鐘最多 2 units 的固定上限**，與發現量完全無關：它的候選查詢前兩條正是 `{ status: New }` 與 `{ crawledAt: null }`，各取 25 筆，也就是每分鐘最多 50 支、每天 72000 個名額，遠超過任何合理的發現量。新影片最多晚一分鐘被補上 metadata。
+交給既有的 `crawler youtube update` 之後，補 metadata 的配額是**每分鐘最多 2 units 的固定上限**，與發現量完全無關。
+
+代價是吞吐量：該任務的候選查詢前兩條是 `{ status: New }` 與 `{ crawledAt: null }`，各取 25 筆、都以 `_id` 遞減排序，而 `noticeFromNotification()` 同時寫入 `status: New` 與 `crawledAt: null`——所以本子系統發現的影片會**同時命中兩條查詢**，經 `Set` 去重後實際只佔 25 個名額，不是 50。補 metadata 的吞吐量因此是 **25 支/分鐘 = 36000 支/天**。
 
 這讓本子系統的**全部**配額用量收斂成一個常數：`YOUTUBE_MEMBERS_POLL_BATCH_SIZE` × 每日輪數。
 
@@ -167,27 +169,39 @@ VideoModel.noticeFromNotification()                     upsert，status = New、
 
 對每個頻道以 oEmbed 請求 `https://www.youtube.com/playlist?list=UUMO<suffix>`：
 
-| oEmbed 回應                | `hasMembersPlaylist` | 這次探測的有效期                           |
-| -------------------------- | -------------------- | ------------------------------------------ |
-| 200                        | `true`               | `YOUTUBE_MEMBERS_PROBE_TTL_MS`（7 天）     |
-| 404                        | `false`              | `YOUTUBE_MEMBERS_PROBE_TTL_MS`（7 天）     |
-| 其他狀態碼、逾時、網路錯誤 | 不改變               | `YOUTUBE_MEMBERS_PROBE_RETRY_MS`（1 小時） |
+| oEmbed 回應                | `hasMembersPlaylist` | `membersProbedAt` | `membersProbeAttemptedAt` |
+| -------------------------- | -------------------- | ----------------- | ------------------------- |
+| 200                        | `true`               | now               | now                       |
+| 404                        | `false`              | now               | now                       |
+| 其他狀態碼、逾時、網路錯誤 | 不改變               | **不動**          | now                       |
 
-`hasMembersPlaylist` 因此是三態：**未知**（從未得到結論）、`true`、`false`。候選查詢依這個三態決定退避長度：
+探測狀態由**兩個各自獨立的時間戳**表達，與 `findPubsubRenewalCandidates` 完全同構：
 
+| 欄位                      | 語意                   | 對應的 pubsub 欄位  |
+| ------------------------- | ---------------------- | ------------------- |
+| `membersProbedAt`         | 上次**得到結論**的時間 | `pubsubExpiresAt`   |
+| `membersProbeAttemptedAt` | 上次**嘗試**的時間     | `pubsubRequestedAt` |
+
+候選查詢是兩個條件的交集：
+
+```text
+findSubscribed() 且
+  (membersProbedAt 為 null 或早於 now - TTL_MS)              結論過期，或從未有結論
+  且
+  (membersProbeAttemptedAt 為 null 或早於 now - RETRY_MS)    距上次嘗試已過退避
+依 membersProbeAttemptedAt 遞增排序，取 YOUTUBE_MEMBERS_PROBE_BATCH_SIZE 筆
 ```
-findSubscribed() 且以下之一：
-  hasMembersPlaylist 未知，且 membersProbedAt 為 null 或早於 now - RETRY_MS
-  hasMembersPlaylist 已有結論，且 membersProbedAt 早於 now - TTL_MS
-```
 
-依 `membersProbedAt` 遞增排序，取 `YOUTUBE_MEMBERS_PROBE_BATCH_SIZE` 筆。
+**必須是兩個時間戳，一個不夠。** 把兩件事壓進同一個欄位的話，任何「不確定」的結果都會被迫在「延長結論壽命」與「卡住輪替佇列最前排」之間二選一：
 
-**把「結論的有效期」與「重試間隔」分開是必要的，不是保險。** 掃描候選的條件是 `hasMembersPlaylist: true`，所以一個仍處於「未知」的頻道**不會被掃描**。若不確定的結果也套用七天 TTL，那麼首次上線時任何一次暫時性故障（YouTube 短暫 5xx、網路抖動、逾時）都會讓受影響的頻道整整一週發現不到任何會員影片——而首次上線時**每個**頻道都是第一次探測，這不是邊角情況，是必經路徑。同樣的封鎖也會發生在「原本判定為 `false`、後來才開會員」的頻道上。
+- 不確定時更新那個唯一的時間戳 → 一個判定為 `false`、後來才開會員的頻道，在七天後好不容易輪到重探，只要那一次逾時，結論的壽命就又被續了七天。反覆失敗可以讓一個過期的否定判定無限續命，而掃描候選的條件是 `hasMembersPlaylist: true`，該頻道的會員影片期間完全發現不到。
+- 不確定時不更新 → 該頻道排序永遠在最前，每輪重試、每輪失敗，把探測名額全部吃光。
 
-七天的 TTL 只套用在**有結論**的探測上，理由是「頻道有沒有開會員」幾乎不變，更頻繁地重問買不到任何東西。一小時的重試間隔則只套用在**沒有結論**的探測上：夠短，讓一次故障的影響以小時計而非以週計；也夠長，讓持續失敗的頻道不會反覆佔住探測名額（時間戳照樣更新，它仍會排到隊尾）。
+分開之後兩個問題都不存在：不確定的嘗試只推進 `membersProbeAttemptedAt`（讓它退到隊尾、一小時後重試），完全不碰 `membersProbedAt`（結論該過期就過期）。首次上線時每個頻道都走「未知 + 首次嘗試」這條路徑，一次暫時性故障的影響是一小時，不是一週。
 
-新頻道的 `membersProbedAt` 為 null，排序時排最前，會優先被探測——與 `findPubsubRenewalCandidates` 相同的技巧。
+七天的 TTL 管的是「結論多久該重問一次」，理由是「頻道有沒有開會員」幾乎不變，更頻繁地重問買不到任何東西。一小時的退避管的是「同一個頻道多久可以再試一次」，它對結論性與不確定的嘗試一視同仁——反正結論性的嘗試接著會被七天 TTL 擋住，退避只在不確定時才真正起作用。
+
+新頻道的兩個時間戳都是 null，兩個條件都通過，排序時排最前，會優先被探測——與 `findPubsubRenewalCandidates` 相同的技巧。
 
 ### 播放清單掃描（每頻道 1 unit）
 
@@ -242,20 +256,29 @@ findSubscribed() 且以下之一：
 @prop()
 public feedCrawledAt?: Date;
 
-/** Whether the channel has a members-only uploads playlist, as last probed. */
+/** Whether the channel has a members-only uploads playlist. Unset until a
+ * probe reaches a conclusion. */
 @prop()
 public hasMembersPlaylist?: boolean;
 
-/** When that existence probe last ran. */
+/** When a probe last reached a conclusion. Governs when to ask again. */
 @prop()
 public membersProbedAt?: Date;
+
+/** When a probe was last attempted, conclusive or not. Governs retry backoff
+ * and rotation order. */
+@prop()
+public membersProbeAttemptedAt?: Date;
 
 /** When we last read the members-only uploads playlist. */
 @prop()
 public membersCrawledAt?: Date;
 ```
 
-探測時間與掃描時間刻意分成兩個欄位：探測是七天一次的零配額動作，掃描是每輪都花 1 unit 的動作，兩者節奏差兩個數量級，共用一個時間戳會讓其中一邊失去意義。
+三個 members 時間戳各自回答不同的問題，任兩個合併都會壞掉：
+
+- `membersProbedAt` 與 `membersProbeAttemptedAt` 分開的理由見「存在性探測」——合併會讓不確定的嘗試被迫在「延長過期結論的壽命」與「卡住輪替佇列」之間二選一。
+- 探測（`membersProbeAttemptedAt`）與掃描（`membersCrawledAt`）分開的理由是節奏差兩個數量級：探測是七天一次的零配額動作，掃描是每輪都花 1 unit 的動作，合併會讓其中一邊失去意義。
 
 `Video` **不新增欄位**。
 
@@ -265,7 +288,7 @@ public membersCrawledAt?: Date;
 | -------------- | ---------------------------------------------------------------------------- |
 | feed 候選      | `{ feedCrawledAt: 1 }`                                                       |
 | UUMO 掃描候選  | `{ hasMembersPlaylist: 1, membersCrawledAt: 1 }`                             |
-| UUMO 探測候選  | `{ membersProbedAt: 1 }`                                                     |
+| UUMO 探測候選  | `{ membersProbedAt: 1, membersProbeAttemptedAt: 1 }`                         |
 | 復活探測四分桶 | `{ deleted: 1, availableAt: 1, crawledAt: 1 }`，partial on `status: Missing` |
 
 分桶查詢的排序欄位排在範圍條件之後，理論上會落在 in-memory sort，但每桶 `limit 5` 使其成為 top-k 排序，記憶體用量是常數，不觸及 32MB 上限。
@@ -311,18 +334,20 @@ export const YOUTUBE_MEMBERS_POLL_BATCH_SIZE = 17;
 // well inside the TTL below.
 export const YOUTUBE_MEMBERS_PROBE_BATCH_SIZE = 3;
 
-// How long a CONCLUSIVE probe answer is trusted. Whether a channel offers
-// memberships almost never changes, so a channel that newly opens them is
-// picked up within a week and more frequent probing buys nothing.
+// How long a conclusive probe answer is trusted, measured from the conclusion
+// rather than from the last attempt. Whether a channel offers memberships
+// almost never changes, so a channel that newly opens them is picked up within
+// a week and more frequent probing buys nothing.
 export const YOUTUBE_MEMBERS_PROBE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-// How long to wait before retrying a probe that reached no conclusion (a 5xx, a
-// timeout, a network error). A channel with no conclusion is excluded from the
-// playlist scan, so applying the week-long TTL here would mean one transient
-// failure blocks members-only discovery for that channel for a week — and on
-// first rollout every channel takes that path. An hour is short enough to make
-// the blast radius hours instead of weeks, and long enough that a channel
-// failing persistently does not keep reclaiming a probe slot.
+// Minimum gap between two probe attempts on one channel, conclusive or not.
+// Only bites when a probe reaches no conclusion (a 5xx, a timeout, a network
+// error), since a conclusive one is held back by the much longer TTL anyway. A
+// channel with no conclusion is excluded from the playlist scan, so the TTL
+// must not be what gates the retry — one transient failure would then hide that
+// channel's members-only videos for a week, and on first rollout every channel
+// takes that path. An hour keeps the blast radius in hours while stopping a
+// persistently failing channel from reclaiming a probe slot every round.
 export const YOUTUBE_MEMBERS_PROBE_RETRY_MS = 60 * 60 * 1000;
 
 // Videos each of the four buckets contributes to one existence-probe round.
@@ -385,22 +410,23 @@ feed 的週期是 2 分鐘，最壞耗時會與下一輪重疊，由 agenda 的 
 
 Jest ESM（`jest.unstable_mockModule` + 動態 import）。重點放在能抓到迴歸的斷言，而非覆蓋率。
 
-| 測試               | 斷言                                                                                                                                   |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
-| 差集（全部已知）   | feed 15 筆全是已知影片 → `noticeFromNotification` 零次呼叫                                                                             |
-| 差集（部分未知）   | 15 筆中 2 筆未知 → 傳入 `noticeFromNotification` 的 id 集合 `toEqual` 恰好那 2 個                                                      |
-| 發現路徑不花配額   | 一輪 feed 輪詢處理完含新影片的頻道後，`videos.list` 零次呼叫                                                                           |
-| 配額中止           | 第 3 個頻道回 `quotaExceeded` → 第 4 個起不再呼叫 API，前 3 個的 `membersCrawledAt` 已寫入                                             |
-| 失敗不卡前排       | 頻道 A 拋錯 → `feedCrawledAt` 仍更新；第二輪的候選查詢不再選到 A                                                                       |
-| 分桶公平性         | 其中一桶為空 → 其餘三桶仍各取滿 N                                                                                                      |
-| 復活寫入           | oEmbed 200 → `status: New`、`deleted` 與 `detectedDeletionAt` 被移除、`crawledAt` 為 null；404/400 → 只更新 `crawledAt`，`status` 不動 |
-| oEmbed 分類        | 200/404/400/網路錯誤 四種輸入的分類結果，以及 URL 編碼正確（內層 `?v=` 必須被編碼）                                                    |
-| 結論性探測套 TTL   | 得到 200 或 404 的頻道，在七天內不再進入探測候選；`hasMembersPlaylist: false` 的頻道不觸發任何 API 呼叫                                |
-| 不確定探測套短退避 | 首次探測逾時（`hasMembersPlaylist` 仍未知）→ 該頻道在一小時後**重新**進入探測候選，而非七天後                                          |
+| 測試                 | 斷言                                                                                                                                           |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| 差集（全部已知）     | feed 15 筆全是已知影片 → `noticeFromNotification` 零次呼叫                                                                                     |
+| 差集（部分未知）     | 15 筆中 2 筆未知 → 傳入 `noticeFromNotification` 的 id 集合 `toEqual` 恰好那 2 個                                                              |
+| 發現路徑不花配額     | 一輪 feed 輪詢處理完含新影片的頻道後，`videos.list` 零次呼叫                                                                                   |
+| 配額中止             | 第 3 個頻道回 `quotaExceeded` → 第 4 個起不再呼叫 API，前 3 個的 `membersCrawledAt` 已寫入                                                     |
+| 失敗不卡前排         | 頻道 A 拋錯 → `feedCrawledAt` 仍更新；第二輪的候選查詢不再選到 A                                                                               |
+| 分桶公平性           | 其中一桶為空 → 其餘三桶仍各取滿 N                                                                                                              |
+| 復活寫入             | oEmbed 200 → `status: New`、`deleted` 與 `detectedDeletionAt` 被移除、`crawledAt` 為 null；404/400 → 只更新 `crawledAt`，`status` 不動         |
+| oEmbed 分類          | 200/404/400/網路錯誤 四種輸入的分類結果，以及 URL 編碼正確（內層 `?v=` 必須被編碼）                                                            |
+| 結論性探測套 TTL     | 得到 200 或 404 的頻道，在七天內不再進入探測候選；`hasMembersPlaylist: false` 的頻道不觸發任何 API 呼叫                                        |
+| 首次探測失敗可重試   | 首次探測逾時（`hasMembersPlaylist` 仍未知）→ 該頻道在一小時後**重新**進入探測候選，而非七天後                                                  |
+| 已有結論者失敗可重試 | `false` 的頻道在 TTL 過期後重探又逾時 → `membersProbedAt` 未被推進，一小時後再次進入候選；連續三次逾時後它仍在候選中，證明過期的結論沒有被續約 |
 
 前三項是最重要的迴歸防線。第一、二項守住「每輪把數千支已知影片丟回補抓佇列」這個會靜默拖垮 `crawler youtube update` 的失誤；第三項守住整份設計的配額前提——一旦有人在發現路徑上加回 `updateVideoFromYoutube()`，配額就不再是常數，而這個測試會立刻失敗。
 
-最後一項對應首次上線的必經路徑：它必須能觀察到「第一次探測失敗的頻道，一小時後重新被選中」，因此要用 stateful fake 記錄第一輪寫入的 `membersProbedAt`，再以推進後的時間跑第二次候選查詢。
+最後兩項守住兩個時間戳的分工。前者對應首次上線的必經路徑（每個頻道都是第一次探測）；後者對應更難發現的那條路徑——已有結論的頻道在 TTL 過期後重探失敗，若兩個時間戳被合併，它的過期結論會被無限續約。兩者都要用 stateful fake 記錄前一輪寫入的兩個時間戳，再以推進後的時間重跑候選查詢，才能觀察到「有沒有被續約」。
 
 資料庫狀態使用 stateful fake（一個 `Set` 裝已知 videoId、一個 `Map` 裝 channel 文件），不是裸 `jest.fn()`——「第二輪不再選到 A」這類斷言必須能觀察到第一輪寫入的時間戳。
 
@@ -437,6 +463,22 @@ feed 是 900 秒 edge cache，所以發現延遲是「輪詢週期 + 最多 15 �
 ### 復活探測輪完一圈可能耗時數週
 
 每桶每天 1440 筆。若某桶累積數萬筆，輪完一圈要數週。復活是罕見事件，這個速度是刻意的取捨——加快只能靠提高每輪筆數，而那會線性增加對外請求量，卻幾乎不會多發現任何東西。
+
+### 不為首次上線的 metadata 積壓做優先佇列
+
+**關切**：本子系統發現的影片同時命中 `crawler youtube update` 的 `{ status: New }` 與 `{ crawledAt: null }` 兩條候選查詢，`Set` 去重後只佔 25 個名額，所以補 metadata 的吞吐量是 25 支/分鐘。首次上線時最多約 4500 支未知影片需要約三小時消化；而兩條查詢都是 `sort({ _id: -1 })`，後發現的影片會把先發現的往後推。積壓期間，一支「漏掉 pubsub 的直播」可能要等到開播之後才拿到 metadata、被 scheduler 看見。
+
+**決定**：不實作有界的上線導入，也不實作按緊急度排序的 metadata 佇列。
+
+**理由**：積壓的內容幾乎全是上傳影片與 shorts——直播早就被 Holodex 輪詢與 pubsub 收錄了，首次上線時真正「未知」的正是那些從來沒有任何來源提供過的非直播影片，而它們沒有時效性。積壓只發生在首次上線這個一次性事件，穩定狀態下每分鐘的新影片遠少於 25，佇列是空的。相對地，優先佇列要改寫 `crawler youtube update` 的候選查詢，而那段查詢的 cap 設計有明確的歷史教訓（`2026-09-09-crawler-unconfirmed-video-cleanup-design.md`），為一次性事件去動它不成比例。
+
+### 不把復活傳播到歷史 daily export
+
+**關切**：`src/components/chats-archive/gen-daily-videos-file.ts` 的 `finalizeFilter` 有三個分支——卡住的 `Live`、`actualEnd` 在最近視窗內的 `Past`、`detectedDeletionAt` 在最近視窗內的 `Missing`。一支幾週前結束、被標為 `Missing`、現在復活回到 `Past` 的影片三個分支都不命中（`actualEnd` 太舊，而 `detectedDeletionAt` 已被復活流程移除），它所屬日期的 daily JSON 會一直保留 `Missing` 狀態，除非該日碰巧有別的影片觸發重產生。
+
+**決定**：不在復活時排程重產受影響的歷史日期，也不加重試機制。
+
+**理由**：復活本身是罕見事件，影響範圍是歷史歸檔 JSON 裡的一個狀態欄位過時，不影響任何即時行為。而修法必須動到 `chats-archive`（新增 `Video` 欄位並擴充 `finalizeFilter`），那需要通過 data-contract checklist，超出本設計「不改 data-contract、不動 chats-archive」的硬約束。
 
 ### 不接上 YoutubeWatchGate
 
