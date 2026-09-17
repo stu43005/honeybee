@@ -124,10 +124,16 @@ rejection。
 
 **agenda 6.2.4 + @agendajs/mongo-backend 4.0.1**
 
-- `agenda.every(interval, name)` → `job.repeatEvery()`：**就地更新
-  `repeatInterval` 並立即重算 `nextRunAt`**；`job.save()` 走 `toJson(true)`，
-  排除 processor 管理的欄位，所以**不觸碰 `lockedAt` / `lastRunAt` /
-  `lastFinishedAt`**。
+- `agenda.every(interval, name)` 會就地更新既有文件的 `repeatInterval`，
+  `job.save()` 走 `toJson(true)`，排除 processor 管理的欄位，所以不觸碰
+  `lockedAt` / `lastRunAt` / `lastFinishedAt`。
+- 但**持久化的 `nextRunAt` 不會被更新**：`every()` 建立的是全新 job（沒有
+  `lastRunAt`），算出的 `nextRunAt` 就是當下時間，而 mongo backend 在
+  `nextRunAt <= now` 時會把該欄位從 `$set` 移到 `$setOnInsert`，因此既有文件
+  保留舊排程留下的值。
+- 對同一個 job 再存一次就會走 `_id` 分支（純 `$set`，沒有
+  `$setOnInsert`），`nextRunAt` 才真的寫入；因此縮短排程間隔時必須顯式把
+  `nextRunAt` 拉回來。
 - `getNextJobToRun` 的過期鎖分支忽略 `nextRunAt`；`defaultLockLifetime` 是
   10 分鐘、`processEvery` 是 5 秒。所以停留超過 10 分鐘的過期鎖會被重新撿起並
   實際執行。
@@ -512,8 +518,10 @@ callback token 由 `YOUTUBE_PUBSUB_SECRET` 衍生，也不是新的環境變數�
 
 1. **job 名稱不變**。改名會讓舊文件永遠 locked 殘留在 `agendaJobs`（沒有任何
    程式碼會清它）。
-2. `every("10 minutes", ...)` 就地更新 `repeatInterval` 並重算 `nextRunAt`，不碰
-   `lockedAt`；目前卡住的 `lockedAt` 在 10 分鐘後被視為過期而重新鎖並實際執行
+2. `every("10 minutes", ...)` 就地更新既有文件的 `repeatInterval`，但不會更新其
+   `nextRunAt`（見「已驗證的第三方行為」），所以 `init()` 在偵測到既有
+   `nextRunAt` 超過一個新間隔時，會再存一次同一個 job 把它拉回現在，`lockedAt`
+   不受影響；目前卡住的 `lockedAt` 在 10 分鐘後被視為過期而重新鎖並實際執行
    ——**不需要手動改 DB**。`lastFinishedAt` 在第一次成功後自我修復。
 3. **callback URL 會改變**（加上 token 路徑片段），但**舊的無 token POST route
    保留**，所以 hub 端既有訂閱的通知在上線瞬間不中斷，6 小時的鋪滿期間不會漏
