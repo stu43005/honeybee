@@ -2,67 +2,77 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers-codex:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 把 `crawler youtube pubsub subscribe` 從「每 12 小時全量重訂、途中把整個
-crawler process 殺掉」改成「每 10 分鐘續訂少量即將到期的頻道」，並由本 repo 自己
-接手 PubSubHubbub 的訂閱請求與通知接收。
+**Goal:** Turn `crawler youtube pubsub subscribe` from "rescan every channel every
+12 hours, and kill the whole crawler process halfway through" into "renew a few
+soon-to-expire channels every 10 minutes", with this repo owning the
+PubSubHubbub subscribe requests and notification handling.
 
-**Architecture:** `Channel` 上新增 `pubsubRequestedAt` / `pubsubExpiresAt` 兩個
-時間戳，續訂由「即將到期」驅動；訂閱請求走自己的 axios client（可 catch、可分類
-限流），通知接收走 fastify 原生 route（自己做 HMAC 驗證與 Atom 解析）。
-`youtube-notification` 與 `@fastify/express` 一併移除。
+**Architecture:** `Channel` gains two timestamps, `pubsubRequestedAt` and
+`pubsubExpiresAt`, and renewal is driven by imminent expiry. Subscribe requests
+go through our own axios client, so failures are catchable and classifiable.
+Notifications arrive on native fastify routes that do their own HMAC check and
+Atom parsing. `youtube-notification` and `@fastify/express` are removed.
 
-**Tech Stack:** TypeScript (ESM, NodeNext)、fastify 4.26、axios 1.x、
-fast-xml-parser、agenda 6.2、mongoose/typegoose、Jest 29（true ESM，
-`jest.unstable_mockModule`）。
+**Tech Stack:** TypeScript (ESM, NodeNext), fastify 4.26, axios 1.x,
+fast-xml-parser, agenda 6.2, mongoose/typegoose, Jest 29 (true ESM, so module
+mocks use `jest.unstable_mockModule`).
 
 ---
 
 ## File Structure
 
-**新增**
+**New**
 
-| 檔案                                       | 責任                                                                                     |
-| ------------------------------------------ | ---------------------------------------------------------------------------------------- |
-| `src/modules/youtube-pubsub/hub-client.ts` | 組 callback URL 與 token、送出訂閱請求、把失敗分類成 http / timeout / network 與是否限流 |
-| `src/modules/youtube-pubsub/atom.ts`       | 把通知 body 解析成 entry 陣列（純函式）                                                  |
-| `src/modules/youtube-pubsub/routes.ts`     | fastify plugin：content-type parser、verification GET、通知 POST                         |
-| `src/components/pubsub-subscribe.ts`       | 到期驅動的批次續訂（agenda job 的實作）                                                  |
+| File                                       | Responsibility                                                                                                                       |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/modules/youtube-pubsub/hub-client.ts` | Build the callback URL and token, send subscribe requests, classify failures as http/timeout/network and whether they are throttling |
+| `src/modules/youtube-pubsub/atom.ts`       | Parse a notification body into an array of entries (pure function)                                                                   |
+| `src/modules/youtube-pubsub/routes.ts`     | Fastify plugin: content-type parser, verification GET, notification POST                                                             |
+| `src/components/pubsub-subscribe.ts`       | The expiry-driven batch renewal, i.e. the agenda job's implementation                                                                |
 
-每個新檔案都有相鄰的 `*.spec.ts`。
+Each new file gets an adjacent `*.spec.ts`. `hub-client.ts` also gets
+`hub-client-misconfig.spec.ts`, because environment variables are frozen at
+module-eval time and the broken-configuration case therefore needs its own file.
 
-**修改**
+**Modified**
 
-| 檔案                          | 變更                                                                                            |
-| ----------------------------- | ----------------------------------------------------------------------------------------------- |
-| `src/constants.ts`            | 新增 8 個常數                                                                                   |
-| `src/models/Channel.ts`       | 兩個新欄位、一個複合 index、一個候選查詢 static                                                 |
-| `src/modules/youtube.ts`      | `getYoutubeApi()` 加全域 timeout                                                                |
-| `src/modules/youtube.spec.ts` | 斷言 client 建立時帶了 timeout                                                                  |
-| `src/commands/crawler.ts`     | 移除 `YouTubeNotifier` 與 express 轉接層，改註冊 plugin（在 `app.init()` 之前）、job 改 10 分鐘 |
-| `package.json`                | 加 `fast-xml-parser`；移除 `youtube-notification`、`@fastify/express`                           |
+| File                          | Change                                                                                                                     |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `src/constants.ts`            | Eight new constants                                                                                                        |
+| `src/models/Channel.ts`       | Two new fields, one compound index, one candidate-query static                                                             |
+| `src/modules/youtube.ts`      | `getYoutubeApi()` gets a global timeout                                                                                    |
+| `src/modules/youtube.spec.ts` | Assert the client is built with that timeout                                                                               |
+| `src/commands/crawler.ts`     | Drop `YouTubeNotifier` and the express adapter, register the plugin before `app.init()`, schedule the job every 10 minutes |
+| `package.json`                | Add `fast-xml-parser`; drop `youtube-notification`, `@fastify/express` and the resolution that existed only for them       |
 
-**刪除**：`src/types/youtube-notification.d.ts`
+**New documentation:** `docs/runbooks/pubsub-callback-rotation.md`
+
+**Deleted:** `src/types/youtube-notification.d.ts`
 
 ---
 
-### Task 1: 安裝 fast-xml-parser
+### Task 1: Install fast-xml-parser
 
 **Files:**
 
-- Modify: `package.json`
+- Modify: `package.json`, `package-lock.json`
 
-- [ ] **Step 1: 確認尚未安裝**
+- [ ] **Step 1: Confirm it is not declared as a dependency yet**
 
 Run:
 
 ```bash
-grep '"version"' node_modules/fast-xml-parser/package.json 2>/dev/null || echo "NOT INSTALLED"
+node -e "const p=require('./package.json'); console.log('dep:', p.dependencies['fast-xml-parser'] ?? 'NOT DECLARED')"
 ```
 
-Expected: `NOT INSTALLED`（若印出版本號就跳過 Step 2，直接確認它在
-`package.json` 的 `dependencies` 裡）。
+Expected: `dep: NOT DECLARED`.
 
-- [ ] **Step 2: 安裝為 runtime 依賴**
+The check is against the `package.json` declaration rather than the presence of
+`node_modules/fast-xml-parser`: the package can be sitting in `node_modules` for
+unrelated reasons without being a dependency of this project. If a version
+string is already printed, skip Step 2.
+
+- [ ] **Step 2: Install as a runtime dependency**
 
 Run:
 
@@ -70,10 +80,11 @@ Run:
 npm install fast-xml-parser
 ```
 
-crawler 在生產執行期會 import 它，所以必須是 `dependencies`（`npm install`
-不帶 `-D` 即為此）。不要指定版本號，讓 npm 寫入它自己的 caret range。
+The crawler imports it at production runtime, so it must land in `dependencies`
+(which is what `npm install` without `-D` does). Do not pin a version; let npm
+write its own caret range.
 
-- [ ] **Step 3: 確認落點正確**
+- [ ] **Step 3: Confirm where it landed**
 
 Run:
 
@@ -81,7 +92,7 @@ Run:
 node -e "const p=require('./package.json'); console.log('dep:', p.dependencies['fast-xml-parser'], 'devDep:', p.devDependencies['fast-xml-parser'])"
 ```
 
-Expected: `dep:` 有版本字串、`devDep: undefined`。
+Expected: `dep:` shows a version string and `devDep: undefined`.
 
 - [ ] **Step 4: Commit**
 
@@ -92,54 +103,59 @@ git commit -m "build: add fast-xml-parser for pubsub notification parsing"
 
 ---
 
-### Task 2: 新增常數
+### Task 2: Add the constants
 
 **Files:**
 
-- Modify: `src/constants.ts`（附加在檔尾）
+- Modify: `src/constants.ts` (append at the end of the file)
 
-- [ ] **Step 1: 附加常數區塊**
+- [ ] **Step 1: Append the constants block**
 
-在 `src/constants.ts` 檔尾附加：
+Append to `src/constants.ts`:
 
 ```ts
 // --- YouTube PubSubHubbub subscription renewal ---
 
-// 提前一天續訂，容得下一整天的排程中斷仍不掉訂閱。
+// Renew a day before the lease ends, so a full day of scheduling outage still
+// does not drop a subscription.
 export const PUBSUB_RENEW_BEFORE_MS = 24 * 60 * 60 * 1000;
 
-// 同一頻道的最短重試間隔，同時也是 verification 的接受窗口。刻意大於 10 分鐘的
-// 排程間隔，讓候選輪替而不是同一批連續重試。
+// Shortest retry interval for one channel, and also the window in which a
+// verification is accepted. Deliberately larger than the 10 minute schedule
+// interval so candidates rotate instead of the same batch retrying back to back.
 export const PUBSUB_REQUEST_COOLDOWN_MS = 15 * 60 * 1000;
 
-// 單輪處理的頻道數上限，也就是一次崩潰或限流的損失上限。
+// Channels handled per round, which is also the loss ceiling of one crash or
+// one throttling response.
 export const PUBSUB_RENEW_BATCH_SIZE = 5;
 
-// 單輪內兩個 hub 請求之間的間隔。
+// Gap between two hub requests inside a round.
 export const PUBSUB_REQUEST_SPACING_MS = 250;
 
-// hub 未提供或提供了不合法的 lease_seconds 時的保守預設，確保仍會續訂而不是永不
-// 續訂。
+// Fallback when the hub supplies no lease_seconds, or an invalid one. Keeps the
+// channel on a renewal cycle instead of never being renewed again.
 export const PUBSUB_DEFAULT_LEASE_MS = 24 * 60 * 60 * 1000;
 
-// lease_seconds 的上界。WebSub 的安全章節建議 hub 使用短 lease（10 天是它給的
-// 預設建議值），超過就 clamp，避免一個異常或偽造的值把頻道推到永遠不續訂。
+// Upper bound for lease_seconds. The WebSub security section recommends short
+// leases and gives 10 days as a good default; anything above is clamped so a
+// bogus or forged value cannot push a channel out of renewal indefinitely.
 export const PUBSUB_MAX_LEASE_MS = 10 * 24 * 60 * 60 * 1000;
 
-// 單次 hub 請求的逾時。axios 的預設是 timeout: 0（無限等待），不明確設定的話一個
-// 掛住的連線會讓整輪永遠不結束。
+// Timeout for a single hub request. axios defaults to timeout: 0 (wait
+// forever), so without this a hung connection never lets the round finish.
 export const PUBSUB_REQUEST_TIMEOUT_MS = 10 * 1000;
 
-// 所有 YouTube Data API 呼叫的逾時。gaxios 沒有預設逾時（只有在傳入 timeout 時
-// 才建立 AbortSignal），所以不設就可能無限掛住。比 hub 請求寬鬆，因為單次呼叫
-// 最多帶 50 個 id；仍遠短於 agenda 的 10 分鐘 lockLifetime。
+// Timeout for every YouTube Data API call. gaxios has no default timeout (it
+// only builds an AbortSignal when one is passed), so an unanswered request can
+// hang forever. Looser than the hub request because one call carries up to 50
+// ids; still far below agenda's 10 minute lockLifetime.
 export const YOUTUBE_API_TIMEOUT_MS = 15 * 1000;
 ```
 
-- [ ] **Step 2: 型別檢查**
+- [ ] **Step 2: Type check**
 
 Run: `npm run build`
-Expected: 無錯誤結束。
+Expected: exits without errors.
 
 - [ ] **Step 3: Commit**
 
@@ -150,14 +166,14 @@ git commit -m "feat(constants): add pubsub renewal and youtube api timeout value
 
 ---
 
-### Task 3: Atom 通知解析
+### Task 3: Atom notification parsing
 
 **Files:**
 
 - Create: `src/modules/youtube-pubsub/atom.ts`
 - Test: `src/modules/youtube-pubsub/atom.spec.ts`
 
-- [ ] **Step 1: 寫失敗的測試**
+- [ ] **Step 1: Write the failing test**
 
 Create `src/modules/youtube-pubsub/atom.spec.ts`:
 
@@ -247,7 +263,8 @@ describe("parseNotification", () => {
   it("skips an entry missing videoId, channelId or title", () => {
     const result = parseNotification(
       feed(
-        `<entry><yt:videoId>novideo</yt:videoId><title>No channel</title></entry>` +
+        `<entry><yt:channelId>UCchannel</yt:channelId><title>No video id</title></entry>` +
+          `<entry><yt:videoId>novideo</yt:videoId><title>No channel</title></entry>` +
           `<entry><yt:videoId>notitle</yt:videoId><yt:channelId>UCchannel</yt:channelId></entry>` +
           videoEntry("vid1", "First")
       )
@@ -267,15 +284,30 @@ describe("parseNotification", () => {
     expect(parseNotification("not xml at all <<<")).toBeNull();
     expect(parseNotification("")).toBeNull();
   });
+
+  it("returns null for malformed xml that still looks like a feed", () => {
+    // Unclosed entry: without validation the parser would happily return a
+    // plausible-looking result for this.
+    expect(
+      parseNotification(
+        `<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015"><entry><yt:videoId>vid1</yt:videoId>`
+      )
+    ).toBeNull();
+
+    // Mismatched tags.
+    expect(
+      parseNotification(`<feed><entry><title>First</entry></title></feed>`)
+    ).toBeNull();
+  });
 });
 ```
 
-- [ ] **Step 2: 跑測試確認它失敗**
+- [ ] **Step 2: Run the test and watch it fail**
 
 Run: `npm run test -- src/modules/youtube-pubsub/atom.spec.ts`
-Expected: FAIL，錯誤是找不到模組 `./atom.js`。
+Expected: FAIL, because the module `./atom.js` does not exist.
 
-- [ ] **Step 3: 寫實作**
+- [ ] **Step 3: Write the implementation**
 
 Create `src/modules/youtube-pubsub/atom.ts`:
 
@@ -302,16 +334,18 @@ export type NotificationEntry = VideoEntry | DeletedEntry;
 
 const DELETED_REF_PREFIX = "yt:video:";
 
-// removeNSPrefix 讓 yt:videoId / at:deleted-entry 變成 videoId / deleted-entry；
-// ignoreAttributes: false 才讀得到 link 的 href；parseTagValue: false 讓每個文字
-// 節點都保持字串，否則像 "2026" 這種標題或 id 會被轉成 number。
+// removeNSPrefix turns yt:videoId / at:deleted-entry into videoId /
+// deleted-entry; ignoreAttributes: false is what exposes a link's href;
+// parseTagValue: false keeps every text node a string, otherwise a title or id
+// like "2026" would arrive as a number.
 const parser = new XMLParser({
   removeNSPrefix: true,
   ignoreAttributes: false,
   parseTagValue: false,
 });
 
-// 重複的元素會是陣列、單一的會是物件，兩種都要能走同一條路。
+// A repeated element is an array and a single one is an object, so both shapes
+// have to go down the same path.
 function asArray(value: unknown): unknown[] {
   if (value === undefined || value === null) return [];
   return Array.isArray(value) ? value : [value];
@@ -336,16 +370,21 @@ function date(value: unknown): Date | undefined {
 }
 
 /**
- * 把一筆 PubSubHubbub 通知的 body 解析成 entry 陣列。body 不是 feed（或不是合法
- * XML）時回 null。
+ * Parses the body of one PubSubHubbub notification into an array of entries.
+ * Returns null when the body is not a feed (or not well-formed XML).
  *
- * 影片 entry 依它們在 feed 裡的順序排前面，刪除 entry 全部排在後面：兩者是不同的
- * 元素名，解析後無法還原原本交錯的順序。
+ * Video entries come first, in feed order, and deletions follow: the two are
+ * different element names, so their original interleaving cannot be recovered
+ * after parsing.
  */
 export function parseNotification(xml: string): NotificationEntry[] | null {
   let parsed: unknown;
   try {
-    parsed = parser.parse(xml);
+    // The second argument is the validation switch. Passing true validates with
+    // default options and throws on malformed input; omitting it skips
+    // validation entirely, and an unclosed or mismatched document would then be
+    // parsed into a plausible-looking result.
+    parsed = parser.parse(xml, true);
   } catch {
     return null;
   }
@@ -362,8 +401,9 @@ export function parseNotification(xml: string): NotificationEntry[] | null {
     const videoId = text(entry.videoId);
     const channelId = text(entry.channelId);
     const title = text(entry.title);
-    // 少了這三個就寫不出有效的 video 文件（title 是 required，空字串也過不了
-    // validator），所以寧可跳過也不要寫進資料庫。
+    // Without these three there is no valid video document to write (title is
+    // required and an empty string fails the validator), so skipping beats
+    // writing a document that can never be saved again.
     if (!videoId || !channelId || !title) continue;
     const author = (entry.author ?? {}) as Record<string, unknown>;
     const link = (asArray(entry.link)[0] ?? {}) as Record<string, unknown>;
@@ -394,15 +434,15 @@ export function parseNotification(xml: string): NotificationEntry[] | null {
 }
 ```
 
-- [ ] **Step 4: 跑測試確認通過**
+- [ ] **Step 4: Run the test and watch it pass**
 
 Run: `npm run test -- src/modules/youtube-pubsub/atom.spec.ts`
-Expected: 7 個測試全部 PASS。
+Expected: all 8 tests PASS.
 
-- [ ] **Step 5: 型別檢查與 lint**
+- [ ] **Step 5: Type check and lint**
 
 Run: `npm run build && npm run lint`
-Expected: 兩者都無錯誤結束。
+Expected: both exit without errors.
 
 - [ ] **Step 6: Commit**
 
@@ -413,14 +453,15 @@ git commit -m "feat(pubsub): parse a notification body into an entry array"
 
 ---
 
-### Task 4: hub client（訂閱請求與失敗分類）
+### Task 4: Hub client (subscribe requests and failure classification)
 
 **Files:**
 
 - Create: `src/modules/youtube-pubsub/hub-client.ts`
 - Test: `src/modules/youtube-pubsub/hub-client.spec.ts`
+- Test: `src/modules/youtube-pubsub/hub-client-misconfig.spec.ts`
 
-- [ ] **Step 1: 寫失敗的測試**
+- [ ] **Step 1: Write the failing test**
 
 Create `src/modules/youtube-pubsub/hub-client.spec.ts`:
 
@@ -428,12 +469,20 @@ Create `src/modules/youtube-pubsub/hub-client.spec.ts`:
 /// <reference types="jest" />
 import { afterEach, describe, expect, it, jest } from "@jest/globals";
 import { AxiosError } from "axios";
+import crypto from "node:crypto";
 
-// constants.ts 在 module-eval 時就讀環境變數，所以要在 import 之前設好。
+// constants.ts reads the environment at module-eval time, so these must be set
+// before anything imports it.
 process.env.PUBLIC_BASE_URL = "https://honeybee.example.test/";
 process.env.YOUTUBE_PUBSUB_SECRET = "test-secret";
 
-const mockPost = jest.fn<() => Promise<unknown>>();
+type PostArgs = [
+  url: string,
+  body: string,
+  config: { headers: Record<string, string>; timeout: number },
+];
+
+const mockPost = jest.fn<(...args: PostArgs) => Promise<unknown>>();
 
 jest.unstable_mockModule("axios", () => {
   const isAxiosError = (error: unknown) =>
@@ -466,7 +515,15 @@ function httpError(status: number): AxiosError {
 describe("callback url and topic helpers", () => {
   it("puts a stable 32-char token in the callback path", () => {
     const token = getCallbackToken();
+    // Derived independently here, otherwise a wrong derivation would still pass
+    // a shape-only check.
+    const expected = crypto
+      .createHmac("sha256", "test-secret")
+      .update("pubsub-callback")
+      .digest("hex")
+      .slice(0, 32);
 
+    expect(token).toBe(expected);
     expect(token).toMatch(/^[0-9a-f]{32}$/);
     expect(getCallbackToken()).toBe(token);
     expect(getCallbackUrl()).toBe(
@@ -499,6 +556,7 @@ describe("callback url and topic helpers", () => {
 describe("requestSubscription", () => {
   afterEach(() => {
     mockPost.mockReset();
+    jest.useRealTimers();
   });
 
   it("posts the full subscribe form with an explicit timeout", async () => {
@@ -508,11 +566,7 @@ describe("requestSubscription", () => {
 
     expect(result).toEqual({ ok: true });
     expect(mockPost).toHaveBeenCalledTimes(1);
-    const [url, body, config] = mockPost.mock.calls[0] as [
-      string,
-      string,
-      { headers: Record<string, string>; timeout: number },
-    ];
+    const [url, body, config] = mockPost.mock.calls[0];
     expect(url).toBe("https://pubsubhubbub.appspot.com/subscribe");
     expect(Object.fromEntries(new URLSearchParams(body))).toEqual({
       "hub.callback": getCallbackUrl(),
@@ -594,15 +648,91 @@ describe("requestSubscription", () => {
       message: "boom",
     });
   });
+
+  it("applies the configured timeout to a transport that never answers", async () => {
+    jest.useFakeTimers();
+    // A transport that only fails once config.timeout has elapsed: this proves
+    // the timeout is really handed down, and that expiry ends up classified as
+    // a timeout instead of the call hanging forever.
+    mockPost.mockImplementation(
+      (_url, _body, config) =>
+        new Promise((_resolve, reject) => {
+          setTimeout(
+            () =>
+              reject(
+                new AxiosError(
+                  `timeout of ${config.timeout}ms exceeded`,
+                  "ECONNABORTED"
+                )
+              ),
+            config.timeout
+          );
+        })
+    );
+
+    const pending = requestSubscription("UCabc");
+    await jest.advanceTimersByTimeAsync(PUBSUB_REQUEST_TIMEOUT_MS);
+
+    expect(await pending).toEqual({
+      ok: false,
+      kind: "timeout",
+      rateLimited: false,
+      message: `timeout of ${PUBSUB_REQUEST_TIMEOUT_MS}ms exceeded`,
+    });
+  });
 });
 ```
 
-- [ ] **Step 2: 跑測試確認它失敗**
+- [ ] **Step 2: Write a second test file for the broken-configuration case**
 
-Run: `npm run test -- src/modules/youtube-pubsub/hub-client.spec.ts`
-Expected: FAIL，錯誤是找不到模組 `./hub-client.js`。
+`constants.ts` copies the environment into constants when it is first evaluated,
+so mutating `process.env` later in the same jest file changes nothing. The case
+"`PUBLIC_BASE_URL` is not a valid URL" therefore needs its own file, since every
+test file gets a fresh module registry.
 
-- [ ] **Step 3: 寫實作**
+Create `src/modules/youtube-pubsub/hub-client-misconfig.spec.ts`:
+
+```ts
+/// <reference types="jest" />
+import { describe, expect, it, jest } from "@jest/globals";
+
+// Set before the import below, so constants.ts picks up this broken base URL.
+process.env.PUBLIC_BASE_URL = "not-a-url";
+process.env.YOUTUBE_PUBSUB_SECRET = "test-secret";
+
+const mockPost = jest.fn<() => Promise<unknown>>();
+
+jest.unstable_mockModule("axios", () => {
+  const isAxiosError = () => false;
+  return { default: { post: mockPost, isAxiosError }, isAxiosError };
+});
+
+const { requestSubscription } = await import("./hub-client.js");
+
+describe("requestSubscription with an unusable callback url", () => {
+  it("returns a failure instead of rejecting", async () => {
+    // new URL("./...", "not-a-url") throws TypeError(ERR_INVALID_URL) before any
+    // request goes out. It still has to become a return value: an unhandled
+    // rejection would take the whole process down.
+    const result = await requestSubscription("UCabc");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.kind).toBe("network");
+      expect(result.rateLimited).toBe(false);
+      expect(result.message).toContain("Invalid URL");
+    }
+    expect(mockPost).not.toHaveBeenCalled();
+  });
+});
+```
+
+- [ ] **Step 3: Run both test files and watch them fail**
+
+Run: `npm run test -- src/modules/youtube-pubsub/hub-client.spec.ts src/modules/youtube-pubsub/hub-client-misconfig.spec.ts`
+Expected: both files FAIL, because the module `./hub-client.js` does not exist.
+
+- [ ] **Step 4: Write the implementation**
 
 Create `src/modules/youtube-pubsub/hub-client.ts`:
 
@@ -623,7 +753,7 @@ export type SubscribeResult =
   | { ok: true }
   | {
       ok: false;
-      /** http：hub 回了狀態碼；timeout：逾時；network：連不上或非 HTTP 錯誤。 */
+      /** http: the hub answered with a status; timeout: it did not answer in time; network: unreachable or a non-HTTP throw. */
       kind: "http" | "timeout" | "network";
       rateLimited: boolean;
       status?: number;
@@ -641,9 +771,10 @@ export function channelIdFromTopic(topic: string | undefined): string | null {
 }
 
 /**
- * hub 用來確認訂閱的那個 GET 不帶任何簽章，所以唯一能認證它的東西，是我們自己
- * 放進 callback URL、而 hub 每次都會原樣帶回來的一段不可猜測字串。這裡從既有的
- * secret 衍生，不需要新的環境變數。
+ * The hub's verification GET carries no signature, so the only thing that can
+ * authenticate it is something unguessable that we put into the callback URL
+ * ourselves and the hub echoes back verbatim. Derived from the existing secret,
+ * so this needs no new environment variable.
  */
 export function getCallbackToken(): string {
   assert(YOUTUBE_PUBSUB_SECRET, "YOUTUBE_PUBSUB_SECRET should be defined.");
@@ -663,21 +794,25 @@ export function getCallbackUrl(): string {
 }
 
 /**
- * 送出一次訂閱請求。所有失敗都在這裡被 catch 並分類，呼叫端永遠拿到回傳值——
- * 一個沒人接的 rejection 會讓整個 process 被 unhandledRejection handler 殺掉。
+ * Sends one subscribe request. Every failure is caught and classified here, so
+ * the caller always gets a value back: an unhandled rejection would be taken by
+ * the process-wide unhandledRejection handler, which exits.
  */
 export async function requestSubscription(
   channelId: string
 ): Promise<SubscribeResult> {
-  assert(YOUTUBE_PUBSUB_SECRET, "YOUTUBE_PUBSUB_SECRET should be defined.");
-  const form = new URLSearchParams({
-    "hub.callback": getCallbackUrl(),
-    "hub.mode": "subscribe",
-    "hub.topic": topicForChannel(channelId),
-    "hub.secret": YOUTUBE_PUBSUB_SECRET,
-  });
-
   try {
+    assert(YOUTUBE_PUBSUB_SECRET, "YOUTUBE_PUBSUB_SECRET should be defined.");
+    // Building the form is inside the try as well: getCallbackUrl() throws a
+    // TypeError when PUBLIC_BASE_URL is not a valid URL, and that also has to
+    // come back as a value rather than propagate.
+    const form = new URLSearchParams({
+      "hub.callback": getCallbackUrl(),
+      "hub.mode": "subscribe",
+      "hub.topic": topicForChannel(channelId),
+      "hub.secret": YOUTUBE_PUBSUB_SECRET,
+    });
+
     await axios.post(HUB_URL, form.toString(), {
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       timeout: PUBSUB_REQUEST_TIMEOUT_MS,
@@ -720,35 +855,35 @@ export async function requestSubscription(
 }
 ```
 
-- [ ] **Step 4: 跑測試確認通過**
+- [ ] **Step 5: Run both test files and watch them pass**
 
-Run: `npm run test -- src/modules/youtube-pubsub/hub-client.spec.ts`
-Expected: 9 個測試全部 PASS。
+Run: `npm run test -- src/modules/youtube-pubsub/hub-client.spec.ts src/modules/youtube-pubsub/hub-client-misconfig.spec.ts`
+Expected: all 10 tests across the two files PASS.
 
-- [ ] **Step 5: 型別檢查與 lint**
+- [ ] **Step 6: Type check and lint**
 
 Run: `npm run build && npm run lint`
-Expected: 兩者都無錯誤結束。
+Expected: both exit without errors.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/modules/youtube-pubsub/hub-client.ts src/modules/youtube-pubsub/hub-client.spec.ts
+git add src/modules/youtube-pubsub/hub-client.ts src/modules/youtube-pubsub/hub-client.spec.ts src/modules/youtube-pubsub/hub-client-misconfig.spec.ts
 git commit -m "feat(pubsub): send subscribe requests with a timeout and classified failures"
 ```
 
 ---
 
-### Task 5: Channel 的續訂狀態與候選查詢
+### Task 5: Renewal state and candidate query on Channel
 
 **Files:**
 
 - Modify: `src/models/Channel.ts`
-- Test: `src/models/Channel.spec.ts`（既有檔案，附加一個 describe）
+- Test: `src/models/Channel.spec.ts` (existing file, append one describe)
 
-- [ ] **Step 1: 寫失敗的測試**
+- [ ] **Step 1: Write the failing test**
 
-在 `src/models/Channel.spec.ts` 檔尾附加：
+Append to `src/models/Channel.spec.ts`:
 
 ```ts
 describe("Channel.findPubsubRenewalCandidates", () => {
@@ -756,8 +891,8 @@ describe("Channel.findPubsubRenewalCandidates", () => {
     jest.restoreAllMocks();
   });
 
-  // findSubscribed() 回傳的是一個 mongoose Query，鏈上的 and/sort/limit/select
-  // 都回傳自己，所以用一個記錄呼叫參數的假 query 就能斷言整條鏈。
+  // findSubscribed() returns a mongoose Query whose and/sort/limit/select all
+  // return itself, so a query that records its arguments can assert the chain.
   function fakeQuery() {
     const calls: Record<string, unknown[]> = {};
     const query: Record<string, unknown> = {};
@@ -770,7 +905,7 @@ describe("Channel.findPubsubRenewalCandidates", () => {
     return { query, calls };
   }
 
-  it("asks for channels whose lease is near expiry and that are off cooldown", async () => {
+  it("asks for channels whose lease is near expiry and that are off cooldown", () => {
     const { query, calls } = fakeQuery();
     jest.spyOn(ChannelModel, "findSubscribed").mockReturnValue(query as never);
     const now = new Date("2026-09-17T00:00:00.000Z");
@@ -805,14 +940,14 @@ describe("Channel.findPubsubRenewalCandidates", () => {
 });
 ```
 
-- [ ] **Step 2: 跑測試確認它失敗**
+- [ ] **Step 2: Run the test and watch it fail**
 
 Run: `npm run test -- src/models/Channel.spec.ts`
-Expected: FAIL，`ChannelModel.findPubsubRenewalCandidates is not a function`。
+Expected: FAIL with `ChannelModel.findPubsubRenewalCandidates is not a function`.
 
-- [ ] **Step 3: 加欄位、index 與查詢**
+- [ ] **Step 3: Add the fields, the index and the query**
 
-在 `src/models/Channel.ts` 的 import 區加入常數：
+Add the constants to the import block of `src/models/Channel.ts`:
 
 ```ts
 import {
@@ -823,32 +958,36 @@ import {
 } from "../constants.js";
 ```
 
-在 class 上既有的 `@index(...)` 之後加一個複合 index（讓候選查詢的排序走 index）：
+Add one compound index after the existing `@index(...)` decorators on the class,
+so the candidate query's sort can use an index:
 
 ```ts
 @index({ pubsubExpiresAt: 1, pubsubRequestedAt: 1 })
 ```
 
-在 `holodexCrawledAt` 欄位之後加兩個欄位：
+Add two fields after the `holodexCrawledAt` field:
 
 ```ts
-  /** 我們上次向 hub 送出訂閱請求的時間。 */
+  /** When we last sent a subscribe request for this channel to the hub. */
   @prop()
   public pubsubRequestedAt?: Date;
 
-  /** verification 帶回的 lease 換算出的訂閱到期時間。 */
+  /** When the subscription expires, derived from the lease the verification carried. */
   @prop()
   public pubsubExpiresAt?: Date;
 ```
 
-在 `//#region find methods` 內、`waitForCrawl` 之前加入 static：
+Add the static inside `//#region find methods`, before `waitForCrawl`:
 
 ```ts
   /**
-   * 需要續訂 pubsub 的頻道：訂閱即將到期（或從未成功訂閱），且最近沒有送過請求。
+   * Channels that need their pubsub subscription renewed: the subscription is
+   * near expiry (or was never established), and no request went out recently.
    *
-   * 排序讓沒有 `pubsubRequestedAt` 的（從未請求過）排最前面，其餘最久沒請求的
-   * 優先，所以一個永遠失敗的頻道在請求後會落到隊尾，不會一直霸佔隊首。
+   * The sort puts channels without a `pubsubRequestedAt` (never requested)
+   * first and otherwise the least recently requested first, so a channel that
+   * always fails drops to the back of the queue after each attempt instead of
+   * holding the front of it.
    */
   public static findPubsubRenewalCandidates(
     this: ReturnModelType<typeof Channel>,
@@ -884,15 +1023,15 @@ import {
   }
 ```
 
-- [ ] **Step 4: 跑測試確認通過**
+- [ ] **Step 4: Run the test and watch it pass**
 
 Run: `npm run test -- src/models/Channel.spec.ts`
-Expected: 既有測試與新加的 1 個測試全部 PASS。
+Expected: the existing tests plus the new one all PASS.
 
-- [ ] **Step 5: 型別檢查與 lint**
+- [ ] **Step 5: Type check and lint**
 
 Run: `npm run build && npm run lint`
-Expected: 兩者都無錯誤結束。
+Expected: both exit without errors.
 
 - [ ] **Step 6: Commit**
 
@@ -903,14 +1042,14 @@ git commit -m "feat(channel): track pubsub request and expiry, query renewal can
 
 ---
 
-### Task 6: 到期驅動的批次續訂
+### Task 6: Expiry-driven batch renewal
 
 **Files:**
 
 - Create: `src/components/pubsub-subscribe.ts`
 - Test: `src/components/pubsub-subscribe.spec.ts`
 
-- [ ] **Step 1: 寫失敗的測試**
+- [ ] **Step 1: Write the failing test**
 
 Create `src/components/pubsub-subscribe.spec.ts`:
 
@@ -934,23 +1073,26 @@ type SubscribeResult = Awaited<
   >
 >;
 
-const mockRequestSubscription = jest.fn<() => Promise<SubscribeResult>>();
-const mockSleep = jest.fn<() => Promise<void>>();
+const mockRequestSubscription =
+  jest.fn<(channelId: string) => Promise<SubscribeResult>>();
+const mockSleep = jest.fn<(ms: number) => Promise<void>>();
 
 jest.unstable_mockModule("../modules/youtube-pubsub/hub-client.js", () => ({
   requestSubscription: mockRequestSubscription,
 }));
 
-// 真的 sleep 會讓測試變慢，而且我們要斷言間隔被套用的次數。
+// Sleeping for real would only slow the suite down, and the mock also lets the
+// spacing be asserted.
 jest.unstable_mockModule("node:timers/promises", () => ({
   setTimeout: mockSleep,
 }));
 
 const { default: ChannelModel } = await import("../models/Channel.js");
 const { renewPubsubSubscriptions } = await import("./pubsub-subscribe.js");
-const { PUBSUB_RENEW_BATCH_SIZE } = await import("../constants.js");
+const { PUBSUB_RENEW_BATCH_SIZE, PUBSUB_REQUEST_SPACING_MS } =
+  await import("../constants.js");
 
-// 一個會記錄寫入順序的 stateful 假 Channel collection。
+// A stateful fake channel collection that records the order of writes.
 function fakeChannels(ids: string[]) {
   const writes: string[] = [];
   const candidates = ids.map((id) => ({ id, name: `Channel ${id}` }));
@@ -1017,9 +1159,53 @@ describe("renewPubsubSubscriptions", () => {
     await renewPubsubSubscriptions();
 
     expect(writes).toEqual(["UC1", "UC2", "UC3"]);
-    expect(mockRequestSubscription).toHaveBeenCalledTimes(3);
-    // 最後一個之後不需要再等。
-    expect(mockSleep).toHaveBeenCalledTimes(2);
+    expect(mockRequestSubscription.mock.calls.map((call) => call[0])).toEqual([
+      "UC1",
+      "UC2",
+      "UC3",
+    ]);
+    // No need to wait after the last one.
+    expect(mockSleep.mock.calls).toEqual([
+      [PUBSUB_REQUEST_SPACING_MS],
+      [PUBSUB_REQUEST_SPACING_MS],
+    ]);
+  });
+
+  it("waits for a hanging request, classifies it, and still runs the rest", async () => {
+    const { writes } = fakeChannels(["UC1", "UC2", "UC3"]);
+    // A request that only settles when released, standing in for a hub that
+    // does not answer until the client times out.
+    let releaseFirst: ((result: SubscribeResult) => void) | undefined;
+    mockRequestSubscription.mockImplementationOnce(
+      () =>
+        new Promise<SubscribeResult>((resolve) => {
+          releaseFirst = resolve;
+        })
+    );
+
+    const round = renewPubsubSubscriptions();
+
+    // Explicit drain point: while the first request is unsettled the loop
+    // cannot have moved on, so the other two candidates are untouched.
+    await Promise.resolve();
+    expect(writes).toEqual(["UC1"]);
+    expect(mockRequestSubscription).toHaveBeenCalledTimes(1);
+
+    releaseFirst?.({
+      ok: false,
+      kind: "timeout",
+      rateLimited: false,
+      message: "timeout of 10000ms exceeded",
+    });
+    await round;
+
+    // A timeout is not throttling, so the round runs to completion.
+    expect(writes).toEqual(["UC1", "UC2", "UC3"]);
+    expect(mockRequestSubscription.mock.calls.map((call) => call[0])).toEqual([
+      "UC1",
+      "UC2",
+      "UC3",
+    ]);
   });
 
   it("stops the round as soon as the hub rate limits", async () => {
@@ -1038,7 +1224,7 @@ describe("renewPubsubSubscriptions", () => {
     await renewPubsubSubscriptions();
 
     expect(mockRequestSubscription).toHaveBeenCalledTimes(3);
-    // 第四、第五個連 pubsubRequestedAt 都還沒被寫。
+    // The fourth and fifth never even get their pubsubRequestedAt written.
     expect(writes).toEqual(["UC1", "UC2", "UC3"]);
   });
 
@@ -1077,12 +1263,12 @@ describe("renewPubsubSubscriptions", () => {
 });
 ```
 
-- [ ] **Step 2: 跑測試確認它失敗**
+- [ ] **Step 2: Run the test and watch it fail**
 
 Run: `npm run test -- src/components/pubsub-subscribe.spec.ts`
-Expected: FAIL，錯誤是找不到模組 `./pubsub-subscribe.js`。
+Expected: FAIL, because the module `./pubsub-subscribe.js` does not exist.
 
-- [ ] **Step 3: 寫實作**
+- [ ] **Step 3: Write the implementation**
 
 Create `src/components/pubsub-subscribe.ts`:
 
@@ -1096,10 +1282,12 @@ import ChannelModel from "../models/Channel.js";
 import { requestSubscription } from "../modules/youtube-pubsub/hub-client.js";
 
 /**
- * 一輪續訂：挑出訂閱即將到期（或從未成功）的頻道，逐一向 hub 送出訂閱請求。
+ * One renewal round: pick the channels whose subscription is near expiry (or
+ * was never established) and send a subscribe request for each.
  *
- * 單輪的頻道數與逐項逾時把最壞情況的執行時間封在 agenda 的 lockLifetime 以內，
- * 所以這裡不需要 job.touch()。
+ * The batch size and the per-request timeout together bound the worst-case
+ * runtime well below agenda's lockLifetime, which is why this needs no
+ * job.touch().
  */
 export async function renewPubsubSubscriptions(): Promise<void> {
   const candidates = await ChannelModel.findPubsubRenewalCandidates(
@@ -1109,9 +1297,11 @@ export async function renewPubsubSubscriptions(): Promise<void> {
   for (let index = 0; index < candidates.length; index++) {
     const channel = candidates[index];
 
-    // 先寫再送請求：hub 有時會在回應 POST 之前就先來 verification，先寫才不會讓
-    // 合法的 verification 被時間窗擋掉。而且不論請求成敗都寫，一個永遠失敗的
-    // 頻道才會落到隊尾，不會固定霸佔隊首、擠掉正常的續訂。
+    // Stamped before the request goes out: the hub sometimes verifies before it
+    // answers the POST, and stamping first is what keeps a legitimate
+    // verification inside the accepted window. It is also written regardless of
+    // the outcome, so a channel that always fails drops to the back of the
+    // queue instead of holding the front of it and starving real renewals.
     await ChannelModel.updateOne(
       { id: channel.id },
       { $set: { pubsubRequestedAt: new Date() } }
@@ -1121,7 +1311,8 @@ export async function renewPubsubSubscriptions(): Promise<void> {
     const result = await requestSubscription(channel.id);
     if (!result.ok) {
       if (result.rateLimited) {
-        // 限流通常是全域的，繼續打只會繼續失敗。剩下的候選留給下一輪。
+        // Throttling is usually global, so continuing would only keep failing.
+        // The remaining candidates are left for the next round.
         console.warn(
           `Pubsub subscribe throttled at [${channel.id}] (status=${result.status}); stopping this round`
         );
@@ -1140,15 +1331,15 @@ export async function renewPubsubSubscriptions(): Promise<void> {
 }
 ```
 
-- [ ] **Step 4: 跑測試確認通過**
+- [ ] **Step 4: Run the test and watch it pass**
 
 Run: `npm run test -- src/components/pubsub-subscribe.spec.ts`
-Expected: 6 個測試全部 PASS。
+Expected: all 7 tests PASS.
 
-- [ ] **Step 5: 型別檢查與 lint**
+- [ ] **Step 5: Type check and lint**
 
 Run: `npm run build && npm run lint`
-Expected: 兩者都無錯誤結束。
+Expected: both exit without errors.
 
 - [ ] **Step 6: Commit**
 
@@ -1159,14 +1350,14 @@ git commit -m "feat(pubsub): renew expiring subscriptions in small batches"
 
 ---
 
-### Task 7: verification GET route
+### Task 7: Verification GET route
 
 **Files:**
 
 - Create: `src/modules/youtube-pubsub/routes.ts`
 - Test: `src/modules/youtube-pubsub/routes.spec.ts`
 
-- [ ] **Step 1: 寫失敗的測試**
+- [ ] **Step 1: Write the failing test**
 
 Create `src/modules/youtube-pubsub/routes.spec.ts`:
 
@@ -1174,6 +1365,7 @@ Create `src/modules/youtube-pubsub/routes.spec.ts`:
 /// <reference types="jest" />
 import { afterEach, describe, expect, it, jest } from "@jest/globals";
 import fastify from "fastify";
+import crypto from "node:crypto";
 
 process.env.PUBLIC_BASE_URL = "https://honeybee.example.test/";
 process.env.YOUTUBE_PUBSUB_SECRET = "test-secret";
@@ -1207,21 +1399,55 @@ function verificationUrl(params: Record<string, string>, path = token): string {
   return `/notifications/youtube/${path}?${new URLSearchParams(params)}`;
 }
 
+/**
+ * A stateful channel store whose findOne actually evaluates the filter, so a
+ * missing cooldown condition in the implementation makes these tests fail
+ * instead of passing by accident.
+ */
+function fakeChannelStore(stored: { id: string; pubsubRequestedAt?: Date }[]): {
+  updates: { id: string; expiresAt: Date }[];
+} {
+  jest.spyOn(ChannelModel, "findOne").mockImplementation(((filter: {
+    id: string;
+    pubsubRequestedAt?: { $gte: Date };
+  }) => {
+    const found = stored.find((channel) => {
+      if (channel.id !== filter.id) return false;
+      const cutoff = filter.pubsubRequestedAt?.$gte;
+      if (!cutoff) return true;
+      return !!channel.pubsubRequestedAt && channel.pubsubRequestedAt >= cutoff;
+    });
+    return Promise.resolve(found ?? null) as never;
+  }) as never);
+
+  const updates: { id: string; expiresAt: Date }[] = [];
+  jest.spyOn(ChannelModel, "updateOne").mockImplementation(((
+    filter: { id: string },
+    update: { $set: { pubsubExpiresAt: Date } }
+  ) => {
+    updates.push({ id: filter.id, expiresAt: update.$set.pubsubExpiresAt });
+    return Promise.resolve({ acknowledged: true }) as never;
+  }) as never);
+
+  return { updates };
+}
+
+/** Lets the handler finish the work it does after answering the request. */
+function drainPostResponseWork(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
 describe("verification GET", () => {
   afterEach(() => {
     jest.restoreAllMocks();
   });
 
   it("echoes the challenge and stores the expiry for a channel we just asked about", async () => {
-    const requestedAt = new Date("2026-09-17T00:00:00.000Z");
-    const findSpy = jest.spyOn(ChannelModel, "findOne").mockResolvedValue({
-      id: "UCabc",
-      pubsubRequestedAt: requestedAt,
-    } as never);
-    const updateSpy = jest
-      .spyOn(ChannelModel, "updateOne")
-      .mockResolvedValue({ acknowledged: true } as never);
+    const { updates } = fakeChannelStore([
+      { id: "UCabc", pubsubRequestedAt: new Date() },
+    ]);
     const app = await buildServer();
+    const before = Date.now();
 
     const response = await app.inject({
       method: "GET",
@@ -1232,22 +1458,24 @@ describe("verification GET", () => {
         "hub.lease_seconds": "432000",
       }),
     });
+    await drainPostResponseWork();
 
     expect(response.statusCode).toBe(200);
-    // body 不等於 challenge 的話 hub 會判定驗證失敗，所以必須完全相等。
+    // A body that is not exactly the challenge makes the hub treat the
+    // verification as failed.
     expect(response.body).toBe("challenge-value");
-    expect(findSpy).toHaveBeenCalledTimes(1);
-    expect(updateSpy).toHaveBeenCalledTimes(1);
-    const [filter, update] = updateSpy.mock.calls[0] as [
-      { id: string },
-      { $set: { pubsubExpiresAt: Date } },
-    ];
-    expect(filter).toEqual({ id: "UCabc" });
-    expect(update.$set.pubsubExpiresAt.getTime()).toBeGreaterThan(Date.now());
+    expect(updates).toHaveLength(1);
+    expect(updates[0].id).toBe("UCabc");
+    expect(updates[0].expiresAt.getTime() - before).toBeGreaterThan(
+      430_000 * 1000
+    );
     await app.close();
   });
 
   it("rejects a wrong token without touching the database", async () => {
+    const { updates } = fakeChannelStore([
+      { id: "UCabc", pubsubRequestedAt: new Date() },
+    ]);
     const findSpy = jest.spyOn(ChannelModel, "findOne");
     const app = await buildServer();
 
@@ -1265,12 +1493,18 @@ describe("verification GET", () => {
 
     expect(response.statusCode).toBe(404);
     expect(findSpy).not.toHaveBeenCalled();
+    expect(updates).toHaveLength(0);
     await app.close();
   });
 
-  it("rejects a channel we did not recently ask about", async () => {
-    jest.spyOn(ChannelModel, "findOne").mockResolvedValue(null as never);
-    const updateSpy = jest.spyOn(ChannelModel, "updateOne");
+  it("rejects a channel whose request is older than the cooldown", async () => {
+    const { updates } = fakeChannelStore([
+      {
+        id: "UCabc",
+        // Stamped long before the accepted window.
+        pubsubRequestedAt: new Date(Date.now() - 60 * 60 * 1000),
+      },
+    ]);
     const app = await buildServer();
 
     const response = await app.inject({
@@ -1283,7 +1517,110 @@ describe("verification GET", () => {
     });
 
     expect(response.statusCode).toBe(404);
-    expect(updateSpy).not.toHaveBeenCalled();
+    expect(updates).toHaveLength(0);
+    await app.close();
+  });
+
+  it("rejects a channel that was never requested", async () => {
+    const { updates } = fakeChannelStore([{ id: "UCabc" }]);
+    const app = await buildServer();
+
+    const response = await app.inject({
+      method: "GET",
+      url: verificationUrl({
+        "hub.mode": "subscribe",
+        "hub.topic": topicForChannel("UCabc"),
+        "hub.challenge": "challenge-value",
+      }),
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(updates).toHaveLength(0);
+    await app.close();
+  });
+
+  it("rejects a channel we do not have at all", async () => {
+    const { updates } = fakeChannelStore([]);
+    const app = await buildServer();
+
+    const response = await app.inject({
+      method: "GET",
+      url: verificationUrl({
+        "hub.mode": "subscribe",
+        "hub.topic": topicForChannel("UCother"),
+        "hub.challenge": "challenge-value",
+      }),
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(updates).toHaveLength(0);
+    await app.close();
+  });
+
+  it("answers the challenge before the expiry is written", async () => {
+    jest.spyOn(ChannelModel, "findOne").mockResolvedValue({
+      id: "UCabc",
+      pubsubRequestedAt: new Date(),
+    } as never);
+    let releaseWrite: (() => void) | undefined;
+    let writeStarted = false;
+    let writeFinished = false;
+    jest.spyOn(ChannelModel, "updateOne").mockImplementation((() => {
+      writeStarted = true;
+      return new Promise((resolve) => {
+        releaseWrite = () => {
+          writeFinished = true;
+          resolve({ acknowledged: true });
+        };
+      }) as never;
+    }) as never);
+    const app = await buildServer();
+
+    const response = await app.inject({
+      method: "GET",
+      url: verificationUrl({
+        "hub.mode": "subscribe",
+        "hub.topic": topicForChannel("UCabc"),
+        "hub.challenge": "challenge-value",
+      }),
+    });
+
+    // The response is complete while the write is still in flight: that
+    // ordering is the point. The reverse order would leave an expiry stored for
+    // a subscription the hub never established.
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toBe("challenge-value");
+    expect(writeStarted).toBe(true);
+    expect(writeFinished).toBe(false);
+
+    releaseWrite?.();
+    await drainPostResponseWork();
+    expect(writeFinished).toBe(true);
+    await app.close();
+  });
+
+  it("still answers the challenge when the expiry write fails", async () => {
+    jest.spyOn(ChannelModel, "findOne").mockResolvedValue({
+      id: "UCabc",
+      pubsubRequestedAt: new Date(),
+    } as never);
+    jest
+      .spyOn(ChannelModel, "updateOne")
+      .mockRejectedValue(new Error("mongo down") as never);
+    const app = await buildServer();
+
+    const response = await app.inject({
+      method: "GET",
+      url: verificationUrl({
+        "hub.mode": "subscribe",
+        "hub.topic": topicForChannel("UCabc"),
+        "hub.challenge": "challenge-value",
+      }),
+    });
+    await drainPostResponseWork();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toBe("challenge-value");
     await app.close();
   });
 
@@ -1291,14 +1628,12 @@ describe("verification GET", () => {
     ["missing", {}, PUBSUB_DEFAULT_LEASE_MS],
     ["not a number", { "hub.lease_seconds": "soon" }, PUBSUB_DEFAULT_LEASE_MS],
     ["zero", { "hub.lease_seconds": "0" }, PUBSUB_DEFAULT_LEASE_MS],
+    ["fractional", { "hub.lease_seconds": "1.5" }, PUBSUB_DEFAULT_LEASE_MS],
     ["over the cap", { "hub.lease_seconds": "99999999" }, PUBSUB_MAX_LEASE_MS],
   ])("handles a lease that is %s", async (_label, extra, expectedMs) => {
-    jest
-      .spyOn(ChannelModel, "findOne")
-      .mockResolvedValue({ id: "UCabc" } as never);
-    const updateSpy = jest
-      .spyOn(ChannelModel, "updateOne")
-      .mockResolvedValue({ acknowledged: true } as never);
+    const { updates } = fakeChannelStore([
+      { id: "UCabc", pubsubRequestedAt: new Date() },
+    ]);
     const app = await buildServer();
     const before = Date.now();
 
@@ -1311,20 +1646,19 @@ describe("verification GET", () => {
         ...(extra as Record<string, string>),
       }),
     });
+    await drainPostResponseWork();
 
     expect(response.statusCode).toBe(200);
-    const [, update] = updateSpy.mock.calls[0] as [
-      unknown,
-      { $set: { pubsubExpiresAt: Date } },
-    ];
-    const leaseMs = update.$set.pubsubExpiresAt.getTime() - before;
+    const leaseMs = updates[0].expiresAt.getTime() - before;
     expect(leaseMs).toBeGreaterThanOrEqual(expectedMs - 5_000);
     expect(leaseMs).toBeLessThanOrEqual(expectedMs + 5_000);
     await app.close();
   });
 
   it("rejects an unsubscribe verification and ignores a denial", async () => {
-    const updateSpy = jest.spyOn(ChannelModel, "updateOne");
+    const { updates } = fakeChannelStore([
+      { id: "UCabc", pubsubRequestedAt: new Date() },
+    ]);
     const app = await buildServer();
 
     const unsubscribed = await app.inject({
@@ -1345,11 +1679,12 @@ describe("verification GET", () => {
 
     expect(unsubscribed.statusCode).toBe(404);
     expect(denied.statusCode).toBe(200);
-    expect(updateSpy).not.toHaveBeenCalled();
+    expect(updates).toHaveLength(0);
     await app.close();
   });
 
   it("rejects a topic that is not a youtube feed topic", async () => {
+    fakeChannelStore([{ id: "UCabc", pubsubRequestedAt: new Date() }]);
     const findSpy = jest.spyOn(ChannelModel, "findOne");
     const app = await buildServer();
 
@@ -1369,12 +1704,12 @@ describe("verification GET", () => {
 });
 ```
 
-- [ ] **Step 2: 跑測試確認它失敗**
+- [ ] **Step 2: Run the test and watch it fail**
 
 Run: `npm run test -- src/modules/youtube-pubsub/routes.spec.ts`
-Expected: FAIL，錯誤是找不到模組 `./routes.js`。
+Expected: FAIL, because the module `./routes.js` does not exist.
 
-- [ ] **Step 3: 寫實作（只含 GET）**
+- [ ] **Step 3: Write the implementation (GET only)**
 
 Create `src/modules/youtube-pubsub/routes.ts`:
 
@@ -1405,7 +1740,10 @@ function tokenMatches(candidate: string): boolean {
   return crypto.timingSafeEqual(expected, actual);
 }
 
-/** hub 給的 lease 只有驗證過才採用，異常值不能把頻道推到永遠不續訂。 */
+/**
+ * The lease the hub reports is only used once validated: a bogus value must not
+ * be able to push a channel out of renewal indefinitely.
+ */
 function leaseMsFrom(raw: string | undefined): number {
   const seconds = Number(raw);
   if (!Number.isInteger(seconds) || seconds <= 0) {
@@ -1428,13 +1766,15 @@ async function handleVerification(
   const channelId = channelIdFromTopic(request.query["hub.topic"]);
 
   if (mode === "denied") {
-    // 只記錄：pubsubRequestedAt 已經更新過，冷卻本身就是退避。
+    // Logged only: pubsubRequestedAt has already been stamped, and the cooldown
+    // is the back-off.
     console.warn(`Pubsub subscription denied: ${channelId ?? "unknown topic"}`);
     reply.code(200).type("text/plain").send("ok");
     return;
   }
 
-  // 本服務沒有主動退訂的流程，所以不接受 unsubscribe 的驗證。
+  // This service never unsubscribes on purpose, so an unsubscribe verification
+  // is not something we should confirm.
   if (mode !== "subscribe" || !channelId) {
     console.warn(
       `Pubsub verification rejected (mode=${mode ?? "none"}, topic=${
@@ -1445,7 +1785,9 @@ async function handleVerification(
     return;
   }
 
-  // 只接受我們最近真的請求過的頻道：這個 GET 沒有簽章，時間窗是唯一的關聯依據。
+  // Only channels we really asked about recently are accepted: this GET carries
+  // no signature, so the request window is the only thing that correlates it
+  // with a subscription we initiated.
   const channel = await ChannelModel.findOne({
     id: channelId,
     pubsubRequestedAt: {
@@ -1461,8 +1803,10 @@ async function handleVerification(
   }
 
   const challenge = request.query["hub.challenge"] ?? "";
-  // 先回 challenge、再寫到期時間。反過來的話，一個沒送達的回應會留下「我們以為
-  // 訂閱成功、hub 其實沒建立」的狀態，而規範沒有規定 hub 會重試 verification。
+  // Answer the challenge first, store the expiry after. The other order leaves
+  // a stored expiry for a subscription the hub never established whenever the
+  // response fails to arrive, and the spec does not require hubs to retry a
+  // verification.
   reply.code(200).type("text/plain").send(challenge);
 
   const expiresAt = new Date(
@@ -1477,7 +1821,8 @@ async function handleVerification(
       `Subscribed: ${channelId} (expires=${expiresAt.toISOString()})`
     );
   } catch (error) {
-    // 寫不進去只會讓這個頻道在冷卻後被重訂一次，hub 端是冪等的。
+    // A failed write only means this channel gets renewed once more after the
+    // cooldown, which the hub handles idempotently.
     console.warn(`Pubsub expiry write failed for ${channelId}:`, error);
   }
 }
@@ -1490,15 +1835,15 @@ export const pubsubRoutes: FastifyPluginAsync = async (fastify) => {
 };
 ```
 
-- [ ] **Step 4: 跑測試確認通過**
+- [ ] **Step 4: Run the test and watch it pass**
 
 Run: `npm run test -- src/modules/youtube-pubsub/routes.spec.ts`
-Expected: 9 個測試全部 PASS（`it.each` 展開成 4 個）。
+Expected: all 14 tests PASS (`it.each` expands to 5 of them).
 
-- [ ] **Step 5: 型別檢查與 lint**
+- [ ] **Step 5: Type check and lint**
 
 Run: `npm run build && npm run lint`
-Expected: 兩者都無錯誤結束。
+Expected: both exit without errors.
 
 - [ ] **Step 6: Commit**
 
@@ -1509,26 +1854,31 @@ git commit -m "feat(pubsub): verify hub challenges against a callback token"
 
 ---
 
-### Task 8: 通知 POST route
+### Task 8: Notification POST route
 
 **Files:**
 
 - Modify: `src/modules/youtube-pubsub/routes.ts`
-- Test: `src/modules/youtube-pubsub/routes.spec.ts`（附加一個 describe）
+- Test: `src/modules/youtube-pubsub/routes.spec.ts` (append one describe)
 
-- [ ] **Step 1: 寫失敗的測試**
+- [ ] **Step 1: Write the failing test**
 
-在 `src/modules/youtube-pubsub/routes.spec.ts` 檔尾附加：
+Append to `src/modules/youtube-pubsub/routes.spec.ts`:
 
 ```ts
 function signedFeed(
   body: string,
-  secret = "test-secret"
+  options?: { secret?: string; algorithm?: "sha1" | "sha256" }
 ): Record<string, string> {
-  const digest = crypto.createHmac("sha1", secret).update(body).digest("hex");
+  const secret = options?.secret ?? "test-secret";
+  const algorithm = options?.algorithm ?? "sha1";
+  const digest = crypto
+    .createHmac(algorithm, secret)
+    .update(body)
+    .digest("hex");
   return {
     "content-type": "application/atom+xml",
-    "x-hub-signature": `sha1=${digest}`,
+    "x-hub-signature": `${algorithm}=${digest}`,
   };
 }
 
@@ -1550,6 +1900,31 @@ function notificationBody(...ids: string[]): string {
       xmlns="http://www.w3.org/2005/Atom">${entries}</feed>`;
 }
 
+/**
+ * A stateful video store with real upsert semantics: a video that is already
+ * there reports as modified rather than inserted, which is what proves a replay
+ * completes the missing write instead of creating a duplicate.
+ */
+function fakeVideoStore(options?: { failOnceFor?: string }) {
+  const stored = new Map<string, string>();
+  let pendingFailure = options?.failOnceFor;
+  mockNoticeFromNotification.mockImplementation((async (input: {
+    video: { id: string; title: string };
+    channel: { id: string };
+  }) => {
+    if (input.video.id === pendingFailure) {
+      pendingFailure = undefined;
+      throw new Error("write failed");
+    }
+    const existed = stored.has(input.video.id);
+    stored.set(input.video.id, input.video.title);
+    return existed
+      ? { upsertedCount: 0, modifiedCount: 1 }
+      : { upsertedCount: 1, modifiedCount: 0 };
+  }) as never);
+  return { stored };
+}
+
 describe("notification POST", () => {
   afterEach(() => {
     jest.restoreAllMocks();
@@ -1558,10 +1933,7 @@ describe("notification POST", () => {
   });
 
   it("writes a new video and then fetches its metadata", async () => {
-    mockNoticeFromNotification.mockResolvedValue({
-      upsertedCount: 1,
-      modifiedCount: 0,
-    });
+    const { stored } = fakeVideoStore();
     mockUpdateVideoFromYoutube.mockResolvedValue([]);
     const app = await buildServer();
     const body = notificationBody("vid1");
@@ -1572,21 +1944,20 @@ describe("notification POST", () => {
       headers: signedFeed(body),
       payload: body,
     });
+    await drainPostResponseWork();
 
     expect(response.statusCode).toBe(200);
     expect(mockNoticeFromNotification).toHaveBeenCalledWith({
       video: { id: "vid1", title: "Title vid1" },
       channel: { id: "UCchannel" },
     });
+    expect([...stored]).toEqual([["vid1", "Title vid1"]]);
     expect(mockUpdateVideoFromYoutube).toHaveBeenCalledWith(["vid1"]);
     await app.close();
   });
 
   it("writes every entry of a multi-entry notification", async () => {
-    mockNoticeFromNotification.mockResolvedValue({
-      upsertedCount: 1,
-      modifiedCount: 0,
-    });
+    const { stored } = fakeVideoStore();
     mockUpdateVideoFromYoutube.mockResolvedValue([]);
     const app = await buildServer();
     const body = notificationBody("vid1", "vid2");
@@ -1597,31 +1968,31 @@ describe("notification POST", () => {
       headers: signedFeed(body),
       payload: body,
     });
+    await drainPostResponseWork();
 
     expect(response.statusCode).toBe(200);
     expect(
-      mockNoticeFromNotification.mock.calls.map(
-        (call) => (call[0] as { video: { id: string } }).video.id
-      )
-    ).toEqual(["vid1", "vid2"]);
+      mockNoticeFromNotification.mock.calls.map((call) => call[0])
+    ).toEqual([
+      {
+        video: { id: "vid1", title: "Title vid1" },
+        channel: { id: "UCchannel" },
+      },
+      {
+        video: { id: "vid2", title: "Title vid2" },
+        channel: { id: "UCchannel" },
+      },
+    ]);
+    expect([...stored]).toEqual([
+      ["vid1", "Title vid1"],
+      ["vid2", "Title vid2"],
+    ]);
     expect(mockUpdateVideoFromYoutube).toHaveBeenCalledWith(["vid1", "vid2"]);
     await app.close();
   });
 
   it("returns 500 when a write fails, and a replay then completes it", async () => {
-    // stateful fake：第一次第二筆失敗，重送時兩筆都成功寫入。
-    const written = new Set<string>();
-    let failNext = true;
-    mockNoticeFromNotification.mockImplementation((async (input: {
-      video: { id: string };
-    }) => {
-      if (input.video.id === "vid2" && failNext) {
-        failNext = false;
-        throw new Error("write failed");
-      }
-      written.add(input.video.id);
-      return { upsertedCount: 1, modifiedCount: 0 };
-    }) as never);
+    const { stored } = fakeVideoStore({ failOnceFor: "vid2" });
     mockUpdateVideoFromYoutube.mockResolvedValue([]);
     const app = await buildServer();
     const body = notificationBody("vid1", "vid2");
@@ -1632,8 +2003,12 @@ describe("notification POST", () => {
       headers: signedFeed(body),
       payload: body,
     });
+    await drainPostResponseWork();
+
     expect(first.statusCode).toBe(500);
-    expect([...written]).toEqual(["vid1"]);
+    expect([...stored.keys()]).toEqual(["vid1"]);
+    // A failed delivery must not start enrichment.
+    expect(mockUpdateVideoFromYoutube).not.toHaveBeenCalled();
 
     const second = await app.inject({
       method: "POST",
@@ -1641,17 +2016,18 @@ describe("notification POST", () => {
       headers: signedFeed(body),
       payload: body,
     });
+    await drainPostResponseWork();
+
     expect(second.statusCode).toBe(200);
-    expect([...written].sort()).toEqual(["vid1", "vid2"]);
+    expect([...stored.keys()]).toEqual(["vid1", "vid2"]);
+    // vid1 was already stored, so only vid2 counts as new on the replay.
+    expect(mockUpdateVideoFromYoutube).toHaveBeenCalledWith(["vid2"]);
     await app.close();
   });
 
   it("still answers 200 when the metadata fetch never resolves", async () => {
-    mockNoticeFromNotification.mockResolvedValue({
-      upsertedCount: 1,
-      modifiedCount: 0,
-    });
-    // 永遠不 resolve：enrichment 不能擋住寫入或回應。
+    const { stored } = fakeVideoStore();
+    // Never resolves: enrichment must not block the writes or the response.
     mockUpdateVideoFromYoutube.mockImplementation(
       () => new Promise<never>(() => {})
     );
@@ -1664,18 +2040,20 @@ describe("notification POST", () => {
       headers: signedFeed(body),
       payload: body,
     });
+    await drainPostResponseWork();
 
     expect(response.statusCode).toBe(200);
-    expect(mockNoticeFromNotification).toHaveBeenCalledTimes(2);
+    expect([...stored.keys()]).toEqual(["vid1", "vid2"]);
     await app.close();
   });
 
   it("returns 200 when the metadata fetch rejects", async () => {
-    mockNoticeFromNotification.mockResolvedValue({
-      upsertedCount: 1,
-      modifiedCount: 0,
+    const { stored } = fakeVideoStore();
+    let rejectionObserved = false;
+    mockUpdateVideoFromYoutube.mockImplementation(() => {
+      rejectionObserved = true;
+      return Promise.reject(new Error("quota"));
     });
-    mockUpdateVideoFromYoutube.mockRejectedValue(new Error("quota"));
     const app = await buildServer();
     const body = notificationBody("vid1");
 
@@ -1685,29 +2063,74 @@ describe("notification POST", () => {
       headers: signedFeed(body),
       payload: body,
     });
+    await drainPostResponseWork();
 
     expect(response.statusCode).toBe(200);
+    expect(rejectionObserved).toBe(true);
+    expect([...stored.keys()]).toEqual(["vid1"]);
     await app.close();
   });
 
-  it("ignores a body whose signature does not match, with 200", async () => {
+  it("accepts a sha256 signature", async () => {
+    const { stored } = fakeVideoStore();
+    mockUpdateVideoFromYoutube.mockResolvedValue([]);
     const app = await buildServer();
     const body = notificationBody("vid1");
 
     const response = await app.inject({
       method: "POST",
       url: `/notifications/youtube/${token}`,
-      headers: signedFeed(body, "wrong-secret"),
+      headers: signedFeed(body, { algorithm: "sha256" }),
+      payload: body,
+    });
+    await drainPostResponseWork();
+
+    expect(response.statusCode).toBe(200);
+    expect([...stored.keys()]).toEqual(["vid1"]);
+    await app.close();
+  });
+
+  it("ignores a body whose signature does not match, with 200", async () => {
+    fakeVideoStore();
+    const app = await buildServer();
+    const body = notificationBody("vid1");
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/notifications/youtube/${token}`,
+      headers: signedFeed(body, { secret: "wrong-secret" }),
       payload: body,
     });
 
-    // 非 2xx 只會讓 hub 反覆重送同一筆永遠不會變有效的通知。
+    // A non-2xx would only make the hub keep retrying the same notification,
+    // which can never become valid.
+    expect(response.statusCode).toBe(200);
+    expect(mockNoticeFromNotification).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("rejects a body with an unknown signature algorithm", async () => {
+    fakeVideoStore();
+    const app = await buildServer();
+    const body = notificationBody("vid1");
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/notifications/youtube/${token}`,
+      headers: {
+        "content-type": "application/atom+xml",
+        "x-hub-signature": "md9=deadbeef",
+      },
+      payload: body,
+    });
+
     expect(response.statusCode).toBe(200);
     expect(mockNoticeFromNotification).not.toHaveBeenCalled();
     await app.close();
   });
 
   it("rejects a body with no signature", async () => {
+    fakeVideoStore();
     const app = await buildServer();
     const body = notificationBody("vid1");
 
@@ -1724,6 +2147,7 @@ describe("notification POST", () => {
   });
 
   it("acknowledges a deletion feed without writing anything", async () => {
+    fakeVideoStore();
     const app = await buildServer();
     const body = `<?xml version='1.0' encoding='UTF-8'?>
 <feed xmlns:at="http://purl.org/atompub/tombstones/1.0" xmlns="http://www.w3.org/2005/Atom">
@@ -1743,6 +2167,7 @@ describe("notification POST", () => {
   });
 
   it("acknowledges a body that is not a feed", async () => {
+    fakeVideoStore();
     const app = await buildServer();
     const body = "<html><body>nope</body></html>";
 
@@ -1759,10 +2184,9 @@ describe("notification POST", () => {
   });
 
   it("accepts a notification on the tokenless legacy path", async () => {
-    mockNoticeFromNotification.mockResolvedValue({
-      upsertedCount: 0,
-      modifiedCount: 1,
-    });
+    const { stored } = fakeVideoStore();
+    // Pre-seed so this delivery counts as already seen.
+    stored.set("vid1", "Title vid1");
     const app = await buildServer();
     const body = notificationBody("vid1");
 
@@ -1772,32 +2196,47 @@ describe("notification POST", () => {
       headers: signedFeed(body),
       payload: body,
     });
+    await drainPostResponseWork();
 
     expect(response.statusCode).toBe(200);
     expect(mockNoticeFromNotification).toHaveBeenCalledTimes(1);
-    // 已經看過的影片不需要再抓一次 metadata。
+    // An already-seen video needs no metadata fetch.
     expect(mockUpdateVideoFromYoutube).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("accepts a notification whose path token is wrong, because the signature is what matters", async () => {
+    const { stored } = fakeVideoStore();
+    mockUpdateVideoFromYoutube.mockResolvedValue([]);
+    const app = await buildServer();
+    const body = notificationBody("vid1");
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/notifications/youtube/${"0".repeat(32)}`,
+      headers: signedFeed(body),
+      payload: body,
+    });
+    await drainPostResponseWork();
+
+    // Deliveries are authenticated by X-Hub-Signature, so the POST handler
+    // deliberately does not check the token.
+    expect(response.statusCode).toBe(200);
+    expect([...stored.keys()]).toEqual(["vid1"]);
     await app.close();
   });
 });
 ```
 
-同時把測試檔頂端的 import 補上 `crypto`（在既有的 `import fastify from "fastify";`
-之後）：
-
-```ts
-import crypto from "node:crypto";
-```
-
-- [ ] **Step 2: 跑測試確認新測試失敗**
+- [ ] **Step 2: Run the tests and watch the new ones fail**
 
 Run: `npm run test -- src/modules/youtube-pubsub/routes.spec.ts`
-Expected: Task 7 的測試仍 PASS；新的 `notification POST` 測試 FAIL（POST 路徑
-回 404，因為還沒註冊）。
+Expected: the Task 7 tests still PASS; the new `notification POST` tests FAIL
+(the POST paths answer 404, because they are not registered yet).
 
-- [ ] **Step 3: 加入 POST handler 與 content type parser**
+- [ ] **Step 3: Add the POST handler and the content type parser**
 
-在 `src/modules/youtube-pubsub/routes.ts` 的 import 區補上：
+Add to the import block of `src/modules/youtube-pubsub/routes.ts`:
 
 ```ts
 import VideoModel from "../../models/Video.js";
@@ -1805,7 +2244,7 @@ import { updateVideoFromYoutube } from "../youtube.js";
 import { parseNotification } from "./atom.js";
 ```
 
-並在 import 區的 constants 補上 `YOUTUBE_PUBSUB_SECRET`：
+And add `YOUTUBE_PUBSUB_SECRET` to the constants import:
 
 ```ts
 import {
@@ -1816,12 +2255,14 @@ import {
 } from "../../constants.js";
 ```
 
-在 `handleVerification` 之後加入簽章驗證與通知 handler：
+Add the signature check and the notification handler after
+`handleVerification`:
 
 ```ts
 /**
- * 用 hub.secret 重算投遞 body 的 HMAC 並比對 X-Hub-Signature。演算法由 header
- * 指定（`sha1=` / `sha256=`），不認識的演算法一律視為不符。
+ * Recomputes the HMAC of the delivered body with hub.secret and compares it
+ * with X-Hub-Signature. The algorithm comes from the header (`sha1=` /
+ * `sha256=`); an algorithm we cannot construct counts as a mismatch.
  */
 function signatureMatches(header: string, body: string): boolean {
   if (!YOUTUBE_PUBSUB_SECRET) return false;
@@ -1859,8 +2300,9 @@ async function handleNotification(
     return;
   }
   if (!signatureMatches(signature, body)) {
-    // 回 200 而不是 4xx：非 2xx 只會讓 hub 在它自己的上限內反覆重送同一筆永遠不會
-    // 變有效的通知（重送失敗不會導致退訂）。
+    // 200 rather than 4xx: a non-2xx only makes the hub retry the same
+    // notification up to its own limit (a failed delivery does not unsubscribe
+    // us), and an invalid notification can never become valid.
     console.warn("Pubsub notification signature mismatch");
     reply.code(200).type("text/plain").send("ok");
     return;
@@ -1873,7 +2315,7 @@ async function handleNotification(
     return;
   }
 
-  // 第一階段：只碰資料庫，把每一筆影片都寫進去。
+  // First phase: touch the database only, and write every video in the body.
   const newVideoIds: string[] = [];
   for (const entry of entries) {
     if (entry.type !== "video") continue;
@@ -1896,9 +2338,10 @@ async function handleNotification(
         );
       }
     } catch (error) {
-      // 回 500 讓 hub 重送：影片文件進不了資料庫的話，沒有任何其他機制會重新發現
-      // 一個普通上傳（候選查詢都要求文件已存在，Holodex 輪詢只涵蓋直播）。重送是
-      // 安全的，noticeFromNotification 是 upsert。
+      // 500 so the hub redelivers. Nothing else rediscovers an ordinary upload
+      // that never reached the videos collection: every candidate query needs
+      // the document to exist already, and the Holodex polls only cover
+      // streams. Redelivery is safe because noticeFromNotification upserts.
       console.error(
         `Pubsub notification write failed for [${entry.videoId}]:`,
         error
@@ -1910,9 +2353,10 @@ async function handleNotification(
 
   reply.code(200).type("text/plain").send("ok");
 
-  // 第二階段：回應之後才補 metadata。這個呼叫會 await YouTube Data API，夾在上面
-  // 的迴圈裡的話，一次慢回應就會把後面的 entry 擋在資料庫外面。必須 catch——回應
-  // 之後未處理的 rejection 會讓整個 process 退出。
+  // Second phase, after the response: fetch metadata for the new videos. This
+  // awaits the YouTube Data API, and inside the loop above one slow call would
+  // keep later entries out of the database. It must be caught as well — an
+  // unhandled rejection after the response would still exit the process.
   if (newVideoIds.length > 0) {
     try {
       await updateVideoFromYoutube(newVideoIds);
@@ -1926,17 +2370,20 @@ async function handleNotification(
 }
 ```
 
-把 plugin 改成註冊 parser 與三條 route：
+Change the plugin so it registers the parser and all three routes:
 
 ```ts
 export const pubsubRoutes: FastifyPluginAsync = async (fastify) => {
-  // parseAs: "string" 時 parser 的第二個參數就是原始 body，而它的回傳值會成為
-  // request.body——直接回傳原字串，HMAC 要簽的就是它，不需要另外掛 rawBody。
-  // 這個 parser 註冊在 register() 建立的 scope 內，不會影響其他 route。
-  fastify.addContentTypeParser(
+  // With parseAs: "string" the parser's second argument is the raw body, and
+  // whatever it hands to done() becomes request.body — returning the raw string
+  // is exactly what the HMAC has to be computed over, so no separate rawBody is
+  // needed. The callback form is used because an async body that never awaits
+  // trips @typescript-eslint/require-await. Registered inside the scope that
+  // register() creates, so it does not affect any other route.
+  fastify.addContentTypeParser<string>(
     ["application/atom+xml", "text/xml"],
     { parseAs: "string" },
-    async (_request, body) => body
+    (_request, body, done) => done(null, body)
   );
 
   fastify.get<{ Params: TokenParams; Querystring: HubQuery }>(
@@ -1946,22 +2393,26 @@ export const pubsubRoutes: FastifyPluginAsync = async (fastify) => {
 
   fastify.post("/notifications/youtube/:token", handleNotification);
 
-  // 無 token 的舊路徑：改變 callback URL 會讓 hub 端既有訂閱與新訂閱並存，保留
-  // 這條路徑，既有訂閱的通知在上線瞬間才不會中斷。投遞本身有簽章可驗，所以這裡
-  // 不驗 token。舊訂閱的 lease 全部過期後（最長 5 天）就可以移除。
+  // The tokenless legacy path. Changing the callback URL makes the hub keep the
+  // existing subscriptions alongside the new ones, and keeping this path is
+  // what stops their deliveries from breaking the moment this ships. A delivery
+  // authenticates itself with its signature, so this handler does not check the
+  // token. Removable once every old lease has expired (at most 5 days).
   fastify.post("/notifications/youtube", handleNotification);
 };
 ```
 
-- [ ] **Step 4: 跑測試確認通過**
+- [ ] **Step 4: Run the tests and watch them pass**
 
 Run: `npm run test -- src/modules/youtube-pubsub/routes.spec.ts`
-Expected: 全部 PASS（Task 7 的 9 個 + 本 Task 的 10 個）。
+Expected: all PASS (14 from Task 7 plus 13 from this task).
 
-- [ ] **Step 5: 型別檢查與 lint**
+- [ ] **Step 5: Type check and lint**
 
 Run: `npm run build && npm run lint`
-Expected: 兩者都無錯誤結束。
+Expected: both exit without errors. Watch the lint step in particular: writing
+the content type parser as an async function with no await fails
+`@typescript-eslint/require-await`.
 
 - [ ] **Step 6: Commit**
 
@@ -1972,17 +2423,17 @@ git commit -m "feat(pubsub): receive notifications with hmac checks and retryabl
 
 ---
 
-### Task 9: YouTube API 逾時
+### Task 9: YouTube API timeout
 
 **Files:**
 
 - Modify: `src/modules/youtube.ts:13-24`
 - Test: `src/modules/youtube.spec.ts`
 
-- [ ] **Step 1: 讓既有的 mock 記錄呼叫參數，並寫失敗的測試**
+- [ ] **Step 1: Make the existing mock record its arguments, and write the failing test**
 
-在 `src/modules/youtube.spec.ts` 中，把 `googleapis` 的 mock 改成用 `jest.fn`
-包住 `youtube`（原本是箭頭函式，無法斷言參數）：
+In `src/modules/youtube.spec.ts`, wrap `youtube` in a `jest.fn` (it is currently
+an arrow function, so its arguments cannot be asserted):
 
 ```ts
 const mockYoutube = jest.fn(() => ({
@@ -1995,7 +2446,7 @@ jest.unstable_mockModule("googleapis", () => ({
 }));
 ```
 
-在動態 import 區補上要斷言的常數與工廠函式：
+Add the factory function and the constant to the dynamic import block:
 
 ```ts
 const { getYoutubeApi, updateVideoFromYoutube, updateChannelFromYoutube } =
@@ -2003,7 +2454,7 @@ const { getYoutubeApi, updateVideoFromYoutube, updateChannelFromYoutube } =
 const { YOUTUBE_API_TIMEOUT_MS } = await import("../constants.js");
 ```
 
-在檔尾附加：
+Append to the end of the file:
 
 ```ts
 describe("getYoutubeApi", () => {
@@ -2019,44 +2470,45 @@ describe("getYoutubeApi", () => {
 });
 ```
 
-- [ ] **Step 2: 跑測試確認它失敗**
+- [ ] **Step 2: Run the test and watch it fail**
 
 Run: `npm run test -- src/modules/youtube.spec.ts`
-Expected: 新測試 FAIL —— 實際呼叫參數缺少 `timeout`。
+Expected: the new test FAILS, because the actual call has no `timeout`.
 
-- [ ] **Step 3: 加上 timeout**
+- [ ] **Step 3: Add the timeout**
 
-`src/modules/youtube.ts`：import 區加入常數
+In `src/modules/youtube.ts`, add the constant to the import block:
 
 ```ts
 import { GOOGLE_API_KEY, YOUTUBE_API_TIMEOUT_MS } from "../constants.js";
 ```
 
-（若該檔的 import 已有 `GOOGLE_API_KEY`，只要把 `YOUTUBE_API_TIMEOUT_MS`
-加進同一個 import 的大括號即可。）
+(If that file's import already pulls in `GOOGLE_API_KEY`, just add
+`YOUTUBE_API_TIMEOUT_MS` to the same braces.)
 
-把 client 的建立改成：
+Change how the client is built:
 
 ```ts
 youtubeApi = google.youtube({
   version: "v3",
   auth: GOOGLE_API_KEY,
-  // gaxios 沒有預設逾時（只有傳入 timeout 時才會建立 AbortSignal），不設的話
-  // 一個掛住的請求會讓呼叫它的 job 永遠不結束。這是唯一建立 client 的地方，
-  // 所以這一行涵蓋所有 YouTube API 呼叫。
+  // gaxios has no default timeout (it only builds an AbortSignal when one
+  // is passed), so without this a hung request never lets the job that made
+  // it finish. This is the only place a client is built, so one line covers
+  // every YouTube API call.
   timeout: YOUTUBE_API_TIMEOUT_MS,
 });
 ```
 
-- [ ] **Step 4: 跑測試確認通過**
+- [ ] **Step 4: Run the test and watch it pass**
 
 Run: `npm run test -- src/modules/youtube.spec.ts`
-Expected: 既有測試與新測試全部 PASS。
+Expected: the existing tests plus the new one all PASS.
 
-- [ ] **Step 5: 型別檢查與 lint**
+- [ ] **Step 5: Type check and lint**
 
 Run: `npm run build && npm run lint`
-Expected: 兩者都無錯誤結束。
+Expected: both exit without errors.
 
 - [ ] **Step 6: Commit**
 
@@ -2067,31 +2519,31 @@ git commit -m "fix(youtube): bound every api call with an explicit timeout"
 
 ---
 
-### Task 10: crawler 改組裝
+### Task 10: Rewire the crawler
 
 **Files:**
 
-- Modify: `src/commands/crawler.ts`（import 區、`runCrawler` 開頭、pubsub region）
+- Modify: `src/commands/crawler.ts` (import block, the top of `runCrawler`, the pubsub region)
 
-- [ ] **Step 1: 換掉 import**
+- [ ] **Step 1: Swap the imports**
 
-移除這兩行：
+Remove these two lines:
 
 ```ts
 import fastifyExpress from "@fastify/express";
 import YouTubeNotifier from "youtube-notification";
 ```
 
-在既有 import 區加入（維持原本的字母順序風格）：
+Add these to the existing import block (keeping its alphabetical style):
 
 ```ts
 import { renewPubsubSubscriptions } from "../components/pubsub-subscribe.js";
 import { pubsubRoutes } from "../modules/youtube-pubsub/routes.js";
 ```
 
-- [ ] **Step 2: 在 `app.init()` 之前註冊 plugin**
+- [ ] **Step 2: Register the plugin before `app.init()`**
 
-把 `runCrawler` 開頭這段：
+Replace this block at the top of `runCrawler`:
 
 ```ts
 const { server: fastify } = app.http;
@@ -2100,29 +2552,31 @@ await fastify.register(fastifyExpress);
 await app.init();
 ```
 
-改成：
+with:
 
 ```ts
 const { server: fastify } = app.http;
 
-// 沒有公開位址或沒有 secret 就不啟用 pubsub：callback URL 與簽章驗證都需要它們。
+// No public address or no secret means no pubsub: the callback URL and the
+// signature check both need them.
 const enabledYtPubsub = !!PUBLIC_BASE_URL && !!YOUTUBE_PUBSUB_SECRET;
 if (enabledYtPubsub) {
   // Routes must be registered before HttpServerModule.init() calls listen():
   // fastify refuses to add routes once it is listening.
   await fastify.register(pubsubRoutes);
-  // 通知量很大，每筆都印一行 request log 會淹掉其他訊息。比對是 startsWith，
-  // 所以帶 token 的路徑也涵蓋在內。
+  // Deliveries are frequent, and one request log line each would drown out
+  // everything else. The match is a prefix, so the tokenized path is covered.
   app.http.addNoLogRoute("/notifications/youtube");
 }
 
 await app.init();
 ```
 
-- [ ] **Step 3: 換掉整個 pubsub region**
+- [ ] **Step 3: Replace the whole pubsub region**
 
-把 `//#region youtube pubsub` 到 `//#endregion youtube pubsub` 之間的全部內容
-（`YouTubeNotifier` 實例、`fastify.use(...)`、舊的 job、四個事件監聽器）換成：
+Replace everything between `//#region youtube pubsub` and
+`//#endregion youtube pubsub` (the `YouTubeNotifier` instance, the
+`fastify.use(...)` call, the old job and the four event listeners) with:
 
 ```ts
 //#region youtube pubsub
@@ -2135,15 +2589,16 @@ if (enabledYtPubsub) {
       await renewPubsubSubscriptions();
     }
   );
-  // 高頻小批次：一輪只處理少數即將到期的頻道，所以一次崩潰或限流的損失上限就是
-  // 那幾個頻道，而且十分鐘後的下一輪就會接上。
+  // Small batches, often: the loss ceiling of one crash or one throttling
+  // response is those few channels, and the next round picks up ten minutes
+  // later.
   void agenda.every("10 minutes", JOB_YOUTUBE_PUBSUB_SUBSCRIBE);
 }
 
 //#endregion youtube pubsub
 ```
 
-- [ ] **Step 4: 確認沒有殘留的參照**
+- [ ] **Step 4: Confirm nothing refers to the old pieces**
 
 Run:
 
@@ -2151,19 +2606,19 @@ Run:
 grep -n "YouTubeNotifier\|ytNotifier\|fastifyExpress\|YOUTUBE_PUBSUB_SECRET\|PUBLIC_BASE_URL" src/commands/crawler.ts
 ```
 
-Expected: 只剩 `PUBLIC_BASE_URL` 與 `YOUTUBE_PUBSUB_SECRET` 出現在 import 區與
-`enabledYtPubsub` 那一行；沒有任何 `YouTubeNotifier` / `ytNotifier` /
-`fastifyExpress`。
+Expected: only `PUBLIC_BASE_URL` and `YOUTUBE_PUBSUB_SECRET` remain, in the
+import block and on the `enabledYtPubsub` line; no `YouTubeNotifier`,
+`ytNotifier` or `fastifyExpress` anywhere.
 
-- [ ] **Step 5: 型別檢查與 lint**
+- [ ] **Step 5: Type check and lint**
 
 Run: `npm run build && npm run lint`
-Expected: 兩者都無錯誤結束。
+Expected: both exit without errors.
 
-- [ ] **Step 6: 跑全部測試**
+- [ ] **Step 6: Run the whole suite**
 
 Run: `npm test`
-Expected: 全部 PASS。
+Expected: everything PASSES.
 
 - [ ] **Step 7: Commit**
 
@@ -2174,24 +2629,28 @@ git commit -m "feat(crawler): renew pubsub every ten minutes via native routes"
 
 ---
 
-### Task 11: 移除舊依賴與型別宣告
+### Task 11: Remove the old dependencies and the declaration file
 
 **Files:**
 
 - Delete: `src/types/youtube-notification.d.ts`
-- Modify: `package.json`
+- Modify: `package.json`, `package-lock.json`
 
-- [ ] **Step 1: 確認沒有任何地方還在用它們**
+- [ ] **Step 1: Confirm no source file uses them any more**
 
 Run:
 
 ```bash
-grep -rn "youtube-notification\|@fastify/express" src/ || echo "NO REFERENCES"
+grep -rn "youtube-notification\|@fastify/express" src/ --exclude=youtube-notification.d.ts || echo "NO REFERENCES"
 ```
 
-Expected: `NO REFERENCES`。
+Expected: `NO REFERENCES`.
 
-- [ ] **Step 2: 刪除手寫的型別宣告**
+The declaration file is excluded because it contains
+`declare module "youtube-notification"` itself, and it is only deleted in the
+next step.
+
+- [ ] **Step 2: Delete the hand-written declaration**
 
 Run:
 
@@ -2199,7 +2658,7 @@ Run:
 git rm src/types/youtube-notification.d.ts
 ```
 
-- [ ] **Step 3: 移除依賴**
+- [ ] **Step 3: Remove the dependencies and the resolution that existed for them**
 
 Run:
 
@@ -2207,39 +2666,133 @@ Run:
 npm uninstall youtube-notification @fastify/express
 ```
 
-- [ ] **Step 4: 完整驗證**
+Then remove the whole `resolutions` block from `package.json` by hand:
+
+```json
+  "resolutions": {
+    "youtube-notification/**/axios": "^1.6.8"
+  }
+```
+
+That resolution existed for one reason only: to pull the old axios inside the
+`youtube-notification` dependency tree up to 1.x. With the package gone it does
+nothing.
+
+- [ ] **Step 4: Full verification**
 
 Run: `npm run build && npm run lint && npm test`
-Expected: 三者都無錯誤結束、測試全部 PASS。
+Expected: all three exit without errors and every test PASSES.
 
-- [ ] **Step 5: 確認 express 與舊 axios 已離開 crawler 的依賴樹**
+- [ ] **Step 5: Confirm they are gone from the dependency tree**
 
 Run:
 
 ```bash
-node -e "const p=require('./package.json'); console.log('youtube-notification:', p.dependencies['youtube-notification'], '@fastify/express:', p.dependencies['@fastify/express'])"
+node -e "const p=require('./package.json'); console.log('yt-notification:', p.dependencies['youtube-notification'], '@fastify/express:', p.dependencies['@fastify/express'], 'resolutions:', JSON.stringify(p.resolutions))"
+grep -c '"node_modules/youtube-notification"\|"node_modules/@fastify/express"\|"node_modules/express"' package-lock.json || echo "0 lock entries"
 ```
 
-Expected: 兩者都是 `undefined`。
+Expected: the first line shows `undefined` for all three; the second prints
+`0 lock entries` (or `0`).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add package.json package-lock.json src/types/youtube-notification.d.ts
+git add package.json package-lock.json
 git commit -m "chore: drop youtube-notification and the express adapter"
+```
+
+The deletion of `src/types/youtube-notification.d.ts` is already staged by the
+`git rm` in Step 2, so it does not need a second `git add`.
+
+---
+
+### Task 12: Runbook for configuration changes
+
+**Files:**
+
+- Create: `docs/runbooks/pubsub-callback-rotation.md`
+
+- [ ] **Step 1: Write the runbook**
+
+This procedure cannot live only in the design document: it is what someone will
+actually follow later, and doing the steps in the wrong order silently stops
+deliveries for a channel.
+
+Create `docs/runbooks/pubsub-callback-rotation.md`:
+
+````markdown
+# Changing YOUTUBE_PUBSUB_SECRET or PUBLIC_BASE_URL
+
+A PubSubHubbub subscription is keyed by `(topic, callback URL)`, and the
+crawler's callback URL carries a token derived from `YOUTUBE_PUBSUB_SECRET`.
+Changing either setting therefore invalidates every existing subscription on the
+hub side (the signature no longer verifies, or the callback address no longer
+points at us), while `channels.pubsubExpiresAt` in MongoDB still looks valid.
+Those channels would be skipped by renewal for up to about four days.
+
+## Order (there is only one correct order)
+
+1. Apply the new configuration and redeploy the crawler.
+2. Wait for the rollout to finish and the old pods to terminate:
+
+   ```bash
+   kubectl rollout status deploy/crawler -n honeybee
+   ```
+
+3. Clear every stored expiry, so all channels become renewal candidates again:
+
+   ```js
+   db.channels.updateMany({}, { $unset: { pubsubExpiresAt: "" } });
+   ```
+
+Nothing else is needed afterwards. Renewal refills the whole set in roughly six
+hours (five channels every ten minutes).
+
+## Why clearing first and deploying second is wrong
+
+While a process with the old configuration is still alive, a verification for a
+request it already sent can arrive _after_ the clear. That handler only checks
+the `pubsubRequestedAt` window and has no idea the configuration changed, so it
+writes back a `pubsubExpiresAt` describing the old callback, and the channel
+drops out of renewal again. Clearing after the old pods are gone leaves no
+writer that can pollute the reset state (the crawler runs `replicas: 1`).
+
+## Known trade-off
+
+Uploads published during the rebuild window (about six hours) can be missed: the
+old subscriptions are already invalid, the new ones do not exist yet, and the
+Holodex polls only cover streams, not ordinary uploads. This is a deliberately
+accepted limitation, so prefer a low-activity window for this change.
+````
+
+- [ ] **Step 2: Check the formatting**
+
+Run: `npx prettier --check docs/runbooks/pubsub-callback-rotation.md`
+Expected: `All matched files use Prettier code style!` (if it fails, run
+`npx prettier --write` on the file and check again).
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add docs/runbooks/pubsub-callback-rotation.md
+git commit -m "docs(runbook): order the pubsub callback rotation procedure"
 ```
 
 ---
 
-## 上線後的檢查
+## Post-deployment checks
 
-部署後（不屬於任何 Task，但是這次變更是否成功的判準）：
+After deploying (not part of any task, but this is how to tell the change
+worked):
 
-1. `[crawler youtube pubsub subscribe] starting` / `successed` 每 10 分鐘一對，
-   且 `successed` 真的出現——舊行為是 starting 之後再也沒有 successed。
-2. log 出現 `Subscribing:` 與對應的 `Subscribed: <channelId> (expires=...)`。
-3. `db.agendaJobs.findOne({ name: "crawler youtube pubsub subscribe" })` 的
-   `lastFinishedAt` 開始跟著 `lastRunAt` 前進。
-4. 約 6 小時後，`db.channels.countDocuments({ pubsubExpiresAt: null })` 在
-   subscribed 頻道中趨近 0。
-5. `CLI got unhandledRejection` 不再出現。
+1. `[crawler youtube pubsub subscribe] starting` and `successed` appear as a
+   pair every 10 minutes, and `successed` really shows up — the old behaviour
+   was a `starting` that never came back.
+2. The log shows `Subscribing:` lines with matching
+   `Subscribed: <channelId> (expires=...)` lines.
+3. In `db.agendaJobs.findOne({ name: "crawler youtube pubsub subscribe" })`,
+   `lastFinishedAt` starts moving forward with `lastRunAt`.
+4. After roughly six hours, `db.channels.countDocuments({ pubsubExpiresAt: null })`
+   approaches zero among subscribed channels.
+5. `CLI got unhandledRejection` no longer appears.
