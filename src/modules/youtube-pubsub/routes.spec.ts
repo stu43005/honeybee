@@ -46,10 +46,16 @@ function verificationUrl(params: Record<string, string>, path = token): string {
   return `/notifications/youtube/${path}?${new URLSearchParams(params)}`;
 }
 
+type ChannelFilter = {
+  id: string;
+  pubsubRequestedAt?: { $ne?: null; $gte?: Date };
+};
+
 /**
- * A stateful channel store whose findOne actually evaluates the filter, so a
- * missing cooldown condition in the implementation makes these tests fail
- * instead of passing by accident.
+ * A stateful channel store whose findOne actually evaluates the filter, so an
+ * implementation that looks up the wrong thing makes these tests fail instead
+ * of passing by accident. A `$gte` cutoff is honoured the way MongoDB honours
+ * it, so a time window reintroduced on pubsubRequestedAt is visible here.
  */
 function fakeChannelStore(
   channels: { id: string; pubsubRequestedAt?: Date }[],
@@ -59,16 +65,27 @@ function fakeChannelStore(
   expiries: Map<string, Date>;
   /** Every write that was attempted, in order, whether or not it succeeded. */
   attempted: { id: string; expiresAt: Date }[];
+  /** Every filter findOne was asked for, in order. */
+  filters: ChannelFilter[];
 } {
-  jest.spyOn(ChannelModel, "findOne").mockImplementation(((filter: {
-    id: string;
-    pubsubRequestedAt?: { $ne: null };
-  }) => {
+  const filters: ChannelFilter[] = [];
+  jest.spyOn(ChannelModel, "findOne").mockImplementation(((
+    filter: ChannelFilter
+  ) => {
+    filters.push(filter);
     const found = channels.find((channel) => {
       if (channel.id !== filter.id) return false;
-      // The tokenized callback additionally requires that we asked the hub
-      // about this channel; the tokenless one only requires that we track it.
-      if (!filter.pubsubRequestedAt) return true;
+      const requested = filter.pubsubRequestedAt;
+      // The tokenless callback puts no condition on pubsubRequestedAt at all.
+      if (!requested) return true;
+      // A cutoff excludes a channel stamped before it; an absent timestamp
+      // fails either condition, just as it fails a $ne: null in MongoDB.
+      if (requested.$gte) {
+        const cutoff = requested.$gte;
+        return (
+          !!channel.pubsubRequestedAt && channel.pubsubRequestedAt >= cutoff
+        );
+      }
       return !!channel.pubsubRequestedAt;
     });
     return Promise.resolve(found ?? null) as never;
@@ -90,7 +107,7 @@ function fakeChannelStore(
     return Promise.resolve({ acknowledged: true }) as never;
   }) as never);
 
-  return { expiries, attempted };
+  return { expiries, attempted, filters };
 }
 
 /** Lets the handler finish the work it does after answering the request. */
@@ -162,7 +179,7 @@ describe("verification GET", () => {
   });
 
   it("accepts a verification that arrives long after the request", async () => {
-    const { expiries } = fakeChannelStore([
+    const { expiries, filters } = fakeChannelStore([
       {
         id: "UCabc",
         // The hub verifies when it gets round to it; hours late is normal.
@@ -184,6 +201,12 @@ describe("verification GET", () => {
     expect(response.statusCode).toBe(200);
     expect(response.body).toBe("challenge-value");
     expect([...expiries.keys()]).toEqual(["UCabc"]);
+    // Pinned directly, because the store alone would accept this channel under
+    // a cutoff too if the cutoff happened to be wide: the lookup must ask only
+    // whether we ever asked the hub about this channel, with no time window.
+    expect(filters).toEqual([
+      { id: "UCabc", pubsubRequestedAt: { $ne: null } },
+    ]);
     await app.close();
   });
 
