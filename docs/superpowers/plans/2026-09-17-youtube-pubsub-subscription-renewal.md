@@ -43,7 +43,8 @@ file, in each case because `constants.ts` freezes the environment when it is
 first evaluated and the alternate configuration therefore needs its own module
 registry: `hub-client-misconfig.spec.ts` (an unusable base URL) and
 `youtube-pubsub-disabled.spec.ts` (neither variable set). `renewal.ts` gets
-`renewal-timeout.spec.ts` for the batch test that drives a real timeout.
+`renewal-timeout.spec.ts` for the batch test that times out through the real
+client.
 
 **Modified**
 
@@ -1316,12 +1317,14 @@ describe("renewPubsubSubscriptions", () => {
 });
 ```
 
-- [ ] **Step 2: Write the batch test that drives a real timeout**
+- [ ] **Step 2: Write the batch test that times out through the real client**
 
-The tests above mock `requestSubscription`, so they never exercise the timeout
-mechanism itself. This second file mocks only the transport, which means the
-real hub client does the timing and the classification, and the batch is
-observed end to end.
+The tests above mock `requestSubscription` wholesale, so they never exercise the
+classification logic at all. This second file mocks only the transport, so the
+real hub client decides what a timeout is and the batch is observed end to end.
+Axios itself is still a mock: the stand-in transport fails once the timeout it
+was handed has elapsed, which is what makes this a simulated transport timeout
+rather than a genuine socket one.
 
 Create `src/modules/youtube-pubsub/renewal-timeout.spec.ts`:
 
@@ -1515,7 +1518,7 @@ export async function renewPubsubSubscriptions(): Promise<void> {
 
 Run: `npm run test -- src/modules/youtube-pubsub/renewal.spec.ts src/modules/youtube-pubsub/renewal-timeout.spec.ts`
 Expected: all 9 tests across the two files PASS (8 in the first file, where the
-throttling case runs twice via `it.each`, plus the real-timeout batch test).
+throttling case runs twice via `it.each`, plus the timeout batch test).
 
 - [ ] **Step 6: Type check and lint**
 
