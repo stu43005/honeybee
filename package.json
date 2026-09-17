@@ -32,6 +32,7 @@
     "cacheable": "^1.8.1",
     "decimal.js": "^10.6.0",
     "discord.js": "^14.19.3",
+    "fast-xml-parser": "^5.11.1",
     "fastify": "^4.26.2",
     "googleapis": "^173.0.0",
     "holodex.js": "^2.0.5",
