@@ -11,13 +11,19 @@ import { hyperlink } from "discord.js";
 import { Channel as HolodexChannel } from "holodex.js";
 import type { FilterQuery, FlattenMaps } from "mongoose";
 import { setTimeout as sleep } from "node:timers/promises";
-import { HOLODEX_ALL_VTUBERS, HOLODEX_FETCH_ORG } from "../constants.js";
+import {
+  HOLODEX_ALL_VTUBERS,
+  HOLODEX_FETCH_ORG,
+  PUBSUB_RENEW_BEFORE_MS,
+  PUBSUB_REQUEST_COOLDOWN_MS,
+} from "../constants.js";
 import { setIfDefine } from "../util.js";
 
 @modelOptions({ schemaOptions: { collection: "channels" } })
 @index({ organization: 1, isInactive: 1, hbIgnore: 1, deleted: 1 })
 @index({ extraCrawl: 1, isInactive: 1, hbIgnore: 1, deleted: 1 })
 @index({ updatedAt: 1 })
+@index({ pubsubExpiresAt: 1, pubsubRequestedAt: 1 })
 export class Channel extends TimeStamps {
   @prop({ required: true, unique: true })
   public id!: string;
@@ -75,6 +81,14 @@ export class Channel extends TimeStamps {
 
   @prop({ index: true })
   public holodexCrawledAt?: Date;
+
+  /** When we last sent a subscribe request for this channel to the hub. */
+  @prop()
+  public pubsubRequestedAt?: Date;
+
+  /** When the subscription expires, derived from the lease the verification carried. */
+  @prop()
+  public pubsubExpiresAt?: Date;
 
   public getUrl(this: DocumentType<Channel>): string {
     return Channel.getUrl(this);
@@ -183,6 +197,48 @@ export class Channel extends TimeStamps {
   );
   public static findSubscribed(this: ReturnModelType<typeof Channel>) {
     return this.find(this.SubscribedQuery);
+  }
+
+  /**
+   * Channels that need their pubsub subscription renewed: the subscription is
+   * near expiry (or was never established), and no request went out recently.
+   *
+   * The sort puts channels without a `pubsubRequestedAt` (never requested)
+   * first and otherwise the least recently requested first, so a channel that
+   * always fails drops to the back of the queue after each attempt instead of
+   * holding the front of it.
+   */
+  public static findPubsubRenewalCandidates(
+    this: ReturnModelType<typeof Channel>,
+    limit: number,
+    now: Date = new Date()
+  ) {
+    return this.findSubscribed()
+      .and([
+        {
+          $or: [
+            { pubsubExpiresAt: null },
+            {
+              pubsubExpiresAt: {
+                $lt: new Date(now.getTime() + PUBSUB_RENEW_BEFORE_MS),
+              },
+            },
+          ],
+        },
+        {
+          $or: [
+            { pubsubRequestedAt: null },
+            {
+              pubsubRequestedAt: {
+                $lt: new Date(now.getTime() - PUBSUB_REQUEST_COOLDOWN_MS),
+              },
+            },
+          ],
+        },
+      ])
+      .sort({ pubsubRequestedAt: 1 })
+      .limit(limit)
+      .select("id name");
   }
 
   /**

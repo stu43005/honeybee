@@ -122,3 +122,56 @@ describe("renderBoundChannelLines", () => {
     expect(await ChannelModel.renderBoundChannelLines([])).toEqual([]);
   });
 });
+
+describe("Channel.findPubsubRenewalCandidates", () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  // findSubscribed() returns a mongoose Query whose and/sort/limit/select all
+  // return itself, so a query that records its arguments can assert the chain.
+  function fakeQuery() {
+    const calls: Record<string, unknown[]> = {};
+    const query: Record<string, unknown> = {};
+    for (const method of ["and", "sort", "limit", "select"]) {
+      query[method] = jest.fn((...args: unknown[]) => {
+        calls[method] = args;
+        return query;
+      });
+    }
+    return { query, calls };
+  }
+
+  it("asks for channels whose lease is near expiry and that are off cooldown", () => {
+    const { query, calls } = fakeQuery();
+    jest.spyOn(ChannelModel, "findSubscribed").mockReturnValue(query as never);
+    const now = new Date("2026-09-17T00:00:00.000Z");
+
+    const result = ChannelModel.findPubsubRenewalCandidates(5, now);
+
+    expect(result).toBe(query);
+    expect(calls.and).toEqual([
+      [
+        {
+          $or: [
+            { pubsubExpiresAt: null },
+            { pubsubExpiresAt: { $lt: new Date("2026-09-18T00:00:00.000Z") } },
+          ],
+        },
+        {
+          $or: [
+            { pubsubRequestedAt: null },
+            {
+              pubsubRequestedAt: {
+                $lt: new Date("2026-09-16T23:45:00.000Z"),
+              },
+            },
+          ],
+        },
+      ],
+    ]);
+    expect(calls.sort).toEqual([{ pubsubRequestedAt: 1 }]);
+    expect(calls.limit).toEqual([5]);
+    expect(calls.select).toEqual(["id name"]);
+  });
+});
