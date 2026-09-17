@@ -198,6 +198,12 @@ rejection。
   （5 天）。訂閱請求可以帶 `hub.lease_seconds` 表達期望值，但 hub 可以忽略。
 - **訂閱的唯一鍵是 `(topic URL, callback URL)` 的 tuple**。同一個 topic 用兩個
   不同的 callback URL 訂閱＝兩個獨立訂閱，hub 會**對兩邊都投遞**。
+- **hub 對 subscribe 請求的驗證是同步的，而且遠超過 10 秒**：對
+  `https://pubsubhubbub.appspot.com/subscribe` 送出的合法 subscribe 請求，實測
+  重複多次、來自兩個不同網路、callback 可連線與不可解析、有無帶 `hub.secret`、
+  三個不同 topic，全部固定在約 20.2 秒後才回應（即使 hub 打算回
+  `503 Transient error` 拒絕）；畸形請求則在 0.22 秒內就回 `400`。因此逾時必須
+  設在 hub 實際回應之後，10 秒會在結果出爐前就掛斷。
 - callback URL **可以**包含路徑片段與 query 參數；hub 必須在 verification 時
   保留原有 query（以 `&` 附加自己的參數）。
 - 內容投遞收到非 2xx 時，hub SHOULD 在自訂上限內重試，但
@@ -290,7 +296,8 @@ findPubsubRenewalCandidates(limit, now)
 四個刻意的設計點：
 
 - **`pubsubRequestedAt` 先寫再送請求。** hub 有時會在回 202 之前就先打
-  verification GET，先寫才不會讓合法的 verification 被時間窗擋掉。
+  verification GET，先寫才不會讓合法的 verification 因為查無 `pubsubRequestedAt`
+  而被擋掉。
 - **不論成功或失敗都寫 `pubsubRequestedAt`。** 一個永遠失敗的頻道（例如頻道已
   被刪除）因此會被排到隊尾，不會固定霸佔隊首、擠掉正常的續訂。
 - **每個請求都必須有逾時。** axios 的預設是 `timeout: 0`，也就是無限等待——一個
@@ -298,7 +305,7 @@ findPubsubRenewalCandidates(limit, now)
   同一種形狀。
 - **不需要 `job.touch()`。** 單輪在 hub 請求這一側的最壞情況是
   `PUBSUB_RENEW_BATCH_SIZE × (PUBSUB_REQUEST_TIMEOUT_MS + PUBSUB_REQUEST_SPACING_MS)`
-  ＝ 5 ×（10 秒 + 250 毫秒）≈ 51 秒，遠短於 agenda 的 10 分鐘 lockLifetime。
+  ＝ 5 ×（30 秒 + 250 毫秒）≈ 151 秒，遠短於 agenda 的 10 分鐘 lockLifetime。
   這個上界**只涵蓋 hub 請求**，不涵蓋候選查詢與 `pubsubRequestedAt` 寫入所等待的
   MongoDB 操作（本專案沒有設定 operation timeout）；為什麼不另外處理，見
   Non-goals。
@@ -324,7 +331,7 @@ module 的 constructor 同時呼叫 `HttpServerModule.addNoLogRoute("/notificati
 通知量大，每筆都印一行 `request completed` 會淹掉其他 log。比對是 startsWith，所以
 帶 token 的路徑也涵蓋在內。
 
-#### callback URL 與三條 route
+#### callback URL 與四條 route
 
 verification 的 GET 沒有任何來自 hub 的憑證可驗，所以認證只能靠**我們自己放在
 callback URL 裡、而 hub 必定原樣帶回**的東西。callback 因此改成：
@@ -338,17 +345,21 @@ token 由既有的 `YOUTUBE_PUBSUB_SECRET` 衍生，**不新增環境變數**。
 不啟用 pubsub（既有行為已經是「沒有 `PUBLIC_BASE_URL` 就不啟用」）。
 
 因為訂閱的唯一鍵是 `(topic, callback URL)`，改 callback URL 會讓 hub 端既有的
-訂閱與新訂閱並存，所以註冊三條 route：
+訂閱與新訂閱並存，所以註冊四條 route：
 
-| Route                                | 驗證                           | 用途                   |
-| ------------------------------------ | ------------------------------ | ---------------------- |
-| `GET /notifications/youtube/:token`  | 驗 token（`timingSafeEqual`）  | 新訂閱的 verification  |
-| `POST /notifications/youtube/:token` | 只驗 HMAC 簽章，**不驗 token** | 新訂閱的通知           |
-| `POST /notifications/youtube`        | 只驗 HMAC 簽章                 | 既有訂閱的通知，過渡用 |
+| Route                                | 驗證                           | 用途                            |
+| ------------------------------------ | ------------------------------ | ------------------------------- |
+| `GET /notifications/youtube/:token`  | 驗 token（`timingSafeEqual`）  | 新訂閱的 verification           |
+| `POST /notifications/youtube/:token` | 只驗 HMAC 簽章，**不驗 token** | 新訂閱的通知                    |
+| `GET /notifications/youtube`         | 不驗 token，只認頻道是否存在   | 既有訂閱的 verification，過渡用 |
+| `POST /notifications/youtube`        | 只驗 HMAC 簽章                 | 既有訂閱的通知，過渡用          |
 
 POST 不驗 token 是刻意的：投遞的 body 已經有 `X-Hub-Signature` 可驗，再驗一次
 token 是多餘的；而保留無 token 的舊 POST 路徑，是為了讓上線瞬間既有訂閱的通知
-不中斷。沒有無 token 的 GET route（既有訂閱不會再收到 verification）。
+不中斷。**保留無 token 的舊 GET 路徑同樣是刻意的**：舊實作註冊給 hub 的 callback
+沒有 token，那些訂閱的 verification 會打到這裡；回 404 等於告訴 hub 丟掉該訂閱，
+所以必須回應 challenge，但不寫 `pubsubExpiresAt`——理由見下方「通知路徑」的 GET
+說明。
 
 **POST**（兩條共用同一個 handler）：
 
@@ -392,15 +403,21 @@ token 是多餘的；而保留無 token 的舊 POST 路徑，是為了讓上線�
 其餘影片，而且沒有任何其他機制會補回普通上傳。改成集合的成本幾乎是零：
 fast-xml-parser 在多 entry 時給陣列、單一時給物件，所以無論如何都得寫這個判斷。
 
-**GET `/notifications/youtube/:token`**（hub verification）：
+**GET `/notifications/youtube/:token`** 與 **GET `/notifications/youtube`**（hub
+verification，後者是 tokenless 版本，見上方「callback URL 與四條 route」）：
 
-1. token 不符 → 404，不做其他事。
+1. 帶 token 的路徑：token 不符 → 404，不做其他事。
 2. 依 `hub.mode` 分流：
-   - `subscribe`：從 `hub.topic` 取出 channel id，查該頻道的 `pubsubRequestedAt`
-     是否落在 `PUBSUB_REQUEST_COOLDOWN_MS` 窗口內。
+   - `subscribe`：從 `hub.topic` 取出 channel id。
+     - 帶 token 的路徑：查該頻道是否存在 `pubsubRequestedAt`（我們是否曾經向
+       hub 問過這個頻道），不設時間窗——理由見下方「verification 的接受條件」。
+     - tokenless 路徑：只查 `ChannelModel` 是否有這個 id，不要求
+       `pubsubRequestedAt`（這些訂閱本來就不是這條程式碼問出來的）。
      - 否 → 404 + log warn，狀態不變。
-     - 是 → **先**以 `text/plain` 回 `hub.challenge`，**再**寫
-       `pubsubExpiresAt`。
+     - 是 → **先**以 `text/plain` 回 `hub.challenge`；帶 token 的路徑**再**寫
+       `pubsubExpiresAt`，tokenless 路徑**不寫任何東西**——沒有 token 就沒有東西
+       認證這個請求，不寫入也讓該頻道留在續訂輪替裡，之後會拿到自己的 tokenized
+       訂閱。
    - `unsubscribe`：本設計沒有主動退訂流程，一律 404。
    - `denied`：log warn、回 200，不改狀態（`pubsubRequestedAt` 已更新，天然
      退避）。
@@ -418,9 +435,11 @@ fast-xml-parser 在多 entry 時給陣列、單一時給物件，所以無論如
 超過 `PUBSUB_MAX_LEASE_MS` → clamp 到上界。這是深度防禦（token 一旦洩漏，或 hub
 回了異常值，都不能讓單一頻道被推到永遠不續訂）。
 
-窗口採 15 分鐘的依據：正式環境 log 中 `Subscribing:` 到 `Subscribed:` 是數秒內
-（例如 14:01:35 與 14:01:37），15 分鐘約有 60 倍餘裕；真的遲到被擋掉也只是下一輪
-重訂，會自我修復。
+**verification 的接受條件不含時間窗**——hub 會在它方便的時候才驗證，實測到
+verification 在發起請求的 process 結束兩小時後才抵達，而且 hub 也會重驗它已經
+持有的訂閱。tokenized 路徑的條件是「這個頻道我們有問過 hub」
+（`pubsubRequestedAt` 存在），路徑裡的 token 才是認證請求本身的東西；時間窗只會
+擋掉遲到的合法驗證，擋不住 token 已經擋住的偽造。
 
 `atom.ts` 以 `removeNSPrefix: true` + `ignoreAttributes: false` 解析，回傳**一個
 entry 陣列**（每個 entry 是 `video` 或 `deleted` 的 discriminated union），或在
@@ -448,12 +467,12 @@ upsert、本來就冪等，而且從 log 看重複通知極多、那段去重幾
 | 常數                         | 值      | 理由                                                                                                                                               |
 | ---------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `PUBSUB_RENEW_BEFORE_MS`     | 24 小時 | 提前一天續訂，容得下一整天的排程中斷仍不掉訂閱                                                                                                     |
-| `PUBSUB_REQUEST_COOLDOWN_MS` | 15 分鐘 | 同一頻道的最短重試間隔，同時是 verification 的接受窗口；刻意大於 10 分鐘的排程間隔，確保候選輪替                                                   |
+| `PUBSUB_REQUEST_COOLDOWN_MS` | 15 分鐘 | 同一頻道的最短重試間隔；刻意大於 10 分鐘的排程間隔，確保候選輪替                                                                                   |
 | `PUBSUB_RENEW_BATCH_SIZE`    | 5       | 單輪上限，也就是一次崩潰或限流的損失上限                                                                                                           |
 | `PUBSUB_REQUEST_SPACING_MS`  | 250     | 單輪內請求之間的間隔                                                                                                                               |
 | `PUBSUB_DEFAULT_LEASE_MS`    | 24 小時 | hub 未提供或提供了不合法的 `lease_seconds` 時的保守預設，確保仍會續訂而不是永不續訂                                                                |
 | `PUBSUB_MAX_LEASE_MS`        | 10 天   | `lease_seconds` 的上界；取自規範安全章節建議的「10 days is a good default」，超過就 clamp                                                          |
-| `PUBSUB_REQUEST_TIMEOUT_MS`  | 10 秒   | 單次 hub 請求的逾時；axios 預設是無限等待，必須明確設定                                                                                            |
+| `PUBSUB_REQUEST_TIMEOUT_MS`  | 30 秒   | 單次 hub 請求的逾時；hub 是同步驗證、會 hold 住請求，實測即使是它要拒絕的 subscribe 也要約 20 秒才回應，10 秒會在知道結果前就掛斷                  |
 | `YOUTUBE_API_TIMEOUT_MS`     | 15 秒   | 所有 YouTube Data API 呼叫的逾時；gaxios 沒有預設值。取比 hub 請求寬鬆的值，因為單次呼叫最多帶 50 個 id，但仍遠短於 agenda 的 10 分鐘 lockLifetime |
 
 hub 端點與 topic 前綴是固定值，放 `hub-client.ts` 內部常數，不走環境變數。
@@ -470,8 +489,9 @@ callback token 由 `YOUTUBE_PUBSUB_SECRET` 衍生，也不是新的環境變數�
 | hub 400 或其他非 2xx                           | log warn、該頻道 `pubsubRequestedAt` 已更新（排到隊尾）、繼續下一個                                                           |
 | hub 連線掛住不回應                             | `PUBSUB_REQUEST_TIMEOUT_MS` 逾時後歸類為一般失敗，繼續下一個；單輪總時長有上界                                                |
 | 請求送出但 verification 從未到達               | `pubsubExpiresAt` 不變 → 冷卻後回到候選；因最舊優先排序，不會霸佔隊首                                                         |
-| verification 遲到超過窗口                      | 404 拒絕、狀態不變 → 下一輪重訂                                                                                               |
+| verification 遲到（含數小時之後才抵達）        | 正常接受：接受條件不設時間窗，只看 `pubsubRequestedAt`（tokenized）或頻道是否存在（tokenless）                                |
 | 偽造的 verification（無 token）                | token 不符 → 404，不查 DB、不改狀態                                                                                           |
+| tokenless 路徑收到不追蹤的頻道                 | 404，不查 `pubsubRequestedAt`、不寫入任何東西                                                                                 |
 | verification 帶異常 `lease_seconds`            | 非正整數或缺失 → 用預設值；超過 `PUBSUB_MAX_LEASE_MS` → clamp 到上界                                                          |
 | HMAC 不符／缺簽章                              | 不符回 200 忽略（避免 hub 反覆重試同一筆）、缺簽章回 403，都 log warn                                                         |
 | Atom 形狀非預期                                | 解析回 null → 回 200 + log warn，不 throw                                                                                     |
@@ -499,9 +519,11 @@ callback token 由 `YOUTUBE_PUBSUB_SECRET` 衍生，也不是新的環境變數�
   的案例：以 fake timer 推進到逾時，斷言該候選被歸類為失敗**且後續候選仍然被
   處理**，整輪在上界內結束。
 - **`routes.spec.ts`** —— `fastify.inject()` 實際發請求：token 正確／錯誤兩態
-  （錯誤時不得碰 DB）、HMAC 正確／錯誤／缺失三態、challenge 回應與窗口過期的
-  404、`lease_seconds` 缺失／非數字／超過上界三種取值、`deleted-entry`、無 token
-  的舊 POST 路徑仍可接收通知、以及通知確實以正確參數觸發
+  （錯誤時不得碰 DB）、HMAC 正確／錯誤／缺失三態、challenge 回應、
+  `pubsubRequestedAt` 不存在時的 404、遲到數小時的 verification 仍被接受、
+  `lease_seconds` 缺失／非數字／超過上界三種取值、`deleted-entry`、無 token 的
+  舊 POST 路徑仍可接收通知、無 token 的舊 GET 路徑答覆 challenge 但不寫
+  `pubsubExpiresAt`、以及通知確實以正確參數觸發
   `noticeFromNotification`。其中 challenge 案例要斷言**回應 body 完全等於
   `hub.challenge`**（body 不符會讓 hub 判定驗證失敗）。另外要有這幾個對照案例：
   `noticeFromNotification` 拋錯時回 **500**，而 `updateVideoFromYoutube` 拋錯時仍
@@ -523,16 +545,16 @@ callback token 由 `YOUTUBE_PUBSUB_SECRET` 衍生，也不是新的環境變數�
    `nextRunAt` 超過一個新間隔時，會再存一次同一個 job 把它拉回現在，`lockedAt`
    不受影響；目前卡住的 `lockedAt` 在 10 分鐘後被視為過期而重新鎖並實際執行
    ——**不需要手動改 DB**。`lastFinishedAt` 在第一次成功後自我修復。
-3. **callback URL 會改變**（加上 token 路徑片段），但**舊的無 token POST route
-   保留**，所以 hub 端既有訂閱的通知在上線瞬間不中斷，6 小時的鋪滿期間不會漏
-   通知。
+3. **callback URL 會改變**（加上 token 路徑片段），但**舊的無 token POST 與 GET
+   route 都保留**，所以 hub 端既有訂閱的通知與重驗證在上線瞬間都不中斷，6 小時
+   的鋪滿期間不會漏通知、也不會因為 verification 404 而被 hub 丟棄。
 4. 既有頻道都沒有這兩個新欄位，全部符合候選條件，因此上線後會按節奏逐批以新的
    callback URL 重訂。
 5. **過渡期會有重複通知**：訂閱的唯一鍵是 `(topic, callback URL)`，所以同一個
    頻道在舊 callback 的訂閱過期前，新舊兩個訂閱並存、hub 對兩邊都投遞。
    `noticeFromNotification` 是 upsert、冪等，所以後果只是多一次 DB 寫入。舊訂閱
-   最長在 5 天後（既有 lease 上限）全部自然過期，屆時無 token 的 POST route 就
-   可以移除。
+   最長在 5 天後（既有 lease 上限）全部自然過期，屆時無 token 的 POST 與 GET
+   route 就可以移除。
 
 ### 日後變更 secret 或 base URL 時的運維程序
 
@@ -551,11 +573,11 @@ callback token 由 `YOUTUBE_PUBSUB_SECRET` 衍生，也不是新的環境變數�
    ```
 
 先清再部署是錯的：舊設定的 process 還活著時，它送出的訂閱請求對應的
-verification 可能在清除**之後**才回來，而那個 handler 只檢查
-`pubsubRequestedAt` 的時間窗、不知道設定已經換了，於是會把描述舊 callback 的
-`pubsubExpiresAt` 寫回去——該頻道就被排除在續訂之外約 4 天。等舊 pod 終止之後再
-清，就沒有任何寫入者能污染清除後的狀態（crawler 是 `replicas: 1`，rollout 完成
-後不存在舊設定的寫入者）。
+verification 可能在清除**之後**才回來（甚至數小時後，見「verification 的接受
+條件」），而那個 handler 只檢查 `pubsubRequestedAt` 是否存在、不知道設定已經
+換了，於是會把描述舊 callback 的 `pubsubExpiresAt` 寫回去——該頻道就被排除在
+續訂之外約 4 天。等舊 pod 終止之後再清，就沒有任何寫入者能污染清除後的狀態
+（crawler 是 `replicas: 1`，rollout 完成後不存在舊設定的寫入者）。
 
 清完之後不需要其他動作，續訂會按既有節奏在約 6 小時內重新鋪滿。這一步刻意留在
 運維程序而不是程式邏輯，理由見 Non-goals。
