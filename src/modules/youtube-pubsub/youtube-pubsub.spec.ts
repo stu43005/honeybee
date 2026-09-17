@@ -15,15 +15,41 @@ const { pubsubRoutes } = await import("./routes.js");
 
 type JobHandler = () => Promise<void>;
 
+type FakeJob = {
+  attrs: { nextRunAt: Date | null; lockedAt: Date | null };
+  schedule: (when: Date) => FakeJob;
+  save: () => Promise<FakeJob>;
+};
+
 /**
  * A stand-in for the pieces of Application this module touches, recording what
  * it did so the assertions can look at structure rather than call counts.
  */
-function fakeApp(options?: { withAgenda?: boolean }) {
+function fakeApp(options?: {
+  withAgenda?: boolean;
+  persistedNextRunAt?: Date | null;
+  persistedLockedAt?: Date | null;
+}) {
   const registered: unknown[] = [];
   const noLogRoutes: string[] = [];
   const defined: [string, JobHandler][] = [];
   const scheduled: [string, string][] = [];
+  const saves: (Date | null)[] = [];
+
+  const job: FakeJob = {
+    attrs: {
+      nextRunAt: options?.persistedNextRunAt ?? new Date(),
+      lockedAt: options?.persistedLockedAt ?? null,
+    },
+    schedule(when: Date) {
+      job.attrs.nextRunAt = when;
+      return job;
+    },
+    save() {
+      saves.push(job.attrs.nextRunAt);
+      return Promise.resolve(job);
+    },
+  };
 
   const agenda = {
     define: jest.fn((name: string, handler: JobHandler) => {
@@ -31,7 +57,7 @@ function fakeApp(options?: { withAgenda?: boolean }) {
     }),
     every: jest.fn((interval: string, name: string) => {
       scheduled.push([interval, name]);
-      return Promise.resolve({});
+      return Promise.resolve(job);
     }),
   };
 
@@ -54,7 +80,7 @@ function fakeApp(options?: { withAgenda?: boolean }) {
     },
   };
 
-  return { app, registered, noLogRoutes, defined, scheduled };
+  return { app, registered, noLogRoutes, defined, scheduled, job, saves };
 }
 
 describe("YoutubePubsubModule", () => {
@@ -158,5 +184,57 @@ describe("YoutubePubsubModule", () => {
     expect(() => new YoutubePubsubModule(app as never)).toThrow(
       /AgendaModule must be registered/
     );
+  });
+
+  it("pulls an existing job in when the old schedule left it hours away", async () => {
+    const hoursAway = new Date(Date.now() + 11 * 60 * 60 * 1000);
+    const { app, job, saves } = fakeApp({ persistedNextRunAt: hoursAway });
+
+    await new YoutubePubsubModule(app as never).init();
+
+    // Changing the interval alone leaves an existing document's nextRunAt
+    // untouched, so without this the first round would be eleven hours away.
+    expect(saves).toHaveLength(1);
+    expect(job.attrs.nextRunAt!.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(job.attrs.nextRunAt!.getTime()).toBeGreaterThan(Date.now() - 5_000);
+  });
+
+  it("pulls in a job that still carries a stale lock, without clearing the lock", async () => {
+    const hoursAway = new Date(Date.now() + 11 * 60 * 60 * 1000);
+    const staleLock = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    const { app, job, saves } = fakeApp({
+      persistedNextRunAt: hoursAway,
+      persistedLockedAt: staleLock,
+    });
+
+    await new YoutubePubsubModule(app as never).init();
+
+    // A job scheduled that far ahead is released rather than executed by the
+    // expired-lock path, so a stale lock does not rescue it on its own.
+    expect(saves).toHaveLength(1);
+    expect(job.attrs.nextRunAt!.getTime()).toBeLessThanOrEqual(Date.now());
+    // Lock ownership belongs to the job processor; this write must not touch it.
+    expect(job.attrs.lockedAt).toBe(staleLock);
+  });
+
+  it("leaves a run that is already inside one interval alone", async () => {
+    const soon = new Date(Date.now() + 7 * 60 * 1000);
+    const { app, job, saves } = fakeApp({ persistedNextRunAt: soon });
+
+    await new YoutubePubsubModule(app as never).init();
+
+    // Restarting partway through a healthy cycle must not force an extra round.
+    expect(saves).toEqual([]);
+    expect(job.attrs.nextRunAt).toBe(soon);
+  });
+
+  it("leaves a freshly inserted job alone", async () => {
+    const insertedAt = new Date();
+    const { app, job, saves } = fakeApp({ persistedNextRunAt: insertedAt });
+
+    await new YoutubePubsubModule(app as never).init();
+
+    expect(saves).toEqual([]);
+    expect(job.attrs.nextRunAt).toBe(insertedAt);
   });
 });

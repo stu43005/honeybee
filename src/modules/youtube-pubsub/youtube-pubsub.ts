@@ -8,6 +8,12 @@ import { pubsubRoutes } from "./routes.js";
 
 const JOB_YOUTUBE_PUBSUB_SUBSCRIBE = "crawler youtube pubsub subscribe";
 
+// The renewal schedule. The two forms must describe the same gap: agenda takes
+// the human-readable string, and the migration check in init() needs it in
+// milliseconds.
+const RENEW_INTERVAL = "10 minutes";
+const RENEW_INTERVAL_MS = 10 * 60 * 1000;
+
 /**
  * Owns everything the pubsub subsystem needs at runtime: the notification
  * routes and the renewal job. A service that wants YouTube push notifications
@@ -62,6 +68,31 @@ export class YoutubePubsubModule implements Module {
     // Small batches, often: the loss ceiling of one crash or one throttling
     // response is those few channels, and the next round picks up ten minutes
     // later.
-    await this.agenda.every("10 minutes", JOB_YOUTUBE_PUBSUB_SUBSCRIBE);
+    const job = await this.agenda.every(
+      RENEW_INTERVAL,
+      JOB_YOUTUBE_PUBSUB_SUBSCRIBE
+    );
+
+    // every() rewrites repeatInterval on an existing job document but not its
+    // nextRunAt: the value it computes is the current time, and the backend
+    // moves a nextRunAt that is not in the future into $setOnInsert, so an
+    // existing document keeps whatever the previous schedule left there. A
+    // document written by the old twelve hour schedule can therefore sit up to
+    // twelve hours out, and the expired-lock path will not run it either,
+    // because a job scheduled that far ahead is released again instead of
+    // executed. Only a shrunken interval can put the next run further out than
+    // one interval, so a crawler restart partway through a healthy cycle is
+    // left alone rather than being dragged forward into an extra round.
+    const nextRunAt = job.attrs.nextRunAt;
+    if (nextRunAt && nextRunAt.getTime() > Date.now() + RENEW_INTERVAL_MS) {
+      console.log(
+        `Pulling [${JOB_YOUTUBE_PUBSUB_SUBSCRIBE}] in from ${nextRunAt.toISOString()}`
+      );
+      // Saving again goes through the job's _id, which the backend updates with
+      // a plain $set, and save() excludes the processor-managed fields, so a
+      // lock that is genuinely held keeps its owner.
+      job.schedule(new Date());
+      await job.save();
+    }
   }
 }
