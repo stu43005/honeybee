@@ -14,20 +14,20 @@ process.env.GOOGLE_API_KEY = "test-key";
 
 const mockVideosList = jest.fn<() => Promise<unknown>>();
 const mockChannelsList = jest.fn<() => Promise<unknown>>();
+const mockYoutube = jest.fn(() => ({
+  videos: { list: mockVideosList },
+  channels: { list: mockChannelsList },
+}));
 
 jest.unstable_mockModule("googleapis", () => ({
-  google: {
-    youtube: () => ({
-      videos: { list: mockVideosList },
-      channels: { list: mockChannelsList },
-    }),
-  },
+  google: { youtube: mockYoutube },
 }));
 
 const { default: VideoModel } = await import("../models/Video.js");
 const { default: ChannelModel } = await import("../models/Channel.js");
-const { updateVideoFromYoutube, updateChannelFromYoutube } =
+const { getYoutubeApi, updateVideoFromYoutube, updateChannelFromYoutube } =
   await import("./youtube.js");
+const { YOUTUBE_API_TIMEOUT_MS } = await import("../constants.js");
 
 // A minimal mutable stand-in for a Video document.
 function fakeVideo(overrides: Record<string, unknown>) {
@@ -344,5 +344,17 @@ describe("updateChannelFromYoutube batch isolation", () => {
       expect.stringContaining("UCboom"),
       expect.any(Error)
     );
+  });
+});
+
+describe("getYoutubeApi", () => {
+  it("builds the client with an explicit request timeout", () => {
+    getYoutubeApi();
+
+    expect(mockYoutube).toHaveBeenCalledWith({
+      version: "v3",
+      auth: "test-key",
+      timeout: YOUTUBE_API_TIMEOUT_MS,
+    });
   });
 });

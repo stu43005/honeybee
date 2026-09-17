@@ -3,7 +3,7 @@ import { google, type youtube_v3 } from "googleapis";
 import { VideoStatus } from "holodex.js";
 import moment from "moment-timezone";
 import assert from "node:assert";
-import { GOOGLE_API_KEY } from "../constants.js";
+import { GOOGLE_API_KEY, YOUTUBE_API_TIMEOUT_MS } from "../constants.js";
 import { HoneybeeStatus } from "../interfaces.js";
 import ChannelModel, { type Channel } from "../models/Channel.js";
 import VideoModel, { type Video } from "../models/Video.js";
@@ -17,6 +17,11 @@ export function getYoutubeApi() {
     youtubeApi = google.youtube({
       version: "v3",
       auth: GOOGLE_API_KEY,
+      // gaxios has no default timeout (it only builds an AbortSignal when one
+      // is passed), so without this a hung request never lets the job that made
+      // it finish. This is the only place a client is built, so one line covers
+      // every YouTube API call.
+      timeout: YOUTUBE_API_TIMEOUT_MS,
     });
   }
 
