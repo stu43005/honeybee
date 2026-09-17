@@ -45,8 +45,8 @@ process/deployment in k8s:
   ModeChange, Placeholder, Track stats, etc.), and reports `HoneybeeResult`
   back.
 - **crawler** — combined ingestion service for new-video discovery: Holodex
-  polling, YouTube PubSubHubbub subscriber (`youtube-notification`), and YouTube
-  Data API lookups.
+  polling, YouTube PubSubHubbub subscriber (`src/modules/youtube-pubsub/`, owned
+  end to end by `YoutubePubsubModule`), and YouTube Data API lookups.
 - **manager** — runs the bulk of the project's scheduled / periodic work via
   Agenda. It is mostly a thin scheduling shell; the actual task logic lives in
   `src/components/` (e.g. `track-operator.ts`, `video-scaler.ts`, `cleanup.ts`,
