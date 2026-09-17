@@ -160,9 +160,9 @@ export const YOUTUBE_DM_MAX_CHANNELS_PER_USER = Number(
 // does not drop a subscription.
 export const PUBSUB_RENEW_BEFORE_MS = 24 * 60 * 60 * 1000;
 
-// Shortest retry interval for one channel, and also the window in which a
-// verification is accepted. Deliberately larger than the 10 minute schedule
-// interval so candidates rotate instead of the same batch retrying back to back.
+// Shortest retry interval for one channel. Deliberately larger than the 10
+// minute schedule interval so candidates rotate instead of the same batch
+// retrying back to back.
 export const PUBSUB_REQUEST_COOLDOWN_MS = 15 * 60 * 1000;
 
 // Channels handled per round, which is also the loss ceiling of one crash or
@@ -181,9 +181,12 @@ export const PUBSUB_DEFAULT_LEASE_MS = 24 * 60 * 60 * 1000;
 // bogus or forged value cannot push a channel out of renewal indefinitely.
 export const PUBSUB_MAX_LEASE_MS = 10 * 24 * 60 * 60 * 1000;
 
-// Timeout for a single hub request. axios defaults to timeout: 0 (wait
-// forever), so without this a hung connection never lets the round finish.
-export const PUBSUB_REQUEST_TIMEOUT_MS = 10 * 1000;
+// Timeout for a single hub request. The hub verifies synchronously and holds
+// the request open while it does: measured against the real hub, even a
+// subscribe it intends to reject takes about 20 seconds before it answers, so
+// anything near 10 seconds hangs up before the status is ever known. axios
+// defaults to timeout: 0 (wait forever), so this still has to be set.
+export const PUBSUB_REQUEST_TIMEOUT_MS = 30 * 1000;
 
 // Timeout for every YouTube Data API call. gaxios has no default timeout (it
 // only builds an AbortSignal when one is passed), so an unanswered request can
