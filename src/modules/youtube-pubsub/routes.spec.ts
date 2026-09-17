@@ -62,13 +62,14 @@ function fakeChannelStore(
 } {
   jest.spyOn(ChannelModel, "findOne").mockImplementation(((filter: {
     id: string;
-    pubsubRequestedAt?: { $gte: Date };
+    pubsubRequestedAt?: { $ne: null };
   }) => {
     const found = channels.find((channel) => {
       if (channel.id !== filter.id) return false;
-      const cutoff = filter.pubsubRequestedAt?.$gte;
-      if (!cutoff) return true;
-      return !!channel.pubsubRequestedAt && channel.pubsubRequestedAt >= cutoff;
+      // The tokenized callback additionally requires that we asked the hub
+      // about this channel; the tokenless one only requires that we track it.
+      if (!filter.pubsubRequestedAt) return true;
+      return !!channel.pubsubRequestedAt;
     });
     return Promise.resolve(found ?? null) as never;
   }) as never);
@@ -160,12 +161,12 @@ describe("verification GET", () => {
     await app.close();
   });
 
-  it("rejects a channel whose request is older than the cooldown", async () => {
+  it("accepts a verification that arrives long after the request", async () => {
     const { expiries } = fakeChannelStore([
       {
         id: "UCabc",
-        // Stamped long before the accepted window.
-        pubsubRequestedAt: new Date(Date.now() - 60 * 60 * 1000),
+        // The hub verifies when it gets round to it; hours late is normal.
+        pubsubRequestedAt: new Date(Date.now() - 6 * 60 * 60 * 1000),
       },
     ]);
     const app = await buildServer();
@@ -178,9 +179,11 @@ describe("verification GET", () => {
         "hub.challenge": "challenge-value",
       }),
     });
+    await drainPostResponseWork();
 
-    expect(response.statusCode).toBe(404);
-    expect([...expiries.keys()]).toEqual([]);
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toBe("challenge-value");
+    expect([...expiries.keys()]).toEqual(["UCabc"]);
     await app.close();
   });
 
@@ -358,6 +361,108 @@ describe("verification GET", () => {
     const response = await app.inject({
       method: "GET",
       url: verificationUrl({
+        "hub.mode": "subscribe",
+        "hub.topic": "https://evil.example/?channel_id=UCabc",
+        "hub.challenge": "c",
+      }),
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(findSpy).not.toHaveBeenCalled();
+    await app.close();
+  });
+});
+
+describe("verification GET on the tokenless legacy path", () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  function legacyUrl(params: Record<string, string>): string {
+    return `/notifications/youtube?${new URLSearchParams(params)}`;
+  }
+
+  it("answers the challenge for a tracked channel without storing an expiry", async () => {
+    // A subscription created by the previous implementation: it was never
+    // requested through the current code path, so it has no pubsubRequestedAt.
+    const { expiries, attempted } = fakeChannelStore([{ id: "UCabc" }]);
+    const app = await buildServer();
+
+    const response = await app.inject({
+      method: "GET",
+      url: legacyUrl({
+        "hub.mode": "subscribe",
+        "hub.topic": topicForChannel("UCabc"),
+        "hub.challenge": "challenge-value",
+        "hub.lease_seconds": "432000",
+      }),
+    });
+    await drainPostResponseWork();
+
+    // Answering keeps the old subscription delivering; a 404 would tell the hub
+    // to drop it.
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toBe("challenge-value");
+    // Nothing is written, so the channel stays a renewal candidate and gets a
+    // subscription of its own on the tokenized callback.
+    expect(attempted).toEqual([]);
+    expect([...expiries.keys()]).toEqual([]);
+    await app.close();
+  });
+
+  it("rejects a channel we do not track", async () => {
+    const { expiries, attempted } = fakeChannelStore([{ id: "UCabc" }]);
+    const app = await buildServer();
+
+    const response = await app.inject({
+      method: "GET",
+      url: legacyUrl({
+        "hub.mode": "subscribe",
+        "hub.topic": topicForChannel("UCother"),
+        "hub.challenge": "challenge-value",
+      }),
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(attempted).toEqual([]);
+    expect([...expiries.keys()]).toEqual([]);
+    await app.close();
+  });
+
+  it("rejects an unsubscribe verification and ignores a denial", async () => {
+    const { attempted } = fakeChannelStore([{ id: "UCabc" }]);
+    const app = await buildServer();
+
+    const unsubscribed = await app.inject({
+      method: "GET",
+      url: legacyUrl({
+        "hub.mode": "unsubscribe",
+        "hub.topic": topicForChannel("UCabc"),
+        "hub.challenge": "c",
+      }),
+    });
+    const denied = await app.inject({
+      method: "GET",
+      url: legacyUrl({
+        "hub.mode": "denied",
+        "hub.topic": topicForChannel("UCabc"),
+      }),
+    });
+
+    expect(unsubscribed.statusCode).toBe(404);
+    expect(denied.statusCode).toBe(200);
+    expect(attempted).toEqual([]);
+    await app.close();
+  });
+
+  it("rejects a topic that is not a youtube feed topic", async () => {
+    fakeChannelStore([{ id: "UCabc" }]);
+    const findSpy = jest.spyOn(ChannelModel, "findOne");
+    const app = await buildServer();
+
+    const response = await app.inject({
+      method: "GET",
+      url: legacyUrl({
         "hub.mode": "subscribe",
         "hub.topic": "https://evil.example/?channel_id=UCabc",
         "hub.challenge": "c",

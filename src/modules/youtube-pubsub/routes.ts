@@ -7,7 +7,6 @@ import crypto from "node:crypto";
 import {
   PUBSUB_DEFAULT_LEASE_MS,
   PUBSUB_MAX_LEASE_MS,
-  PUBSUB_REQUEST_COOLDOWN_MS,
   YOUTUBE_PUBSUB_SECRET,
 } from "../../constants.js";
 import ChannelModel from "../../models/Channel.js";
@@ -54,12 +53,37 @@ async function handleVerification(
     return;
   }
 
-  const mode = request.query["hub.mode"];
-  const channelId = channelIdFromTopic(request.query["hub.topic"]);
+  await answerVerification(request.query, reply, { storeExpiry: true });
+}
+
+/**
+ * The callback URL the previous implementation gave the hub carried no token,
+ * so the subscriptions it created verify here. Answering keeps their
+ * deliveries coming until their lease runs out.
+ *
+ * Nothing is stored: without a token there is nothing authenticating this
+ * request, and leaving the expiry unset also keeps the channel in the renewal
+ * rotation, so it still gets a subscription of its own on the tokenized
+ * callback. Removable once every pre-existing lease has expired.
+ */
+async function handleLegacyVerification(
+  request: FastifyRequest<{ Querystring: HubQuery }>,
+  reply: FastifyReply
+): Promise<void> {
+  await answerVerification(request.query, reply, { storeExpiry: false });
+}
+
+async function answerVerification(
+  query: HubQuery,
+  reply: FastifyReply,
+  options: { storeExpiry: boolean }
+): Promise<void> {
+  const mode = query["hub.mode"];
+  const channelId = channelIdFromTopic(query["hub.topic"]);
 
   if (mode === "denied") {
     // Logged only: pubsubRequestedAt has already been stamped, and the cooldown
-    // is the back-off.
+    // on the candidate query is the back-off.
     console.warn(`Pubsub subscription denied: ${channelId ?? "unknown topic"}`);
     reply.code(200).type("text/plain").send("ok");
     return;
@@ -70,39 +94,50 @@ async function handleVerification(
   if (mode !== "subscribe" || !channelId) {
     console.warn(
       `Pubsub verification rejected (mode=${mode ?? "none"}, topic=${
-        request.query["hub.topic"] ?? "none"
+        query["hub.topic"] ?? "none"
       })`
     );
     reply.code(404).type("text/plain").send("not found");
     return;
   }
 
-  // Only channels we really asked about recently are accepted: this GET carries
-  // no signature, so the request window is the only thing that correlates it
-  // with a subscription we initiated.
-  const channel = await ChannelModel.findOne({
-    id: channelId,
-    pubsubRequestedAt: {
-      $gte: new Date(Date.now() - PUBSUB_REQUEST_COOLDOWN_MS),
-    },
-  });
+  // The hub verifies when it gets round to it, not when we ask: a verification
+  // can arrive hours after the request that triggered it, and the hub also
+  // re-verifies subscriptions it already holds. So there is no time window
+  // here, only "is this a channel we track" and, on the tokenized callback,
+  // "one we have asked the hub about". A time window would reject those late
+  // arrivals while stopping no forgery the token does not already stop.
+  const channel = await ChannelModel.findOne(
+    options.storeExpiry
+      ? { id: channelId, pubsubRequestedAt: { $ne: null } }
+      : { id: channelId }
+  );
   if (!channel) {
     console.warn(
-      `Pubsub verification for an unrequested channel: ${channelId}`
+      `Pubsub verification rejected for ${channelId}: ${
+        options.storeExpiry
+          ? "not a channel we asked about"
+          : "not a channel we track"
+      }`
     );
     reply.code(404).type("text/plain").send("not found");
     return;
   }
 
-  const challenge = request.query["hub.challenge"] ?? "";
+  const challenge = query["hub.challenge"] ?? "";
   // Answer the challenge first, store the expiry after. The other order leaves
   // a stored expiry for a subscription the hub never established whenever the
   // response fails to arrive, and the WebSub protocol does not require a hub to
   // retry a verification.
   reply.code(200).type("text/plain").send(challenge);
 
+  if (!options.storeExpiry) {
+    console.log(`Subscribed on the tokenless callback: ${channelId}`);
+    return;
+  }
+
   const expiresAt = new Date(
-    Date.now() + leaseMsFrom(request.query["hub.lease_seconds"])
+    Date.now() + leaseMsFrom(query["hub.lease_seconds"])
   );
   try {
     await ChannelModel.updateOne(
@@ -249,6 +284,14 @@ export const pubsubRoutes: FastifyPluginCallback = (fastify, _opts, done) => {
   fastify.get<{ Params: TokenParams; Querystring: HubQuery }>(
     "/notifications/youtube/:token",
     handleVerification
+  );
+
+  // The tokenless legacy path, matching the callback URL the previous
+  // implementation registered. Its subscriptions are still delivering, and a
+  // 404 to one of their verifications would tell the hub to drop them.
+  fastify.get<{ Querystring: HubQuery }>(
+    "/notifications/youtube",
+    handleLegacyVerification
   );
 
   fastify.post("/notifications/youtube/:token", handleNotification);
