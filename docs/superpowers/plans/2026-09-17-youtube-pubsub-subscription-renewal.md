@@ -626,8 +626,7 @@ describe("requestSubscription", () => {
       failure: () => httpError(429),
       expected: {
         ok: false,
-        kind: "http",
-        rateLimited: true,
+        kind: "throttled",
         status: 429,
         message: "Request failed with status code 429",
       },
@@ -637,8 +636,7 @@ describe("requestSubscription", () => {
       failure: () => httpError(503),
       expected: {
         ok: false,
-        kind: "http",
-        rateLimited: true,
+        kind: "throttled",
         status: 503,
         message: "Request failed with status code 503",
       },
@@ -649,7 +647,6 @@ describe("requestSubscription", () => {
       expected: {
         ok: false,
         kind: "http",
-        rateLimited: false,
         status: 400,
         message: "Request failed with status code 400",
       },
@@ -661,7 +658,6 @@ describe("requestSubscription", () => {
       expected: {
         ok: false,
         kind: "timeout",
-        rateLimited: false,
         message: "timeout of 10000ms exceeded",
       },
     },
@@ -671,19 +667,13 @@ describe("requestSubscription", () => {
       expected: {
         ok: false,
         kind: "network",
-        rateLimited: false,
         message: "connect ECONNREFUSED",
       },
     },
     {
       label: "a plain throw that is not an axios error",
       failure: () => new Error("boom"),
-      expected: {
-        ok: false,
-        kind: "network",
-        rateLimited: false,
-        message: "boom",
-      },
+      expected: { ok: false, kind: "network", message: "boom" },
     },
   ])("classifies $label", async ({ failure, expected }) => {
     mockPost.mockRejectedValueOnce(failure());
@@ -725,7 +715,6 @@ describe("requestSubscription", () => {
     expect(await pending).toEqual({
       ok: false,
       kind: "timeout",
-      rateLimited: false,
       message: `timeout of ${PUBSUB_REQUEST_TIMEOUT_MS}ms exceeded`,
     });
   });
@@ -768,7 +757,6 @@ describe("requestSubscription with an unusable callback url", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.kind).toBe("network");
-      expect(result.rateLimited).toBe(false);
       expect(result.message).toContain("Invalid URL");
     }
     expect(mockPost).not.toHaveBeenCalled();
@@ -798,16 +786,18 @@ import {
 const HUB_URL = "https://pubsubhubbub.appspot.com/subscribe";
 const TOPIC_PREFIX = "https://www.youtube.com/xml/feeds/videos.xml?channel_id=";
 
+/**
+ * Every variant carries its own literal `kind`, so impossible combinations
+ * cannot be constructed: only `throttled` has the two statuses that mean "back
+ * off", and `timeout` / `network` have no status at all because no response
+ * arrived.
+ */
 export type SubscribeResult =
   | { ok: true }
-  | {
-      ok: false;
-      /** http: the hub answered with a status; timeout: it did not answer in time; network: unreachable or a non-HTTP throw. */
-      kind: "http" | "timeout" | "network";
-      rateLimited: boolean;
-      status?: number;
-      message: string;
-    };
+  | { ok: false; kind: "throttled"; status: 429 | 503; message: string }
+  | { ok: false; kind: "http"; status: number; message: string }
+  | { ok: false; kind: "timeout"; message: string }
+  | { ok: false; kind: "network"; message: string };
 
 export function topicForChannel(channelId: string): string {
   return `${TOPIC_PREFIX}${channelId}`;
@@ -870,34 +860,20 @@ export async function requestSubscription(
   } catch (error) {
     if (axios.isAxiosError(error)) {
       if (error.code === "ECONNABORTED" || error.code === "ETIMEDOUT") {
-        return {
-          ok: false,
-          kind: "timeout",
-          rateLimited: false,
-          message: error.message,
-        };
+        return { ok: false, kind: "timeout", message: error.message };
       }
       const status = error.response?.status;
       if (status === undefined) {
-        return {
-          ok: false,
-          kind: "network",
-          rateLimited: false,
-          message: error.message,
-        };
+        return { ok: false, kind: "network", message: error.message };
       }
-      return {
-        ok: false,
-        kind: "http",
-        rateLimited: status === 429 || status === 503,
-        status,
-        message: error.message,
-      };
+      if (status === 429 || status === 503) {
+        return { ok: false, kind: "throttled", status, message: error.message };
+      }
+      return { ok: false, kind: "http", status, message: error.message };
     }
     return {
       ok: false,
       kind: "network",
-      rateLimited: false,
       message: error instanceof Error ? error.message : String(error),
     };
   }
@@ -1258,7 +1234,6 @@ describe("renewPubsubSubscriptions", () => {
     releaseFirst?.({
       ok: false,
       kind: "timeout",
-      rateLimited: false,
       message: "timeout of 10000ms exceeded",
     });
     await round;
@@ -1281,8 +1256,7 @@ describe("renewPubsubSubscriptions", () => {
         .mockResolvedValueOnce({ ok: true })
         .mockResolvedValueOnce({
           ok: false,
-          kind: "http",
-          rateLimited: true,
+          kind: "throttled",
           status,
           message: `Request failed with status code ${status}`,
         });
@@ -1303,13 +1277,11 @@ describe("renewPubsubSubscriptions", () => {
       .mockResolvedValueOnce({
         ok: false,
         kind: "timeout",
-        rateLimited: false,
         message: "timeout of 10000ms exceeded",
       })
       .mockResolvedValueOnce({
         ok: false,
         kind: "http",
-        rateLimited: false,
         status: 400,
         message: "Request failed with status code 400",
       })
@@ -1507,7 +1479,7 @@ export async function renewPubsubSubscriptions(): Promise<void> {
 
     const result = await requestSubscription(channel.id);
     if (!result.ok) {
-      if (result.rateLimited) {
+      if (result.kind === "throttled") {
         // Throttling is usually global, so continuing would only keep failing.
         // The remaining candidates are left for the next round.
         console.warn(
@@ -1612,14 +1584,20 @@ function verificationUrl(params: Record<string, string>, path = token): string {
  * missing cooldown condition in the implementation makes these tests fail
  * instead of passing by accident.
  */
-function fakeChannelStore(stored: { id: string; pubsubRequestedAt?: Date }[]): {
-  updates: { id: string; expiresAt: Date }[];
+function fakeChannelStore(
+  channels: { id: string; pubsubRequestedAt?: Date }[],
+  options?: { failWriteFor?: string }
+): {
+  /** Expiries that actually landed, keyed by channel id. */
+  expiries: Map<string, Date>;
+  /** Every write that was attempted, in order, whether or not it succeeded. */
+  attempted: { id: string; expiresAt: Date }[];
 } {
   jest.spyOn(ChannelModel, "findOne").mockImplementation(((filter: {
     id: string;
     pubsubRequestedAt?: { $gte: Date };
   }) => {
-    const found = stored.find((channel) => {
+    const found = channels.find((channel) => {
       if (channel.id !== filter.id) return false;
       const cutoff = filter.pubsubRequestedAt?.$gte;
       if (!cutoff) return true;
@@ -1628,16 +1606,23 @@ function fakeChannelStore(stored: { id: string; pubsubRequestedAt?: Date }[]): {
     return Promise.resolve(found ?? null) as never;
   }) as never);
 
-  const updates: { id: string; expiresAt: Date }[] = [];
+  // A write that succeeds lands in `expiries`, one that fails does not, so
+  // "nothing was stored" is a meaningful assertion rather than a vacuous one.
+  const expiries = new Map<string, Date>();
+  const attempted: { id: string; expiresAt: Date }[] = [];
   jest.spyOn(ChannelModel, "updateOne").mockImplementation(((
     filter: { id: string },
     update: { $set: { pubsubExpiresAt: Date } }
   ) => {
-    updates.push({ id: filter.id, expiresAt: update.$set.pubsubExpiresAt });
+    attempted.push({ id: filter.id, expiresAt: update.$set.pubsubExpiresAt });
+    if (filter.id === options?.failWriteFor) {
+      return Promise.reject(new Error("mongo down")) as never;
+    }
+    expiries.set(filter.id, update.$set.pubsubExpiresAt);
     return Promise.resolve({ acknowledged: true }) as never;
   }) as never);
 
-  return { updates };
+  return { expiries, attempted };
 }
 
 /** Lets the handler finish the work it does after answering the request. */
@@ -1651,7 +1636,7 @@ describe("verification GET", () => {
   });
 
   it("echoes the challenge and stores the expiry for a channel we just asked about", async () => {
-    const { updates } = fakeChannelStore([
+    const { expiries, attempted } = fakeChannelStore([
       { id: "UCabc", pubsubRequestedAt: new Date() },
     ]);
     const app = await buildServer();
@@ -1673,16 +1658,18 @@ describe("verification GET", () => {
     // verification as failed.
     expect(response.body).toBe("challenge-value");
     expect(response.headers["content-type"]).toContain("text/plain");
-    expect(updates).toHaveLength(1);
-    expect(updates[0].id).toBe("UCabc");
-    expect(updates[0].expiresAt.getTime() - before).toBeGreaterThan(
-      430_000 * 1000
-    );
+    expect(attempted.map((write) => write.id)).toEqual(["UCabc"]);
+    expect([...expiries.keys()]).toEqual(["UCabc"]);
+    const leaseMs = expiries.get("UCabc")!.getTime() - before;
+    // The stored expiry reflects the lease the hub reported, within the drift
+    // of reading the clock twice.
+    expect(leaseMs).toBeGreaterThanOrEqual(432_000 * 1000 - 5_000);
+    expect(leaseMs).toBeLessThanOrEqual(432_000 * 1000 + 5_000);
     await app.close();
   });
 
   it("rejects a wrong token without touching the database", async () => {
-    const { updates } = fakeChannelStore([
+    const { expiries } = fakeChannelStore([
       { id: "UCabc", pubsubRequestedAt: new Date() },
     ]);
     const findSpy = jest.spyOn(ChannelModel, "findOne");
@@ -1702,12 +1689,12 @@ describe("verification GET", () => {
 
     expect(response.statusCode).toBe(404);
     expect(findSpy).not.toHaveBeenCalled();
-    expect(updates).toHaveLength(0);
+    expect([...expiries.keys()]).toEqual([]);
     await app.close();
   });
 
   it("rejects a channel whose request is older than the cooldown", async () => {
-    const { updates } = fakeChannelStore([
+    const { expiries } = fakeChannelStore([
       {
         id: "UCabc",
         // Stamped long before the accepted window.
@@ -1726,12 +1713,12 @@ describe("verification GET", () => {
     });
 
     expect(response.statusCode).toBe(404);
-    expect(updates).toHaveLength(0);
+    expect([...expiries.keys()]).toEqual([]);
     await app.close();
   });
 
   it("rejects a channel that was never requested", async () => {
-    const { updates } = fakeChannelStore([{ id: "UCabc" }]);
+    const { expiries } = fakeChannelStore([{ id: "UCabc" }]);
     const app = await buildServer();
 
     const response = await app.inject({
@@ -1744,12 +1731,12 @@ describe("verification GET", () => {
     });
 
     expect(response.statusCode).toBe(404);
-    expect(updates).toHaveLength(0);
+    expect([...expiries.keys()]).toEqual([]);
     await app.close();
   });
 
   it("rejects a channel we do not have at all", async () => {
-    const { updates } = fakeChannelStore([]);
+    const { expiries } = fakeChannelStore([]);
     const app = await buildServer();
 
     const response = await app.inject({
@@ -1762,7 +1749,7 @@ describe("verification GET", () => {
     });
 
     expect(response.statusCode).toBe(404);
-    expect(updates).toHaveLength(0);
+    expect([...expiries.keys()]).toEqual([]);
     await app.close();
   });
 
@@ -1809,24 +1796,14 @@ describe("verification GET", () => {
   });
 
   it("still answers the challenge when the expiry write fails", async () => {
-    jest.spyOn(ChannelModel, "findOne").mockResolvedValue({
-      id: "UCabc",
-      pubsubRequestedAt: new Date(),
-    } as never);
-    // Records the attempt, then fails it: the stored expiry has to stay absent,
-    // which is what leaves the channel eligible for another renewal.
-    const stored = new Map<string, Date>();
-    const attempted: { id: string; expiresAt: Date }[] = [];
-    jest.spyOn(ChannelModel, "updateOne").mockImplementation(((
-      filter: { id: string },
-      update: { $set: { pubsubExpiresAt: Date } }
-    ) => {
-      attempted.push({
-        id: filter.id,
-        expiresAt: update.$set.pubsubExpiresAt,
-      });
-      return Promise.reject(new Error("mongo down")) as never;
-    }) as never);
+    // The same store the passing cases use, told to fail this channel's write.
+    // Because that store does record successful writes, "nothing was stored"
+    // below is a real assertion — and an absent expiry is exactly what leaves
+    // the channel eligible for another renewal.
+    const { expiries, attempted } = fakeChannelStore(
+      [{ id: "UCabc", pubsubRequestedAt: new Date() }],
+      { failWriteFor: "UCabc" }
+    );
     const app = await buildServer();
 
     const response = await app.inject({
@@ -1843,7 +1820,7 @@ describe("verification GET", () => {
     expect(response.body).toBe("challenge-value");
     // The write was attempted for the right channel and left nothing behind.
     expect(attempted.map((write) => write.id)).toEqual(["UCabc"]);
-    expect([...stored.keys()]).toEqual([]);
+    expect([...expiries.keys()]).toEqual([]);
     await app.close();
   });
 
@@ -1854,7 +1831,7 @@ describe("verification GET", () => {
     ["fractional", { "hub.lease_seconds": "1.5" }, PUBSUB_DEFAULT_LEASE_MS],
     ["over the cap", { "hub.lease_seconds": "99999999" }, PUBSUB_MAX_LEASE_MS],
   ])("handles a lease that is %s", async (_label, extra, expectedMs) => {
-    const { updates } = fakeChannelStore([
+    const { expiries } = fakeChannelStore([
       { id: "UCabc", pubsubRequestedAt: new Date() },
     ]);
     const app = await buildServer();
@@ -1872,14 +1849,14 @@ describe("verification GET", () => {
     await drainPostResponseWork();
 
     expect(response.statusCode).toBe(200);
-    const leaseMs = updates[0].expiresAt.getTime() - before;
+    const leaseMs = expiries.get("UCabc")!.getTime() - before;
     expect(leaseMs).toBeGreaterThanOrEqual(expectedMs - 5_000);
     expect(leaseMs).toBeLessThanOrEqual(expectedMs + 5_000);
     await app.close();
   });
 
   it("rejects an unsubscribe verification and ignores a denial", async () => {
-    const { updates } = fakeChannelStore([
+    const { expiries } = fakeChannelStore([
       { id: "UCabc", pubsubRequestedAt: new Date() },
     ]);
     const app = await buildServer();
@@ -1902,7 +1879,7 @@ describe("verification GET", () => {
 
     expect(unsubscribed.statusCode).toBe(404);
     expect(denied.statusCode).toBe(200);
-    expect(updates).toHaveLength(0);
+    expect([...expiries.keys()]).toEqual([]);
     await app.close();
   });
 
