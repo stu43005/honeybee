@@ -204,31 +204,47 @@ rejection。
 ### 檔案佈局
 
 ```
-src/modules/youtube-pubsub/hub-client.ts   訂閱請求 + 錯誤分類
-src/modules/youtube-pubsub/atom.ts         Atom 通知解析
-src/modules/youtube-pubsub/routes.ts       fastify plugin：challenge / HMAC / 通知
-src/components/pubsub-subscribe.ts         到期驅動的批次續訂（agenda job 實作）
+src/modules/youtube-pubsub/hub-client.ts     訂閱請求 + 錯誤分類
+src/modules/youtube-pubsub/atom.ts           Atom 通知解析
+src/modules/youtube-pubsub/routes.ts         fastify plugin：challenge / HMAC / 通知
+src/modules/youtube-pubsub/renewal.ts        到期驅動的批次續訂（agenda job 實作）
+src/modules/youtube-pubsub/youtube-pubsub.ts Application module：route 註冊 + job
 ```
+
+整個子系統收在一個目錄裡，對外只露出一個 `Application` module。`crawler.ts` 因此
+只剩 `app.use(new YoutubePubsubModule(app))` 一行，完全不知道 pubsub 的細節——這也
+是續訂不放 `src/components/` 的原因：那裡放的是由別的服務驅動的領域任務（幾乎都是
+`manager` 的），而這一輪續訂是由這個 module 自己的 agenda job 驅動、組合的也是隔壁
+那幾個檔案。
 
 各檔都有自己的 `*.spec.ts`。`hub-client.ts` 與 `atom.ts` 是純函式，最容易測；
 `routes.ts` 用 `fastify.inject()` 測；批次續訂的候選選取與限流中止在
-`pubsub-subscribe.spec.ts` 測。
+`renewal.spec.ts` 測；module 本身用一個記錄行為的假 `Application` 測。
 
 callback URL 與它的 token 由 `hub-client.ts` 一併匯出（它是「我們交給 hub 的
 位址」的擁有者），`routes.ts` 從那裡 import 同一個 token 來驗證，避免兩邊各自
 拼出可能不一致的字串，也不必為一個衍生函式多開一個檔案。
 
-`crawler.ts` 只剩組裝：註冊 plugin、定義 job、`agenda.every("10 minutes", ...)`。
-
-**plugin 必須在 `app.init()` 之前註冊。** `Application.init()` 會啟動
-`HttpServerModule`，也就是 `fastify.listen()`；而 fastify 在 listen 之後拒絕再加
-route（`lib/route.js` 的 `throwIfAlreadyStarted('Cannot add route!')` → 丟
+**route 註冊必須在 module 的 constructor，不能在 `init()`。**
+`Application.init()` 依註冊順序逐一 init，而 `HttpServerModule` 是
+`Application` 建構時第一個註冊的，所以它的 `fastify.listen()` 會在其他 module 的
+`init()` 之前跑完；fastify 在 listen 之後拒絕再加 route（`lib/route.js` 的
+`throwIfAlreadyStarted('Cannot add route!')` → 丟
 `FST_ERR_INSTANCE_ALREADY_LISTENING`），content type parser 也有同樣的檢查。
+`OAuthModule` 正是用同一個做法解決的，並在註解裡寫明了原因。
+
 現行程式把 `fastify.use(ytNotifier.listener())` 放在 `app.init()` **之後**仍能運作，
 是因為那是 express middleware 走 `@fastify/express` 的動態掛載、不經 fastify 的
-route 註冊路徑——改用原生 route 後這個位置就不再成立，必須往前搬。
-這個錯誤是啟動即失敗、不會靜默，所以不為它另外建立一套真實啟動的整合測試。
-`agenda.define` / `every` 不受這個限制，維持現有位置。
+route 註冊路徑——改用原生 route 後這個位置就不再成立。
+
+**`register()` 不需要 await**（constructor 本來也不能 await）：它只是把 plugin 排進
+佇列，實際載入發生在 `listen()`。這一點連同上面那條限制都以實際執行驗證過：未 await
+的 `register()` 在 listen 後其 route 正常回應，而 listen 之後再加 route 會丟
+`FST_ERR_INSTANCE_ALREADY_LISTENING`。這個錯誤是啟動即失敗、不會靜默，所以不為它
+另外建立一套真實啟動的整合測試。
+
+`agenda.define` / `every` 不受這個限制，放在 module 的 `init()`（此時
+`AgendaModule` 已經 init 完畢，因為它註冊在前面）。
 
 `routes.ts` 直接 import `ChannelModel` / `VideoModel`，不為了可測而抽介面或改成
 依賴注入；測試以 `jest.unstable_mockModule` 攔截模組。
@@ -257,7 +273,7 @@ findPubsubRenewalCandidates(limit, now)
 
 ### 訂閱路徑
 
-`components/pubsub-subscribe.ts` 對每個候選依序：
+`modules/youtube-pubsub/renewal.ts` 對每個候選依序：
 
 1. 先寫 `pubsubRequestedAt = now`。
 2. 呼叫 `hub-client` 送出訂閱請求，帶 `PUBSUB_REQUEST_TIMEOUT_MS` 的逾時。
@@ -298,8 +314,9 @@ catch，不會外洩成 unhandled rejection。逾時與 HTTP 錯誤在回傳值�
 原始字串當成 `request.body`** —— HMAC 要簽的就是 body 本身，因此不需要在
 request 上掛 `rawBody`。
 
-同時對兩條通知路徑呼叫 `HttpServerModule.addNoLogRoute(...)`：通知量大，每筆都
-印一行 `request completed` 會淹掉其他 log。
+module 的 constructor 同時呼叫 `HttpServerModule.addNoLogRoute("/notifications/youtube")`：
+通知量大，每筆都印一行 `request completed` 會淹掉其他 log。比對是 startsWith，所以
+帶 token 的路徑也涵蓋在內。
 
 #### callback URL 與三條 route
 
@@ -470,7 +487,7 @@ callback token 由 `YOUTUBE_PUBSUB_SECRET` 衍生，也不是新的環境變數�
   非限流失敗；逾時與連線錯誤 → 可與 HTTP 失敗區分的失敗。並斷言送出的表單內容
   （`hub.callback` 帶 token / `hub.mode` / `hub.topic` / `hub.secret`）完整正確，
   以及請求確實帶上了 `PUBSUB_REQUEST_TIMEOUT_MS`。
-- **`pubsub-subscribe.spec.ts`** —— stateful fake Channel，記錄寫入序列：批量
+- **`renewal.spec.ts`** —— stateful fake Channel，記錄寫入序列：批量
   上限、`pubsubRequestedAt` 寫在請求之前的順序、第三個候選回 429 時只送出三次
   請求且第四／第五個沒有被寫入、候選查詢條件。另外要有一個「請求永遠不 resolve」
   的案例：以 fake timer 推進到逾時，斷言該候選被歸類為失敗**且後續候選仍然被
@@ -540,7 +557,8 @@ verification 可能在清除**之後**才回來，而那個 handler 只檢查
 - `youtube-notification` 依賴與手寫的 `src/types/youtube-notification.d.ts`
 - `@fastify/express` 依賴與 `crawler.ts` 裡的 `fastify.register(fastifyExpress)`
   （整個 repo 只為了掛這個 listener 而存在）
-- `crawler.ts` 裡的 `YouTubeNotifier` 實例、四個事件監聽器，以及原本每 12 小時
-  全量重掃的 job body
+- `crawler.ts` 裡的 `YouTubeNotifier` 實例、四個事件監聽器、原本每 12 小時全量
+  重掃的 job body，以及整個 `//#region youtube pubsub` 區塊——pubsub 的組裝全部
+  移進 module，crawler 只留一行 `app.use(new YoutubePubsubModule(app))`
 
 新增 `fast-xml-parser` 到 `dependencies`（crawler 在生產執行期會 import）。

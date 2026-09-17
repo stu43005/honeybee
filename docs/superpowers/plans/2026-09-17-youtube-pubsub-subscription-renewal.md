@@ -23,27 +23,38 @@ mocks use `jest.unstable_mockModule`).
 
 **New**
 
-| File                                       | Responsibility                                                                                                                       |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `src/modules/youtube-pubsub/hub-client.ts` | Build the callback URL and token, send subscribe requests, classify failures as http/timeout/network and whether they are throttling |
-| `src/modules/youtube-pubsub/atom.ts`       | Parse a notification body into an array of entries (pure function)                                                                   |
-| `src/modules/youtube-pubsub/routes.ts`     | Fastify plugin: content-type parser, verification GET, notification POST                                                             |
-| `src/components/pubsub-subscribe.ts`       | The expiry-driven batch renewal, i.e. the agenda job's implementation                                                                |
+| File                                           | Responsibility                                                                                                                       |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/modules/youtube-pubsub/hub-client.ts`     | Build the callback URL and token, send subscribe requests, classify failures as http/timeout/network and whether they are throttling |
+| `src/modules/youtube-pubsub/atom.ts`           | Parse a notification body into an array of entries (pure function)                                                                   |
+| `src/modules/youtube-pubsub/routes.ts`         | Fastify plugin: content-type parser, verification GET, notification POST                                                             |
+| `src/modules/youtube-pubsub/renewal.ts`        | The expiry-driven batch renewal, i.e. the agenda job's implementation                                                                |
+| `src/modules/youtube-pubsub/youtube-pubsub.ts` | The `Application` module that owns the route registration and the job, so a service only has to `app.use` it                         |
 
-Each new file gets an adjacent `*.spec.ts`. `hub-client.ts` also gets
-`hub-client-misconfig.spec.ts`, because environment variables are frozen at
-module-eval time and the broken-configuration case therefore needs its own file.
+The whole subsystem lives in one directory, fronted by one module. The crawler
+ends up with a single `app.use(new YoutubePubsubModule(app))` and no pubsub
+knowledge of its own, which is also why the renewal round does not go in
+`src/components/`: that directory holds domain tasks driven from elsewhere
+(almost everything there belongs to `manager`), whereas this one is driven by
+the module's own agenda job and composes the files beside it.
+
+Each new file gets an adjacent `*.spec.ts`. Three of them get a second spec
+file, in each case because `constants.ts` freezes the environment when it is
+first evaluated and the alternate configuration therefore needs its own module
+registry: `hub-client-misconfig.spec.ts` (an unusable base URL) and
+`youtube-pubsub-disabled.spec.ts` (neither variable set). `renewal.ts` gets
+`renewal-timeout.spec.ts` for the batch test that drives a real timeout.
 
 **Modified**
 
-| File                          | Change                                                                                                                     |
-| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `src/constants.ts`            | Eight new constants                                                                                                        |
-| `src/models/Channel.ts`       | Two new fields, one compound index, one candidate-query static                                                             |
-| `src/modules/youtube.ts`      | `getYoutubeApi()` gets a global timeout                                                                                    |
-| `src/modules/youtube.spec.ts` | Assert the client is built with that timeout                                                                               |
-| `src/commands/crawler.ts`     | Drop `YouTubeNotifier` and the express adapter, register the plugin before `app.init()`, schedule the job every 10 minutes |
-| `package.json`                | Add `fast-xml-parser`; drop `youtube-notification`, `@fastify/express` and the resolution that existed only for them       |
+| File                          | Change                                                                                                               |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `src/constants.ts`            | Eight new constants                                                                                                  |
+| `src/models/Channel.ts`       | Two new fields, one compound index, one candidate-query static                                                       |
+| `src/modules/youtube.ts`      | `getYoutubeApi()` gets a global timeout                                                                              |
+| `src/modules/youtube.spec.ts` | Assert the client is built with that timeout                                                                         |
+| `src/commands/crawler.ts`     | Drop `YouTubeNotifier`, the express adapter and the whole pubsub region; `app.use` the new module instead            |
+| `package.json`                | Add `fast-xml-parser`; drop `youtube-notification`, `@fastify/express` and the resolution that existed only for them |
 
 **New documentation:** `docs/runbooks/pubsub-callback-rotation.md`
 
@@ -231,11 +242,28 @@ describe("parseNotification", () => {
       feed(videoEntry("vid1", "First") + videoEntry("vid2", "Second"))
     );
 
-    expect(result).toHaveLength(2);
-    expect(result?.map((entry) => entry.type)).toEqual(["video", "video"]);
-    expect(
-      result?.map((entry) => (entry.type === "video" ? entry.videoId : null))
-    ).toEqual(["vid1", "vid2"]);
+    expect(result).toEqual([
+      {
+        type: "video",
+        videoId: "vid1",
+        channelId: "UCchannel",
+        title: "First",
+        link: "https://www.youtube.com/watch?v=vid1",
+        channelName: "A Channel",
+        published: new Date("2026-09-17T01:02:03+00:00"),
+        updated: new Date("2026-09-17T01:02:04+00:00"),
+      },
+      {
+        type: "video",
+        videoId: "vid2",
+        channelId: "UCchannel",
+        title: "Second",
+        link: "https://www.youtube.com/watch?v=vid2",
+        channelName: "A Channel",
+        published: new Date("2026-09-17T01:02:03+00:00"),
+        updated: new Date("2026-09-17T01:02:04+00:00"),
+      },
+    ]);
   });
 
   it("returns videos first and deletions after them", () => {
@@ -247,7 +275,16 @@ describe("parseNotification", () => {
     );
 
     expect(result).toEqual([
-      expect.objectContaining({ type: "video", videoId: "vid1" }),
+      {
+        type: "video",
+        videoId: "vid1",
+        channelId: "UCchannel",
+        title: "First",
+        link: "https://www.youtube.com/watch?v=vid1",
+        channelName: "A Channel",
+        published: new Date("2026-09-17T01:02:03+00:00"),
+        updated: new Date("2026-09-17T01:02:04+00:00"),
+      },
       { type: "deleted", videoId: "gone" },
     ]);
   });
@@ -858,7 +895,8 @@ export async function requestSubscription(
 - [ ] **Step 5: Run both test files and watch them pass**
 
 Run: `npm run test -- src/modules/youtube-pubsub/hub-client.spec.ts src/modules/youtube-pubsub/hub-client-misconfig.spec.ts`
-Expected: all 10 tests across the two files PASS.
+Expected: all 11 tests across the two files PASS (3 helper tests, 7 subscription
+tests, 1 misconfiguration test).
 
 - [ ] **Step 6: Type check and lint**
 
@@ -1046,12 +1084,13 @@ git commit -m "feat(channel): track pubsub request and expiry, query renewal can
 
 **Files:**
 
-- Create: `src/components/pubsub-subscribe.ts`
-- Test: `src/components/pubsub-subscribe.spec.ts`
+- Create: `src/modules/youtube-pubsub/renewal.ts`
+- Test: `src/modules/youtube-pubsub/renewal.spec.ts`
+- Test: `src/modules/youtube-pubsub/renewal-timeout.spec.ts`
 
 - [ ] **Step 1: Write the failing test**
 
-Create `src/components/pubsub-subscribe.spec.ts`:
+Create `src/modules/youtube-pubsub/renewal.spec.ts`:
 
 ```ts
 /// <reference types="jest" />
@@ -1068,16 +1107,14 @@ process.env.PUBLIC_BASE_URL = "https://honeybee.example.test/";
 process.env.YOUTUBE_PUBSUB_SECRET = "test-secret";
 
 type SubscribeResult = Awaited<
-  ReturnType<
-    typeof import("../modules/youtube-pubsub/hub-client.js").requestSubscription
-  >
+  ReturnType<typeof import("./hub-client.js").requestSubscription>
 >;
 
 const mockRequestSubscription =
   jest.fn<(channelId: string) => Promise<SubscribeResult>>();
 const mockSleep = jest.fn<(ms: number) => Promise<void>>();
 
-jest.unstable_mockModule("../modules/youtube-pubsub/hub-client.js", () => ({
+jest.unstable_mockModule("./hub-client.js", () => ({
   requestSubscription: mockRequestSubscription,
 }));
 
@@ -1087,10 +1124,10 @@ jest.unstable_mockModule("node:timers/promises", () => ({
   setTimeout: mockSleep,
 }));
 
-const { default: ChannelModel } = await import("../models/Channel.js");
-const { renewPubsubSubscriptions } = await import("./pubsub-subscribe.js");
+const { default: ChannelModel } = await import("../../models/Channel.js");
+const { renewPubsubSubscriptions } = await import("./renewal.js");
 const { PUBSUB_RENEW_BATCH_SIZE, PUBSUB_REQUEST_SPACING_MS } =
-  await import("../constants.js");
+  await import("../../constants.js");
 
 // A stateful fake channel collection that records the order of writes.
 function fakeChannels(ids: string[]) {
@@ -1143,9 +1180,11 @@ describe("renewPubsubSubscriptions", () => {
       expect(update.$set.pubsubRequestedAt).toBeInstanceOf(Date);
       return Promise.resolve({ acknowledged: true }) as never;
     }) as never);
-    mockRequestSubscription.mockImplementation(async () => {
+    // Not an async arrow: an async function with no await fails
+    // @typescript-eslint/require-await, which lint treats as an error.
+    mockRequestSubscription.mockImplementation(() => {
       order.push("request");
-      return { ok: true };
+      return Promise.resolve({ ok: true });
     });
 
     await renewPubsubSubscriptions();
@@ -1176,18 +1215,24 @@ describe("renewPubsubSubscriptions", () => {
     // A request that only settles when released, standing in for a hub that
     // does not answer until the client times out.
     let releaseFirst: ((result: SubscribeResult) => void) | undefined;
+    let firstRequestEntered: (() => void) | undefined;
+    const enteredFirstRequest = new Promise<void>((resolve) => {
+      firstRequestEntered = resolve;
+    });
     mockRequestSubscription.mockImplementationOnce(
       () =>
         new Promise<SubscribeResult>((resolve) => {
+          firstRequestEntered?.();
           releaseFirst = resolve;
         })
     );
 
     const round = renewPubsubSubscriptions();
 
-    // Explicit drain point: while the first request is unsettled the loop
-    // cannot have moved on, so the other two candidates are untouched.
-    await Promise.resolve();
+    // Explicit drain point: wait until the loop is actually inside the first
+    // request. Counting microtasks would be wrong, because the candidate query
+    // and the timestamp write are awaited before the request goes out.
+    await enteredFirstRequest;
     expect(writes).toEqual(["UC1"]);
     expect(mockRequestSubscription).toHaveBeenCalledTimes(1);
 
@@ -1253,33 +1298,148 @@ describe("renewPubsubSubscriptions", () => {
   });
 
   it("does nothing when there is no candidate", async () => {
-    fakeChannels([]);
+    const { writes } = fakeChannels([]);
 
     await renewPubsubSubscriptions();
 
-    expect(mockRequestSubscription).not.toHaveBeenCalled();
-    expect(mockSleep).not.toHaveBeenCalled();
+    expect(writes).toEqual([]);
+    expect(mockRequestSubscription.mock.calls).toEqual([]);
+    expect(mockSleep.mock.calls).toEqual([]);
   });
 });
 ```
 
-- [ ] **Step 2: Run the test and watch it fail**
+- [ ] **Step 2: Write the batch test that drives a real timeout**
 
-Run: `npm run test -- src/components/pubsub-subscribe.spec.ts`
-Expected: FAIL, because the module `./pubsub-subscribe.js` does not exist.
+The tests above mock `requestSubscription`, so they never exercise the timeout
+mechanism itself. This second file mocks only the transport, which means the
+real hub client does the timing and the classification, and the batch is
+observed end to end.
 
-- [ ] **Step 3: Write the implementation**
+Create `src/modules/youtube-pubsub/renewal-timeout.spec.ts`:
 
-Create `src/components/pubsub-subscribe.ts`:
+```ts
+/// <reference types="jest" />
+import { afterEach, describe, expect, it, jest } from "@jest/globals";
+import { AxiosError } from "axios";
+
+process.env.PUBLIC_BASE_URL = "https://honeybee.example.test/";
+process.env.YOUTUBE_PUBSUB_SECRET = "test-secret";
+
+type PostArgs = [
+  url: string,
+  body: string,
+  config: { headers: Record<string, string>; timeout: number },
+];
+
+const mockPost = jest.fn<(...args: PostArgs) => Promise<unknown>>();
+const mockSleep = jest.fn<(ms: number) => Promise<void>>();
+
+// Only the transport is mocked here, so hub-client's real timeout handling and
+// failure classification are part of what this test covers.
+jest.unstable_mockModule("axios", () => {
+  const isAxiosError = (error: unknown) =>
+    !!error && (error as AxiosError).isAxiosError === true;
+  return { default: { post: mockPost, isAxiosError }, isAxiosError };
+});
+
+jest.unstable_mockModule("node:timers/promises", () => ({
+  setTimeout: mockSleep,
+}));
+
+const { default: ChannelModel } = await import("../../models/Channel.js");
+const { renewPubsubSubscriptions } = await import("./renewal.js");
+const {
+  PUBSUB_RENEW_BATCH_SIZE,
+  PUBSUB_REQUEST_SPACING_MS,
+  PUBSUB_REQUEST_TIMEOUT_MS,
+} = await import("../../constants.js");
+
+describe("renewPubsubSubscriptions against a hub that stops answering", () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+    jest.useRealTimers();
+    mockPost.mockReset();
+    mockSleep.mockReset();
+  });
+
+  it("times the first request out, keeps going, and finishes within the bound", async () => {
+    jest.useFakeTimers();
+    mockSleep.mockResolvedValue(undefined);
+    const writes: string[] = [];
+    jest.spyOn(ChannelModel, "findPubsubRenewalCandidates").mockResolvedValue([
+      { id: "UC1", name: "One" },
+      { id: "UC2", name: "Two" },
+      { id: "UC3", name: "Three" },
+    ] as never);
+    jest.spyOn(ChannelModel, "updateOne").mockImplementation(((filter: {
+      id: string;
+    }) => {
+      writes.push(filter.id);
+      return Promise.resolve({ acknowledged: true }) as never;
+    }) as never);
+
+    // The first channel's request never gets an answer until its own timeout
+    // elapses; the rest answer immediately.
+    let call = 0;
+    mockPost.mockImplementation((_url, _body, config) => {
+      call += 1;
+      if (call > 1) return Promise.resolve({ status: 202 });
+      return new Promise((_resolve, reject) => {
+        setTimeout(
+          () =>
+            reject(
+              new AxiosError(
+                `timeout of ${config.timeout}ms exceeded`,
+                "ECONNABORTED"
+              )
+            ),
+          config.timeout
+        );
+      });
+    });
+
+    const startedAt = Date.now();
+    const round = renewPubsubSubscriptions();
+    await jest.advanceTimersByTimeAsync(PUBSUB_REQUEST_TIMEOUT_MS);
+    await round;
+    const elapsedMs = Date.now() - startedAt;
+
+    // The timed-out channel did not abort the round.
+    expect(writes).toEqual(["UC1", "UC2", "UC3"]);
+    expect(mockPost).toHaveBeenCalledTimes(3);
+    expect(mockPost.mock.calls.map((callArgs) => callArgs[2].timeout)).toEqual([
+      PUBSUB_REQUEST_TIMEOUT_MS,
+      PUBSUB_REQUEST_TIMEOUT_MS,
+      PUBSUB_REQUEST_TIMEOUT_MS,
+    ]);
+    // And the whole round stayed inside the bound the batch size and the
+    // per-request timeout imply, which is what makes job.touch() unnecessary.
+    expect(elapsedMs).toBeLessThanOrEqual(
+      PUBSUB_RENEW_BATCH_SIZE *
+        (PUBSUB_REQUEST_TIMEOUT_MS + PUBSUB_REQUEST_SPACING_MS)
+    );
+  });
+});
+```
+
+- [ ] **Step 3: Run both test files and watch them fail**
+
+Run: `npm run test -- src/modules/youtube-pubsub/renewal.spec.ts src/modules/youtube-pubsub/renewal-timeout.spec.ts`
+Expected: both FAIL, because the module `./renewal.js` does not exist.
+
+- [ ] **Step 4: Write the implementation**
+
+Create `src/modules/youtube-pubsub/renewal.ts`:
 
 ```ts
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   PUBSUB_RENEW_BATCH_SIZE,
   PUBSUB_REQUEST_SPACING_MS,
-} from "../constants.js";
-import ChannelModel from "../models/Channel.js";
-import { requestSubscription } from "../modules/youtube-pubsub/hub-client.js";
+} from "../../constants.js";
+import ChannelModel from "../../models/Channel.js";
+import { requestSubscription } from "./hub-client.js";
 
 /**
  * One renewal round: pick the channels whose subscription is near expiry (or
@@ -1331,20 +1491,21 @@ export async function renewPubsubSubscriptions(): Promise<void> {
 }
 ```
 
-- [ ] **Step 4: Run the test and watch it pass**
+- [ ] **Step 5: Run both test files and watch them pass**
 
-Run: `npm run test -- src/components/pubsub-subscribe.spec.ts`
-Expected: all 7 tests PASS.
+Run: `npm run test -- src/modules/youtube-pubsub/renewal.spec.ts src/modules/youtube-pubsub/renewal-timeout.spec.ts`
+Expected: all 8 tests across the two files PASS (7 plus the real-timeout batch
+test).
 
-- [ ] **Step 5: Type check and lint**
+- [ ] **Step 6: Type check and lint**
 
 Run: `npm run build && npm run lint`
 Expected: both exit without errors.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/components/pubsub-subscribe.ts src/components/pubsub-subscribe.spec.ts
+git add src/modules/youtube-pubsub/renewal.ts src/modules/youtube-pubsub/renewal.spec.ts src/modules/youtube-pubsub/renewal-timeout.spec.ts
 git commit -m "feat(pubsub): renew expiring subscriptions in small batches"
 ```
 
@@ -1365,13 +1526,23 @@ Create `src/modules/youtube-pubsub/routes.spec.ts`:
 /// <reference types="jest" />
 import { afterEach, describe, expect, it, jest } from "@jest/globals";
 import fastify from "fastify";
-import crypto from "node:crypto";
 
 process.env.PUBLIC_BASE_URL = "https://honeybee.example.test/";
 process.env.YOUTUBE_PUBSUB_SECRET = "test-secret";
 
-const mockNoticeFromNotification = jest.fn<() => Promise<unknown>>();
-const mockUpdateVideoFromYoutube = jest.fn<() => Promise<unknown>>();
+// The argument types are declared here rather than as `() => Promise<unknown>`,
+// so that the assertions Task 8 makes on `mock.calls[n][0]` have a real type
+// instead of an empty tuple.
+type NoticeInput = {
+  video: { id: string; title: string };
+  channel: { id: string };
+};
+type NoticeResult = { upsertedCount: number; modifiedCount: number };
+
+const mockNoticeFromNotification =
+  jest.fn<(input: NoticeInput) => Promise<NoticeResult>>();
+const mockUpdateVideoFromYoutube =
+  jest.fn<(videoIds: string[]) => Promise<unknown>>();
 
 jest.unstable_mockModule("../../models/Video.js", () => ({
   default: { noticeFromNotification: mockNoticeFromNotification },
@@ -1464,6 +1635,7 @@ describe("verification GET", () => {
     // A body that is not exactly the challenge makes the hub treat the
     // verification as failed.
     expect(response.body).toBe("challenge-value");
+    expect(response.headers["content-type"]).toContain("text/plain");
     expect(updates).toHaveLength(1);
     expect(updates[0].id).toBe("UCabc");
     expect(updates[0].expiresAt.getTime() - before).toBeGreaterThan(
@@ -1714,7 +1886,11 @@ Expected: FAIL, because the module `./routes.js` does not exist.
 Create `src/modules/youtube-pubsub/routes.ts`:
 
 ```ts
-import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
+import type {
+  FastifyPluginCallback,
+  FastifyReply,
+  FastifyRequest,
+} from "fastify";
 import crypto from "node:crypto";
 import {
   PUBSUB_DEFAULT_LEASE_MS,
@@ -1827,11 +2003,16 @@ async function handleVerification(
   }
 }
 
-export const pubsubRoutes: FastifyPluginAsync = async (fastify) => {
+// The callback plugin form, not an async one: an async plugin that never awaits
+// fails @typescript-eslint/require-await, which lint treats as an error.
+// `fastify.register(pubsubRoutes)` still returns a thenable either way.
+export const pubsubRoutes: FastifyPluginCallback = (fastify, _opts, done) => {
   fastify.get<{ Params: TokenParams; Querystring: HubQuery }>(
     "/notifications/youtube/:token",
     handleVerification
   );
+
+  done();
 };
 ```
 
@@ -1863,7 +2044,15 @@ git commit -m "feat(pubsub): verify hub challenges against a callback token"
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `src/modules/youtube-pubsub/routes.spec.ts`:
+First add the `crypto` import to the top of
+`src/modules/youtube-pubsub/routes.spec.ts` (it belongs to this task's code, and
+adding it in Task 7 would have been an unused import, which lint rejects):
+
+```ts
+import crypto from "node:crypto";
+```
+
+Then append to the same file:
 
 ```ts
 function signedFeed(
@@ -1908,20 +2097,21 @@ function notificationBody(...ids: string[]): string {
 function fakeVideoStore(options?: { failOnceFor?: string }) {
   const stored = new Map<string, string>();
   let pendingFailure = options?.failOnceFor;
-  mockNoticeFromNotification.mockImplementation((async (input: {
-    video: { id: string; title: string };
-    channel: { id: string };
-  }) => {
+  // Deliberately not an async function: one with no await fails
+  // @typescript-eslint/require-await, which lint treats as an error.
+  mockNoticeFromNotification.mockImplementation((input) => {
     if (input.video.id === pendingFailure) {
       pendingFailure = undefined;
-      throw new Error("write failed");
+      return Promise.reject(new Error("write failed"));
     }
     const existed = stored.has(input.video.id);
     stored.set(input.video.id, input.video.title);
-    return existed
-      ? { upsertedCount: 0, modifiedCount: 1 }
-      : { upsertedCount: 1, modifiedCount: 0 };
-  }) as never);
+    return Promise.resolve(
+      existed
+        ? { upsertedCount: 0, modifiedCount: 1 }
+        : { upsertedCount: 1, modifiedCount: 0 }
+    );
+  });
   return { stored };
 }
 
@@ -2199,9 +2389,38 @@ describe("notification POST", () => {
     await drainPostResponseWork();
 
     expect(response.statusCode).toBe(200);
-    expect(mockNoticeFromNotification).toHaveBeenCalledTimes(1);
+    expect(
+      mockNoticeFromNotification.mock.calls.map((call) => call[0])
+    ).toEqual([
+      {
+        video: { id: "vid1", title: "Title vid1" },
+        channel: { id: "UCchannel" },
+      },
+    ]);
+    expect([...stored]).toEqual([["vid1", "Title vid1"]]);
     // An already-seen video needs no metadata fetch.
-    expect(mockUpdateVideoFromYoutube).not.toHaveBeenCalled();
+    expect(mockUpdateVideoFromYoutube.mock.calls).toEqual([]);
+    await app.close();
+  });
+
+  it("accepts a delivery sent as text/xml", async () => {
+    const { stored } = fakeVideoStore();
+    mockUpdateVideoFromYoutube.mockResolvedValue([]);
+    const app = await buildServer();
+    const body = notificationBody("vid1");
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/notifications/youtube/${token}`,
+      headers: { ...signedFeed(body), "content-type": "text/xml" },
+      payload: body,
+    });
+    await drainPostResponseWork();
+
+    // Both content types are registered, and the HMAC is computed over the same
+    // raw body either way.
+    expect(response.statusCode).toBe(200);
+    expect([...stored]).toEqual([["vid1", "Title vid1"]]);
     await app.close();
   });
 
@@ -2373,17 +2592,18 @@ async function handleNotification(
 Change the plugin so it registers the parser and all three routes:
 
 ```ts
-export const pubsubRoutes: FastifyPluginAsync = async (fastify) => {
+export const pubsubRoutes: FastifyPluginCallback = (fastify, _opts, done) => {
   // With parseAs: "string" the parser's second argument is the raw body, and
-  // whatever it hands to done() becomes request.body — returning the raw string
-  // is exactly what the HMAC has to be computed over, so no separate rawBody is
-  // needed. The callback form is used because an async body that never awaits
-  // trips @typescript-eslint/require-await. Registered inside the scope that
+  // whatever it hands to its own done() becomes request.body — passing the raw
+  // string through is exactly what the HMAC has to be computed over, so no
+  // separate rawBody is needed. The callback parser form is used because a
+  // parser written as an async function with no await would fail
+  // @typescript-eslint/require-await. Registered inside the scope that
   // register() creates, so it does not affect any other route.
   fastify.addContentTypeParser<string>(
     ["application/atom+xml", "text/xml"],
     { parseAs: "string" },
-    (_request, body, done) => done(null, body)
+    (_request, body, parsed) => parsed(null, body)
   );
 
   fastify.get<{ Params: TokenParams; Querystring: HubQuery }>(
@@ -2399,13 +2619,15 @@ export const pubsubRoutes: FastifyPluginAsync = async (fastify) => {
   // authenticates itself with its signature, so this handler does not check the
   // token. Removable once every old lease has expired (at most 5 days).
   fastify.post("/notifications/youtube", handleNotification);
+
+  done();
 };
 ```
 
 - [ ] **Step 4: Run the tests and watch them pass**
 
 Run: `npm run test -- src/modules/youtube-pubsub/routes.spec.ts`
-Expected: all PASS (14 from Task 7 plus 13 from this task).
+Expected: all PASS (14 from Task 7 plus 14 from this task).
 
 - [ ] **Step 5: Type check and lint**
 
@@ -2423,7 +2645,317 @@ git commit -m "feat(pubsub): receive notifications with hmac checks and retryabl
 
 ---
 
-### Task 9: YouTube API timeout
+### Task 9: The pubsub Application module
+
+This is what lets the crawler drop the subsystem entirely: one module owns the
+route registration and the agenda job, and the crawler only has to `app.use` it.
+
+Two placement rules make the shape of this module non-obvious, and both are
+verified:
+
+- **Routes go in the constructor, not `init()`.** `Application.init()` walks the
+  modules in registration order, and `HttpServerModule` is registered first (the
+  `Application` constructor does it), so its `listen()` runs before any other
+  module's `init()`. Fastify refuses to add a route after that with
+  `FST_ERR_INSTANCE_ALREADY_LISTENING`. `OAuthModule` solves it the same way and
+  says so in a comment.
+- **`register()` does not need to be awaited.** It only queues the plugin;
+  avvio loads it during `listen()`. A constructor cannot await anyway.
+
+**Files:**
+
+- Create: `src/modules/youtube-pubsub/youtube-pubsub.ts`
+- Test: `src/modules/youtube-pubsub/youtube-pubsub.spec.ts`
+- Test: `src/modules/youtube-pubsub/youtube-pubsub-disabled.spec.ts`
+
+- [ ] **Step 1: Write the failing test**
+
+Create `src/modules/youtube-pubsub/youtube-pubsub.spec.ts`:
+
+```ts
+/// <reference types="jest" />
+import { afterEach, describe, expect, it, jest } from "@jest/globals";
+
+process.env.PUBLIC_BASE_URL = "https://honeybee.example.test/";
+process.env.YOUTUBE_PUBSUB_SECRET = "test-secret";
+
+const mockRenewPubsubSubscriptions = jest.fn<() => Promise<void>>();
+
+jest.unstable_mockModule("./renewal.js", () => ({
+  renewPubsubSubscriptions: mockRenewPubsubSubscriptions,
+}));
+
+const { YoutubePubsubModule } = await import("./youtube-pubsub.js");
+const { pubsubRoutes } = await import("./routes.js");
+
+type JobHandler = () => Promise<void>;
+
+/**
+ * A stand-in for the pieces of Application this module touches, recording what
+ * it did so the assertions can look at structure rather than call counts.
+ */
+function fakeApp(options?: { withAgenda?: boolean }) {
+  const registered: unknown[] = [];
+  const noLogRoutes: string[] = [];
+  const defined: [string, JobHandler][] = [];
+  const scheduled: [string, string][] = [];
+
+  const agenda = {
+    define: jest.fn((name: string, handler: JobHandler) => {
+      defined.push([name, handler]);
+    }),
+    every: jest.fn((interval: string, name: string) => {
+      scheduled.push([interval, name]);
+      return Promise.resolve({});
+    }),
+  };
+
+  const app = {
+    get: jest.fn((name: string) =>
+      name === "agenda" && (options?.withAgenda ?? true)
+        ? { name: "agenda", agenda }
+        : undefined
+    ),
+    http: {
+      server: {
+        register: jest.fn((plugin: unknown) => {
+          registered.push(plugin);
+          return Promise.resolve();
+        }),
+      },
+      addNoLogRoute: jest.fn((route: string) => {
+        noLogRoutes.push(route);
+      }),
+    },
+  };
+
+  return { app, registered, noLogRoutes, defined, scheduled };
+}
+
+describe("YoutubePubsubModule", () => {
+  afterEach(() => {
+    mockRenewPubsubSubscriptions.mockReset();
+  });
+
+  it("registers the routes from its constructor, before init runs", () => {
+    const { app, registered, noLogRoutes } = fakeApp();
+
+    const module = new YoutubePubsubModule(app as never);
+
+    // Registration cannot wait for init(): HttpServerModule listens first.
+    expect(registered).toEqual([pubsubRoutes]);
+    expect(noLogRoutes).toEqual(["/notifications/youtube"]);
+    expect(module.name).toBe("youtube-pubsub");
+  });
+
+  it("defines the job and schedules it every ten minutes on init", async () => {
+    const { app, defined, scheduled } = fakeApp();
+    const module = new YoutubePubsubModule(app as never);
+
+    // Nothing is scheduled until init.
+    expect(defined).toEqual([]);
+
+    await module.init();
+
+    expect(defined.map(([name]) => name)).toEqual([
+      "crawler youtube pubsub subscribe",
+    ]);
+    expect(scheduled).toEqual([
+      ["10 minutes", "crawler youtube pubsub subscribe"],
+    ]);
+  });
+
+  it("keeps the existing job name, so the stuck document is reused", async () => {
+    const { app, defined, scheduled } = fakeApp();
+
+    await new YoutubePubsubModule(app as never).init();
+
+    // A new name would leave the old agendaJobs document locked forever with
+    // nothing to clear it.
+    expect(defined[0][0]).toBe("crawler youtube pubsub subscribe");
+    expect(scheduled[0][1]).toBe("crawler youtube pubsub subscribe");
+  });
+
+  it("runs a renewal round when the job fires", async () => {
+    const { app, defined } = fakeApp();
+    mockRenewPubsubSubscriptions.mockResolvedValue(undefined);
+    await new YoutubePubsubModule(app as never).init();
+
+    const [, handler] = defined[0];
+    await handler();
+
+    expect(mockRenewPubsubSubscriptions).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses to construct without the agenda module", () => {
+    const { app } = fakeApp({ withAgenda: false });
+
+    expect(() => new YoutubePubsubModule(app as never)).toThrow(
+      /AgendaModule must be registered/
+    );
+  });
+});
+```
+
+- [ ] **Step 2: Write the second test file for the disabled case**
+
+Whether pubsub runs at all is decided by two environment variables, and
+`constants.ts` freezes those when it is first evaluated, so the disabled case
+needs its own file.
+
+Create `src/modules/youtube-pubsub/youtube-pubsub-disabled.spec.ts`:
+
+```ts
+/// <reference types="jest" />
+import { describe, expect, it, jest } from "@jest/globals";
+
+// Neither variable is set, so the module must stay inert.
+delete process.env.PUBLIC_BASE_URL;
+delete process.env.YOUTUBE_PUBSUB_SECRET;
+
+const mockRenewPubsubSubscriptions = jest.fn<() => Promise<void>>();
+
+jest.unstable_mockModule("./renewal.js", () => ({
+  renewPubsubSubscriptions: mockRenewPubsubSubscriptions,
+}));
+
+const { YoutubePubsubModule } = await import("./youtube-pubsub.js");
+
+describe("YoutubePubsubModule without a public url or secret", () => {
+  it("registers no route and schedules no job", async () => {
+    const registered: unknown[] = [];
+    const defined: string[] = [];
+    const agenda = {
+      define: jest.fn((name: string) => {
+        defined.push(name);
+      }),
+      every: jest.fn(() => Promise.resolve({})),
+    };
+    const app = {
+      get: jest.fn(() => ({ name: "agenda", agenda })),
+      http: {
+        server: {
+          register: jest.fn((plugin: unknown) => {
+            registered.push(plugin);
+            return Promise.resolve();
+          }),
+        },
+        addNoLogRoute: jest.fn(),
+      },
+    };
+
+    const module = new YoutubePubsubModule(app as never);
+    await module.init();
+
+    // A callback URL cannot be built and a delivery cannot be verified without
+    // those two values, so doing nothing is the only safe behaviour.
+    expect(registered).toEqual([]);
+    expect(defined).toEqual([]);
+    expect(app.http.addNoLogRoute).not.toHaveBeenCalled();
+    expect(agenda.every).not.toHaveBeenCalled();
+  });
+});
+```
+
+- [ ] **Step 3: Run both test files and watch them fail**
+
+Run: `npm run test -- src/modules/youtube-pubsub/youtube-pubsub.spec.ts src/modules/youtube-pubsub/youtube-pubsub-disabled.spec.ts`
+Expected: both FAIL, because the module `./youtube-pubsub.js` does not exist.
+
+- [ ] **Step 4: Write the implementation**
+
+Create `src/modules/youtube-pubsub/youtube-pubsub.ts`:
+
+```ts
+import type { Job } from "agenda";
+import { PUBLIC_BASE_URL, YOUTUBE_PUBSUB_SECRET } from "../../constants.js";
+import type { Application } from "../application.js";
+import type { Module } from "../module.js";
+import { AgendaModule } from "../schedule.js";
+import { renewPubsubSubscriptions } from "./renewal.js";
+import { pubsubRoutes } from "./routes.js";
+
+const JOB_YOUTUBE_PUBSUB_SUBSCRIBE = "crawler youtube pubsub subscribe";
+
+/**
+ * Owns everything the pubsub subsystem needs at runtime: the notification
+ * routes and the renewal job. A service that wants YouTube push notifications
+ * only has to `app.use(new YoutubePubsubModule(app))`.
+ */
+export class YoutubePubsubModule implements Module {
+  public readonly name = "youtube-pubsub";
+
+  // Without a public address there is no callback URL to give the hub, and
+  // without the secret a delivery cannot be verified, so pubsub stays off.
+  private readonly enabled = !!PUBLIC_BASE_URL && !!YOUTUBE_PUBSUB_SECRET;
+  private readonly agenda;
+
+  constructor(private readonly app: Application) {
+    const agendaModule = this.app.get<AgendaModule>("agenda");
+    if (!agendaModule) {
+      throw new Error(
+        "YoutubePubsubModule: AgendaModule must be registered before YoutubePubsubModule"
+      );
+    }
+    this.agenda = agendaModule.agenda;
+
+    if (!this.enabled) {
+      console.log(
+        "youtube pubsub is disabled (PUBLIC_BASE_URL or YOUTUBE_PUBSUB_SECRET is unset)"
+      );
+      return;
+    }
+
+    // Routes must be registered before HttpServerModule.init() calls listen():
+    // fastify refuses to add routes once it is listening, and HttpServerModule
+    // is the first module Application registers, so its init() runs before
+    // this module's. register() only queues the plugin — it is loaded during
+    // listen() — so there is nothing to await here.
+    void this.app.http.server.register(pubsubRoutes);
+    // Deliveries are frequent, and one request log line each would drown out
+    // everything else. The match is a prefix, so the tokenized path is covered.
+    this.app.http.addNoLogRoute("/notifications/youtube");
+  }
+
+  async init(): Promise<void> {
+    if (!this.enabled) return;
+
+    // The job name is unchanged on purpose: renaming it would leave the old
+    // agendaJobs document locked forever, with no code that ever clears it.
+    this.agenda.define(
+      JOB_YOUTUBE_PUBSUB_SUBSCRIBE,
+      async (_job: Job): Promise<void> => {
+        await renewPubsubSubscriptions();
+      }
+    );
+    // Small batches, often: the loss ceiling of one crash or one throttling
+    // response is those few channels, and the next round picks up ten minutes
+    // later.
+    await this.agenda.every("10 minutes", JOB_YOUTUBE_PUBSUB_SUBSCRIBE);
+  }
+}
+```
+
+- [ ] **Step 5: Run both test files and watch them pass**
+
+Run: `npm run test -- src/modules/youtube-pubsub/youtube-pubsub.spec.ts src/modules/youtube-pubsub/youtube-pubsub-disabled.spec.ts`
+Expected: all 6 tests across the two files PASS.
+
+- [ ] **Step 6: Type check and lint**
+
+Run: `npm run build && npm run lint`
+Expected: both exit without errors.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/modules/youtube-pubsub/youtube-pubsub.ts src/modules/youtube-pubsub/youtube-pubsub.spec.ts src/modules/youtube-pubsub/youtube-pubsub-disabled.spec.ts
+git commit -m "feat(pubsub): own the routes and the renewal job in one module"
+```
+
+---
+
+### Task 10: YouTube API timeout
 
 **Files:**
 
@@ -2519,7 +3051,10 @@ git commit -m "fix(youtube): bound every api call with an explicit timeout"
 
 ---
 
-### Task 10: Rewire the crawler
+### Task 11: Rewire the crawler
+
+The crawler ends up with no pubsub knowledge at all — one `app.use` line, and
+the module does the rest.
 
 **Files:**
 
@@ -2534,14 +3069,17 @@ import fastifyExpress from "@fastify/express";
 import YouTubeNotifier from "youtube-notification";
 ```
 
-Add these to the existing import block (keeping its alphabetical style):
+Add this one to the existing import block (keeping its alphabetical style):
 
 ```ts
-import { renewPubsubSubscriptions } from "../components/pubsub-subscribe.js";
-import { pubsubRoutes } from "../modules/youtube-pubsub/routes.js";
+import { YoutubePubsubModule } from "../modules/youtube-pubsub/youtube-pubsub.js";
 ```
 
-- [ ] **Step 2: Register the plugin before `app.init()`**
+Then drop `PUBLIC_BASE_URL` and `YOUTUBE_PUBSUB_SECRET` from the
+`../constants.js` import: the module reads them now, and nothing else in this
+file uses them. Leave the other names in that import alone.
+
+- [ ] **Step 2: Register the module instead of the express adapter**
 
 Replace this block at the top of `runCrawler`:
 
@@ -2555,60 +3093,35 @@ await app.init();
 with:
 
 ```ts
-const { server: fastify } = app.http;
-
-// No public address or no secret means no pubsub: the callback URL and the
-// signature check both need them.
-const enabledYtPubsub = !!PUBLIC_BASE_URL && !!YOUTUBE_PUBSUB_SECRET;
-if (enabledYtPubsub) {
-  // Routes must be registered before HttpServerModule.init() calls listen():
-  // fastify refuses to add routes once it is listening.
-  await fastify.register(pubsubRoutes);
-  // Deliveries are frequent, and one request log line each would drown out
-  // everything else. The match is a prefix, so the tokenized path is covered.
-  app.http.addNoLogRoute("/notifications/youtube");
-}
+// Registered after AgendaModule, because its constructor looks that module up,
+// and before app.init(), because its constructor adds the notification routes
+// and fastify refuses to add routes once HttpServerModule has called listen().
+app.use(new YoutubePubsubModule(app));
 
 await app.init();
 ```
 
-- [ ] **Step 3: Replace the whole pubsub region**
+The `const { server: fastify } = app.http;` line goes away with it: those two
+statements were its only users.
 
-Replace everything between `//#region youtube pubsub` and
-`//#endregion youtube pubsub` (the `YouTubeNotifier` instance, the
-`fastify.use(...)` call, the old job and the four event listeners) with:
+- [ ] **Step 3: Delete the whole pubsub region**
 
-```ts
-//#region youtube pubsub
-
-if (enabledYtPubsub) {
-  const JOB_YOUTUBE_PUBSUB_SUBSCRIBE = "crawler youtube pubsub subscribe";
-  agenda.define(
-    JOB_YOUTUBE_PUBSUB_SUBSCRIBE,
-    async (_job: Job): Promise<void> => {
-      await renewPubsubSubscriptions();
-    }
-  );
-  // Small batches, often: the loss ceiling of one crash or one throttling
-  // response is those few channels, and the next round picks up ten minutes
-  // later.
-  void agenda.every("10 minutes", JOB_YOUTUBE_PUBSUB_SUBSCRIBE);
-}
-
-//#endregion youtube pubsub
-```
+Delete everything between `//#region youtube pubsub` and
+`//#endregion youtube pubsub`, including the two region markers — the
+`YouTubeNotifier` instance, the `fastify.use(...)` call, the old job and the
+four event listeners. All of it now lives in the module, so nothing replaces it
+here.
 
 - [ ] **Step 4: Confirm nothing refers to the old pieces**
 
 Run:
 
 ```bash
-grep -n "YouTubeNotifier\|ytNotifier\|fastifyExpress\|YOUTUBE_PUBSUB_SECRET\|PUBLIC_BASE_URL" src/commands/crawler.ts
+grep -n "YouTubeNotifier\|ytNotifier\|fastifyExpress\|youtube pubsub\|YOUTUBE_PUBSUB_SECRET\|PUBLIC_BASE_URL\|app.http\|server: fastify" src/commands/crawler.ts || echo "NO REFERENCES"
 ```
 
-Expected: only `PUBLIC_BASE_URL` and `YOUTUBE_PUBSUB_SECRET` remain, in the
-import block and on the `enabledYtPubsub` line; no `YouTubeNotifier`,
-`ytNotifier` or `fastifyExpress` anywhere.
+Expected: `NO REFERENCES`. Every one of those names belonged to the pubsub
+wiring that moved into the module.
 
 - [ ] **Step 5: Type check and lint**
 
@@ -2624,12 +3137,12 @@ Expected: everything PASSES.
 
 ```bash
 git add src/commands/crawler.ts
-git commit -m "feat(crawler): renew pubsub every ten minutes via native routes"
+git commit -m "feat(crawler): hand the whole pubsub subsystem to its own module"
 ```
 
 ---
 
-### Task 11: Remove the old dependencies and the declaration file
+### Task 12: Remove the old dependencies and the declaration file
 
 **Files:**
 
@@ -2707,7 +3220,7 @@ The deletion of `src/types/youtube-notification.d.ts` is already staged by the
 
 ---
 
-### Task 12: Runbook for configuration changes
+### Task 13: Runbook for configuration changes
 
 **Files:**
 
@@ -2734,13 +3247,29 @@ Those channels would be skipped by renewal for up to about four days.
 ## Order (there is only one correct order)
 
 1. Apply the new configuration and redeploy the crawler.
-2. Wait for the rollout to finish and the old pods to terminate:
+2. Wait for the rollout to finish:
 
    ```bash
    kubectl rollout status deploy/crawler -n honeybee
    ```
 
-3. Clear every stored expiry, so all channels become renewal candidates again:
+3. Wait until the old pod is really gone. `rollout status` returns as soon as
+   the new ReplicaSet is complete, but the old pod can still be terminating —
+   `terminationGracePeriodSeconds` is 60 — and a process in that state can
+   still write to MongoDB. The deployment runs one replica, so wait for exactly
+   one pod to remain:
+
+   ```bash
+   until [ "$(kubectl get pods -n honeybee -l app=crawler --no-headers | wc -l | tr -d ' ')" = "1" ]; do
+     sleep 5
+   done
+   kubectl get pods -n honeybee -l app=crawler
+   ```
+
+   Confirm from that last listing that the single remaining pod is `Running`
+   and is the new one (its name changes with every rollout).
+
+4. Clear every stored expiry, so all channels become renewal candidates again:
 
    ```js
    db.channels.updateMany({}, { $unset: { pubsubExpiresAt: "" } });
