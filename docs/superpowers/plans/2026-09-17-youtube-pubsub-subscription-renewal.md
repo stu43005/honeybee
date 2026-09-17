@@ -617,73 +617,85 @@ describe("requestSubscription", () => {
     expect(config.timeout).toBe(PUBSUB_REQUEST_TIMEOUT_MS);
   });
 
-  it("marks 429 and 503 as rate limited", async () => {
-    mockPost.mockRejectedValueOnce(httpError(429));
-    expect(await requestSubscription("UCabc")).toEqual({
-      ok: false,
-      kind: "http",
-      rateLimited: true,
-      status: 429,
-      message: "Request failed with status code 429",
-    });
+  // Each case asserts the whole returned result and that the request really was
+  // sent for that channel, so a classification that never reached the hub, or
+  // one that reached it with the wrong topic, cannot pass.
+  it.each([
+    {
+      label: "429, which is throttling",
+      failure: () => httpError(429),
+      expected: {
+        ok: false,
+        kind: "http",
+        rateLimited: true,
+        status: 429,
+        message: "Request failed with status code 429",
+      },
+    },
+    {
+      label: "503, which is also throttling",
+      failure: () => httpError(503),
+      expected: {
+        ok: false,
+        kind: "http",
+        rateLimited: true,
+        status: 503,
+        message: "Request failed with status code 503",
+      },
+    },
+    {
+      label: "400, which is not throttling",
+      failure: () => httpError(400),
+      expected: {
+        ok: false,
+        kind: "http",
+        rateLimited: false,
+        status: 400,
+        message: "Request failed with status code 400",
+      },
+    },
+    {
+      label: "a timeout, distinctly from an http failure",
+      failure: () =>
+        new AxiosError("timeout of 10000ms exceeded", "ECONNABORTED"),
+      expected: {
+        ok: false,
+        kind: "timeout",
+        rateLimited: false,
+        message: "timeout of 10000ms exceeded",
+      },
+    },
+    {
+      label: "a refused connection",
+      failure: () => new AxiosError("connect ECONNREFUSED", "ECONNREFUSED"),
+      expected: {
+        ok: false,
+        kind: "network",
+        rateLimited: false,
+        message: "connect ECONNREFUSED",
+      },
+    },
+    {
+      label: "a plain throw that is not an axios error",
+      failure: () => new Error("boom"),
+      expected: {
+        ok: false,
+        kind: "network",
+        rateLimited: false,
+        message: "boom",
+      },
+    },
+  ])("classifies $label", async ({ failure, expected }) => {
+    mockPost.mockRejectedValueOnce(failure());
 
-    mockPost.mockRejectedValueOnce(httpError(503));
-    expect(await requestSubscription("UCabc")).toEqual({
-      ok: false,
-      kind: "http",
-      rateLimited: true,
-      status: 503,
-      message: "Request failed with status code 503",
-    });
-  });
+    const result = await requestSubscription("UCabc");
 
-  it("marks other http failures as not rate limited", async () => {
-    mockPost.mockRejectedValueOnce(httpError(400));
-
-    expect(await requestSubscription("UCabc")).toEqual({
-      ok: false,
-      kind: "http",
-      rateLimited: false,
-      status: 400,
-      message: "Request failed with status code 400",
-    });
-  });
-
-  it("reports a timeout distinctly from an http failure", async () => {
-    mockPost.mockRejectedValueOnce(
-      new AxiosError("timeout of 10000ms exceeded", "ECONNABORTED")
-    );
-
-    expect(await requestSubscription("UCabc")).toEqual({
-      ok: false,
-      kind: "timeout",
-      rateLimited: false,
-      message: "timeout of 10000ms exceeded",
-    });
-  });
-
-  it("reports a connection failure as a network failure", async () => {
-    mockPost.mockRejectedValueOnce(
-      new AxiosError("connect ECONNREFUSED", "ECONNREFUSED")
-    );
-
-    expect(await requestSubscription("UCabc")).toEqual({
-      ok: false,
-      kind: "network",
-      rateLimited: false,
-      message: "connect ECONNREFUSED",
-    });
-  });
-
-  it("never rejects, even for a non-axios throw", async () => {
-    mockPost.mockRejectedValueOnce(new Error("boom"));
-
-    expect(await requestSubscription("UCabc")).toEqual({
-      ok: false,
-      kind: "network",
-      rateLimited: false,
-      message: "boom",
-    });
+    expect(result).toEqual(expected);
+    expect(
+      mockPost.mock.calls.map(
+        (call) => Object.fromEntries(new URLSearchParams(call[1]))["hub.topic"]
+      )
+    ).toEqual([topicForChannel("UCabc")]);
   });
 
   it("applies the configured timeout to a transport that never answers", async () => {
@@ -896,7 +908,8 @@ export async function requestSubscription(
 
 Run: `npm run test -- src/modules/youtube-pubsub/hub-client.spec.ts src/modules/youtube-pubsub/hub-client-misconfig.spec.ts`
 Expected: all 11 tests across the two files PASS (3 helper tests, 7 subscription
-tests, 1 misconfiguration test).
+tests — the classification `it.each` expands to 6 of them — and 1
+misconfiguration test).
 
 - [ ] **Step 6: Type check and lint**
 
@@ -1157,13 +1170,19 @@ describe("renewPubsubSubscriptions", () => {
     mockSleep.mockReset();
   });
 
-  it("asks for at most one batch", async () => {
-    const { findSpy } = fakeChannels(["UC1"]);
+  it("asks for at most one batch and handles exactly what it got", async () => {
+    const { writes, findSpy } = fakeChannels(["UC1"]);
 
     await renewPubsubSubscriptions();
 
-    expect(findSpy).toHaveBeenCalledTimes(1);
-    expect(findSpy.mock.calls[0][0]).toBe(PUBSUB_RENEW_BATCH_SIZE);
+    // One query, capped at the batch size — no paging, no second round.
+    expect(findSpy.mock.calls.map((call) => call[0])).toEqual([
+      PUBSUB_RENEW_BATCH_SIZE,
+    ]);
+    expect(writes).toEqual(["UC1"]);
+    expect(mockRequestSubscription.mock.calls.map((call) => call[0])).toEqual([
+      "UC1",
+    ]);
   });
 
   it("stamps the request time before sending the request", async () => {
@@ -1794,9 +1813,20 @@ describe("verification GET", () => {
       id: "UCabc",
       pubsubRequestedAt: new Date(),
     } as never);
-    jest
-      .spyOn(ChannelModel, "updateOne")
-      .mockRejectedValue(new Error("mongo down") as never);
+    // Records the attempt, then fails it: the stored expiry has to stay absent,
+    // which is what leaves the channel eligible for another renewal.
+    const stored = new Map<string, Date>();
+    const attempted: { id: string; expiresAt: Date }[] = [];
+    jest.spyOn(ChannelModel, "updateOne").mockImplementation(((
+      filter: { id: string },
+      update: { $set: { pubsubExpiresAt: Date } }
+    ) => {
+      attempted.push({
+        id: filter.id,
+        expiresAt: update.$set.pubsubExpiresAt,
+      });
+      return Promise.reject(new Error("mongo down")) as never;
+    }) as never);
     const app = await buildServer();
 
     const response = await app.inject({
@@ -1811,6 +1841,9 @@ describe("verification GET", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.body).toBe("challenge-value");
+    // The write was attempted for the right channel and left nothing behind.
+    expect(attempted.map((write) => write.id)).toEqual(["UCabc"]);
+    expect([...stored.keys()]).toEqual([]);
     await app.close();
   });
 
