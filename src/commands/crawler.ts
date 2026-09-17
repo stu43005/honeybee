@@ -1,4 +1,3 @@
-import fastifyExpress from "@fastify/express";
 import type { Job } from "agenda";
 import {
   ExtraData,
@@ -9,13 +8,10 @@ import {
 } from "holodex.js";
 import moment from "moment-timezone";
 import { setTimeout } from "timers/promises";
-import YouTubeNotifier from "youtube-notification";
 import {
-  PUBLIC_BASE_URL,
   HOLODEX_ALL_VTUBERS,
   HOLODEX_FETCH_ORG,
   HOLODEX_MAX_UPCOMING_HOURS,
-  YOUTUBE_PUBSUB_SECRET,
 } from "../constants.js";
 import ChannelModel from "../models/Channel.js";
 import VideoModel from "../models/Video.js";
@@ -27,14 +23,17 @@ import {
   updateChannelFromYoutube,
   updateVideoFromYoutube,
 } from "../modules/youtube.js";
+import { YoutubePubsubModule } from "../modules/youtube-pubsub/youtube-pubsub.js";
 
 export async function runCrawler() {
   const holoapi = getHolodex();
   const app = new Application();
   app.use(new MongodbModule());
   const { agenda } = app.use(new AgendaModule());
-  const { server: fastify } = app.http;
-  await fastify.register(fastifyExpress);
+  // Registered after AgendaModule, because its constructor looks that module up,
+  // and before app.init(), because its constructor adds the notification routes
+  // and fastify refuses to add routes once HttpServerModule has called listen().
+  app.use(new YoutubePubsubModule(app));
 
   await app.init();
 
@@ -215,65 +214,6 @@ export async function runCrawler() {
   void agenda.every("1 hour", JOB_HOLODEX_OUTDATE_CHANNEL);
 
   //#endregion holodex
-
-  //#region youtube pubsub
-
-  const enabledYtPubsub = !!PUBLIC_BASE_URL;
-  const ytNotifier = new YouTubeNotifier({
-    hubCallback: new URL("./notifications/youtube", PUBLIC_BASE_URL).toString(),
-    secret: YOUTUBE_PUBSUB_SECRET,
-    middleware: true,
-  });
-  fastify.use("/notifications/youtube", ytNotifier.listener());
-
-  if (enabledYtPubsub) {
-    const JOB_YOUTUBE_PUBSUB_SUBSCRIBE = "crawler youtube pubsub subscribe";
-    agenda.define(
-      JOB_YOUTUBE_PUBSUB_SUBSCRIBE,
-      async (job: Job): Promise<void> => {
-        if (!enabledYtPubsub) return;
-        for await (const channel of ChannelModel.findSubscribed().select(
-          "id name"
-        )) {
-          console.log(`Subscribing: [${channel.id}] ${channel.name}`);
-          ytNotifier.subscribe(channel.id);
-          await setTimeout(250);
-          await job.touch();
-        }
-      }
-    );
-    void agenda.every("12 hours", JOB_YOUTUBE_PUBSUB_SUBSCRIBE);
-  }
-
-  ytNotifier.on("subscribe", (data) => {
-    console.log(`Subscribed: ${data.channel} (lease=${data.lease_seconds}s)`);
-  });
-  ytNotifier.on("unsubscribe", (data) => {
-    console.log(`Unsubscribed: ${data.channel}`);
-  });
-  ytNotifier.on("denied", (data) => {
-    console.log(`Subscription denied: ${data.channel}`);
-  });
-  ytNotifier.on("notified", async (data) => {
-    try {
-      const result = await VideoModel.noticeFromNotification(data);
-      if (result.modifiedCount > 0) {
-        console.log(
-          `Pubsub: ${data.channel.name} (${data.channel.id}) already seen this video: [${data.video.id}] ${data.video.title}`
-        );
-      }
-      if (result.upsertedCount > 0) {
-        console.log(
-          `Pubsub: ${data.channel.name} (${data.channel.id}) new video: [${data.video.id}] ${data.video.title}`
-        );
-        await updateVideoFromYoutube([data.video.id]);
-      }
-    } catch (error) {
-      console.error(`An error occurred:`, error);
-    }
-  });
-
-  //#endregion youtube pubsub
 
   //#region youtube
 
