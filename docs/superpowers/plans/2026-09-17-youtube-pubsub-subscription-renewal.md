@@ -883,7 +883,7 @@ export async function requestSubscription(
 - [ ] **Step 5: Run both test files and watch them pass**
 
 Run: `npm run test -- src/modules/youtube-pubsub/hub-client.spec.ts src/modules/youtube-pubsub/hub-client-misconfig.spec.ts`
-Expected: all 11 tests across the two files PASS (3 helper tests, 7 subscription
+Expected: all 12 tests across the two files PASS (3 helper tests, 8 subscription
 tests — the classification `it.each` expands to 6 of them — and 1
 misconfiguration test).
 
@@ -891,6 +891,15 @@ misconfiguration test).
 
 Run: `npm run build && npm run lint`
 Expected: both exit without errors.
+
+Note what these two commands do **not** cover: `tsconfig.json` excludes
+`**/*.spec.ts` from the build, and ts-jest runs with `isolatedModules`, so it
+only transpiles. A type error that exists solely in a test file is therefore
+caught by neither gate (and `tsc -p tsconfig.eslint.json` is not a usable
+substitute — that config exists for eslint, and the repository's current test
+files do not type-check clean). That is why the test code in this plan states
+its types explicitly, for instance the `as const` on the status table in the
+renewal tests: getting it wrong fails silently rather than loudly.
 
 - [ ] **Step 7: Commit**
 
@@ -1247,7 +1256,9 @@ describe("renewPubsubSubscriptions", () => {
     ]);
   });
 
-  it.each([429, 503])(
+  // `as const` matters: without it the statuses widen to `number`, which the
+  // throttled variant of the result type does not accept.
+  it.each([429, 503] as const)(
     "stops the round as soon as the hub answers %i",
     async (status) => {
       const { writes } = fakeChannels(["UC1", "UC2", "UC3", "UC4", "UC5"]);
