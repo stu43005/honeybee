@@ -153,3 +153,40 @@ export const OAUTH_STATE_TTL_MS = Number(
 export const YOUTUBE_DM_MAX_CHANNELS_PER_USER = Number(
   process.env.YOUTUBE_DM_MAX_CHANNELS_PER_USER ?? 10
 );
+
+// --- YouTube PubSubHubbub subscription renewal ---
+
+// Renew a day before the lease ends, so a full day of scheduling outage still
+// does not drop a subscription.
+export const PUBSUB_RENEW_BEFORE_MS = 24 * 60 * 60 * 1000;
+
+// Shortest retry interval for one channel, and also the window in which a
+// verification is accepted. Deliberately larger than the 10 minute schedule
+// interval so candidates rotate instead of the same batch retrying back to back.
+export const PUBSUB_REQUEST_COOLDOWN_MS = 15 * 60 * 1000;
+
+// Channels handled per round, which is also the loss ceiling of one crash or
+// one throttling response.
+export const PUBSUB_RENEW_BATCH_SIZE = 5;
+
+// Gap between two hub requests inside a round.
+export const PUBSUB_REQUEST_SPACING_MS = 250;
+
+// Fallback when the hub supplies no lease_seconds, or an invalid one. Keeps the
+// channel on a renewal cycle instead of never being renewed again.
+export const PUBSUB_DEFAULT_LEASE_MS = 24 * 60 * 60 * 1000;
+
+// Upper bound for lease_seconds. The WebSub security section recommends short
+// leases and gives 10 days as a good default; anything above is clamped so a
+// bogus or forged value cannot push a channel out of renewal indefinitely.
+export const PUBSUB_MAX_LEASE_MS = 10 * 24 * 60 * 60 * 1000;
+
+// Timeout for a single hub request. axios defaults to timeout: 0 (wait
+// forever), so without this a hung connection never lets the round finish.
+export const PUBSUB_REQUEST_TIMEOUT_MS = 10 * 1000;
+
+// Timeout for every YouTube Data API call. gaxios has no default timeout (it
+// only builds an AbortSignal when one is passed), so an unanswered request can
+// hang forever. Looser than the hub request because one call carries up to 50
+// ids; still far below agenda's 10 minute lockLifetime.
+export const YOUTUBE_API_TIMEOUT_MS = 15 * 1000;
