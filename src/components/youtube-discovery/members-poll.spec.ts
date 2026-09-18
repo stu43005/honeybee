@@ -224,6 +224,37 @@ describe("pollMembersPlaylists", () => {
     expect(mockProbePlaylist).toHaveBeenCalledTimes(1);
   });
 
+  it("warns with the channel id, kind, and message for an inconclusive probe", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    fakeChannels([{ id: "UC1" }], () => current);
+    mockProbePlaylist.mockResolvedValue({
+      kind: "unknown",
+      message: "socket hang up",
+    });
+
+    await pollMembersPlaylists();
+
+    // Exactly one warning, and it must carry enough to tell an outage apart
+    // from a quiet round: which channel, which non-answer, and why.
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [logged] = warn.mock.calls[0] ?? [];
+    expect(logged).toEqual(expect.stringContaining("UC1"));
+    expect(logged).toEqual(expect.stringContaining("unknown"));
+    expect(logged).toEqual(expect.stringContaining("socket hang up"));
+  });
+
+  it("logs exactly one warning when the probe throws, not two", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    fakeChannels([{ id: "UC1" }], () => current);
+    mockProbePlaylist.mockRejectedValue(new Error("boom"));
+
+    await pollMembersPlaylists();
+
+    // The catch's own warning must not be joined by a second one from the
+    // inconclusive-result check — that check must never run for a throw.
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
   it("does not renew a stale verdict when a re-probe fails", async () => {
     const store = fakeChannels(
       [

@@ -44,6 +44,15 @@ async function probeRound(now: Date): Promise<number> {
     };
     try {
       result = await probePlaylist(membersPlaylistId(channel.id));
+      // Neither an answer nor a thrown error — log it, or a sustained oEmbed
+      // outage (every candidate coming back inconclusive) looks identical to a
+      // quiet round where nothing new showed up.
+      if (result.kind !== "present" && result.kind !== "absent") {
+        console.warn(
+          `Members probe for [${channel.id}] was inconclusive (${result.kind})` +
+            (result.kind === "unknown" ? `: ${result.message}` : "")
+        );
+      }
     } catch (error) {
       console.warn(`Members probe failed for [${channel.id}]:`, error);
     }

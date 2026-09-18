@@ -270,6 +270,37 @@ describe("probeMissingVideos", () => {
     }
   );
 
+  it("warns with the video id, kind, and message for an inconclusive probe", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    fakeVideos([deletedMissing("v1", RECENT_AVAILABLE)]);
+    mockProbeVideo.mockResolvedValue({
+      kind: "unknown",
+      message: "socket hang up",
+    });
+
+    await probeMissingVideos();
+
+    // Exactly one warning, and it must carry enough to tell an outage apart
+    // from a quiet round: which video, which non-answer, and why.
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [logged] = warn.mock.calls[0] ?? [];
+    expect(logged).toEqual(expect.stringContaining("v1"));
+    expect(logged).toEqual(expect.stringContaining("unknown"));
+    expect(logged).toEqual(expect.stringContaining("socket hang up"));
+  });
+
+  it("logs exactly one warning when the probe throws, not two", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    fakeVideos([deletedMissing("v1", RECENT_AVAILABLE)]);
+    mockProbeVideo.mockRejectedValue(new Error("boom"));
+
+    await probeMissingVideos();
+
+    // The catch's own warning must not be joined by a second one from the
+    // inconclusive-result check — that check must never run for a throw.
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
   it("drops a stale absent result rather than erasing a new refresh request", async () => {
     const store = fakeVideos([deletedMissing("v1", RECENT_AVAILABLE)]);
     // Between selection and the answer, pubsub re-announces the video and asks

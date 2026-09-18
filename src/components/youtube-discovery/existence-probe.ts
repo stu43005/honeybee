@@ -44,10 +44,19 @@ export async function probeMissingVideos(): Promise<void> {
     // Only a 200 is evidence the video came back. Everything else — still
     // missing, malformed id, unanswered question, or a probe that threw — means
     // the same thing here: nothing to restore, so just move it to the back of
-    // the rotation.
+    // the rotation. A non-answer is still worth a log: it is how a sustained
+    // oEmbed outage (every candidate coming back inconclusive) is told apart
+    // from a quiet round where everything really is still missing.
     let restore = false;
     try {
-      restore = (await probeVideo(video.id)).kind === "present";
+      const result = await probeVideo(video.id);
+      restore = result.kind === "present";
+      if (result.kind !== "present" && result.kind !== "absent") {
+        console.warn(
+          `Existence probe for [${video.id}] was inconclusive (${result.kind})` +
+            (result.kind === "unknown" ? `: ${result.message}` : "")
+        );
+      }
     } catch (error) {
       console.warn(`Existence probe failed for [${video.id}]:`, error);
     }
