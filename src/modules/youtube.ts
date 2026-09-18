@@ -6,7 +6,10 @@ import assert from "node:assert";
 import { GOOGLE_API_KEY, YOUTUBE_API_TIMEOUT_MS } from "../constants.js";
 import { HoneybeeStatus } from "../interfaces.js";
 import ChannelModel, { type Channel } from "../models/Channel.js";
-import VideoModel, { type Video } from "../models/Video.js";
+import VideoModel, {
+  type DiscoveredVideo,
+  type Video,
+} from "../models/Video.js";
 
 let youtubeApi: youtube_v3.Youtube | undefined;
 
@@ -310,6 +313,98 @@ export async function updateChannelByHandle(
   channel.crawledAt = new Date();
   await channel.save();
   return channel;
+}
+
+/**
+ * Result of reading one playlist page. Returned rather than thrown so a caller
+ * looping over channels can tell "this one playlist is gone" apart from "the
+ * whole key is out of quota", which is the only failure that should stop a
+ * round.
+ */
+export type PlaylistScanResult =
+  | { ok: true }
+  | { ok: false; kind: "quotaExceeded"; message: string }
+  | { ok: false; kind: "notFound"; message: string }
+  | { ok: false; kind: "error"; message: string };
+
+/**
+ * Reads the first page of a playlist and creates whatever videos are new.
+ *
+ * Takes a playlist id, not a channel id: the playlist is the entire input, and
+ * hardcoding one channel's members-only playlist would make the function
+ * useless for any other playlist.
+ *
+ * Does NOT hydrate metadata. `playlistItems.list` carries no
+ * liveStreamingDetails, duration, uploadStatus or statistics, so the videos are
+ * created bare and the existing `crawler youtube update` job fills them in
+ * within its fixed budget — which is what keeps this subsystem's quota cost a
+ * constant instead of scaling with how much is discovered.
+ */
+export async function updateVideoFromPlaylist(
+  playlistId: string
+): Promise<PlaylistScanResult> {
+  const youtube = getYoutubeApi();
+  try {
+    const response = await youtube.playlistItems.list(
+      {
+        part: ["snippet", "contentDetails"],
+        playlistId,
+        maxResults: 50,
+      },
+      // Retries belong in this second argument; googleapis assembles its
+      // request options from it alone. They are off because every attempt costs
+      // a quota unit even when it fails, and the rotation is already the retry
+      // — a channel that fails keeps its place in line and comes back next lap.
+      { retry: false }
+    );
+
+    const entries: DiscoveredVideo[] = [];
+    for (const item of response?.data?.items ?? []) {
+      const videoId = item.contentDetails?.videoId;
+      const title = item.snippet?.title;
+      // The owner of the video, not whoever added it to the playlist. For an
+      // auto-generated uploads playlist these agree, but only this one is right
+      // in general.
+      const channelId = item.snippet?.videoOwnerChannelId;
+      if (!videoId || !title || !channelId) continue;
+      const publishedAt = item.contentDetails?.videoPublishedAt;
+      entries.push({
+        videoId,
+        title,
+        channelId,
+        publishedAt: publishedAt ? new Date(publishedAt) : undefined,
+      });
+    }
+
+    await VideoModel.noticeUnknownVideos(entries);
+    return { ok: true };
+  } catch (error) {
+    // gaxios puts the status on the error itself as well as on the response,
+    // and googleapis-common passes its errors through unwrapped.
+    const failure = error as {
+      status?: number;
+      response?: {
+        status?: number;
+        data?: { error?: { errors?: { reason?: string }[] } };
+      };
+    };
+    const status = failure.status ?? failure.response?.status;
+    const reason = failure.response?.data?.error?.errors?.[0]?.reason;
+    const message = error instanceof Error ? error.message : String(error);
+
+    // Not every 403 is a dead key. This endpoint documents
+    // `playlistItemsNotAccessible` for a playlist the caller may not read,
+    // which says nothing about the remaining channels — an exhausted budget is
+    // the one condition that justifies abandoning the round, so it is the one
+    // reason matched here. Anything else, recognised or not, is an ordinary
+    // failure: continuing costs a few wasted units at worst, whereas stopping
+    // on a single unreadable playlist would silently halve a round's coverage.
+    if (status === 403 && reason === "quotaExceeded") {
+      return { ok: false, kind: "quotaExceeded", message };
+    }
+    if (status === 404) return { ok: false, kind: "notFound", message };
+    return { ok: false, kind: "error", message };
+  }
 }
 
 export function validateChannelId(channelId: string): boolean {

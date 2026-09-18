@@ -14,9 +14,11 @@ process.env.GOOGLE_API_KEY = "test-key";
 
 const mockVideosList = jest.fn<() => Promise<unknown>>();
 const mockChannelsList = jest.fn<() => Promise<unknown>>();
+const mockPlaylistItemsList = jest.fn<() => Promise<unknown>>();
 const mockYoutube = jest.fn(() => ({
   videos: { list: mockVideosList },
   channels: { list: mockChannelsList },
+  playlistItems: { list: mockPlaylistItemsList },
 }));
 
 jest.unstable_mockModule("googleapis", () => ({
@@ -25,8 +27,12 @@ jest.unstable_mockModule("googleapis", () => ({
 
 const { default: VideoModel } = await import("../models/Video.js");
 const { default: ChannelModel } = await import("../models/Channel.js");
-const { getYoutubeApi, updateVideoFromYoutube, updateChannelFromYoutube } =
-  await import("./youtube.js");
+const {
+  getYoutubeApi,
+  updateVideoFromYoutube,
+  updateChannelFromYoutube,
+  updateVideoFromPlaylist,
+} = await import("./youtube.js");
 const { YOUTUBE_API_TIMEOUT_MS } = await import("../constants.js");
 
 // A minimal mutable stand-in for a Video document.
@@ -355,6 +361,187 @@ describe("getYoutubeApi", () => {
       version: "v3",
       auth: "test-key",
       timeout: YOUTUBE_API_TIMEOUT_MS,
+    });
+  });
+});
+
+describe("updateVideoFromPlaylist", () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+    mockPlaylistItemsList.mockReset();
+  });
+
+  function playlistItem(videoId: string) {
+    return {
+      snippet: {
+        title: `Title ${videoId}`,
+        // The channel that added the item to the playlist, which is NOT what
+        // should be persisted.
+        channelId: "UC-adder",
+        videoOwnerChannelId: "UC-owner",
+        // When it was added to the playlist, also not what should be persisted.
+        publishedAt: "2020-01-01T00:00:00Z",
+      },
+      contentDetails: {
+        videoId,
+        videoPublishedAt: "2026-09-10T12:00:00Z",
+      },
+    };
+  }
+
+  it("asks for one page and disables retries in the request options", async () => {
+    mockPlaylistItemsList.mockResolvedValue({ data: { items: [] } });
+    jest.spyOn(VideoModel, "noticeUnknownVideos").mockResolvedValue(undefined);
+
+    await updateVideoFromPlaylist("UUMOabc");
+
+    const [params, options] = mockPlaylistItemsList.mock
+      .calls[0] as unknown as [
+      Record<string, unknown>,
+      Record<string, unknown>,
+    ];
+    expect(params).toEqual({
+      part: ["snippet", "contentDetails"],
+      playlistId: "UUMOabc",
+      maxResults: 50,
+    });
+    // Retries must sit in the SECOND argument: googleapis builds its request
+    // options from that one only, and anything left in the first argument is
+    // sent to YouTube as a query parameter while retries keep happening.
+    expect(options).toEqual({ retry: false });
+  });
+
+  it("maps the owner channel and the video publish time, not the playlist ones", async () => {
+    mockPlaylistItemsList.mockResolvedValue({
+      data: { items: [playlistItem("vid1")] },
+    });
+    const notice = jest
+      .spyOn(VideoModel, "noticeUnknownVideos")
+      .mockResolvedValue(undefined);
+
+    await updateVideoFromPlaylist("UUMOabc");
+
+    expect(notice.mock.calls[0]?.[0]).toEqual([
+      {
+        videoId: "vid1",
+        title: "Title vid1",
+        channelId: "UC-owner",
+        publishedAt: new Date("2026-09-10T12:00:00Z"),
+      },
+    ]);
+  });
+
+  it("drops items that lack the fields a document requires", async () => {
+    mockPlaylistItemsList.mockResolvedValue({
+      data: {
+        items: [
+          playlistItem("vid1"),
+          { snippet: { title: "No id" }, contentDetails: {} },
+        ],
+      },
+    });
+    const notice = jest
+      .spyOn(VideoModel, "noticeUnknownVideos")
+      .mockResolvedValue(undefined);
+
+    await updateVideoFromPlaylist("UUMOabc");
+
+    expect(
+      (notice.mock.calls[0]?.[0] as { videoId: string }[]).map(
+        (entry) => entry.videoId
+      )
+    ).toEqual(["vid1"]);
+  });
+
+  // gaxios sets `status` on the error as well as on `response`, and the
+  // YouTube body puts the machine-readable reason in error.errors[0].reason.
+  function apiError(status: number, reason?: string) {
+    return Object.assign(new Error(`HTTP ${status}`), {
+      status,
+      response: {
+        status,
+        data: reason ? { error: { errors: [{ reason }] } } : undefined,
+      },
+    });
+  }
+
+  it("reports a 403 with reason quotaExceeded as quota exhaustion", async () => {
+    mockPlaylistItemsList.mockRejectedValue(apiError(403, "quotaExceeded"));
+
+    await expect(updateVideoFromPlaylist("UUMOabc")).resolves.toEqual({
+      ok: false,
+      kind: "quotaExceeded",
+      message: "HTTP 403",
+    });
+  });
+
+  it("does not stop the round for a rate-limit 403", async () => {
+    // Rate limiting is not an exhausted budget, and stopping is reserved for
+    // the one condition where every remaining channel is certain to fail.
+    mockPlaylistItemsList.mockRejectedValue(apiError(403, "rateLimitExceeded"));
+
+    const result = await updateVideoFromPlaylist("UUMOabc");
+
+    expect(result).toEqual({ ok: false, kind: "error", message: "HTTP 403" });
+  });
+
+  it("does not call an unreadable playlist a quota failure", async () => {
+    // Documented for this endpoint. It describes one playlist, not the key, so
+    // treating it as quota exhaustion would abandon every channel behind it.
+    mockPlaylistItemsList.mockRejectedValue(
+      apiError(403, "playlistItemsNotAccessible")
+    );
+
+    const result = await updateVideoFromPlaylist("UUMOabc");
+
+    expect(result).toEqual({
+      ok: false,
+      kind: "error",
+      message: "HTTP 403",
+    });
+  });
+
+  it("does not guess quota exhaustion from a 403 with no reason", async () => {
+    mockPlaylistItemsList.mockRejectedValue(apiError(403));
+
+    const result = await updateVideoFromPlaylist("UUMOabc");
+
+    // Continuing wastes a few units at worst; stopping wrongly costs the round.
+    expect(result).toEqual({
+      ok: false,
+      kind: "error",
+      message: "HTTP 403",
+    });
+  });
+
+  it("reports a 404 playlist without claiming the quota is gone", async () => {
+    mockPlaylistItemsList.mockRejectedValue(apiError(404));
+
+    await expect(updateVideoFromPlaylist("UUMOabc")).resolves.toEqual({
+      ok: false,
+      kind: "notFound",
+      message: "HTTP 404",
+    });
+  });
+
+  it("reports any other failure as a plain error", async () => {
+    mockPlaylistItemsList.mockRejectedValue(new Error("socket hang up"));
+
+    await expect(updateVideoFromPlaylist("UUMOabc")).resolves.toEqual({
+      ok: false,
+      kind: "error",
+      message: "socket hang up",
+    });
+  });
+
+  it("returns ok when the page was read", async () => {
+    mockPlaylistItemsList.mockResolvedValue({
+      data: { items: [playlistItem("vid1")] },
+    });
+    jest.spyOn(VideoModel, "noticeUnknownVideos").mockResolvedValue(undefined);
+
+    await expect(updateVideoFromPlaylist("UUMOabc")).resolves.toEqual({
+      ok: true,
     });
   });
 });
