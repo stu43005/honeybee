@@ -1237,18 +1237,25 @@ describe("updateVideoFromPlaylist", () => {
     });
   }
 
-  it.each(["quotaExceeded", "rateLimitExceeded"] as const)(
-    "reports a 403 with reason %s as quota exhaustion",
-    async (reason) => {
-      mockPlaylistItemsList.mockRejectedValue(apiError(403, reason));
+  it("reports a 403 with reason quotaExceeded as quota exhaustion", async () => {
+    mockPlaylistItemsList.mockRejectedValue(apiError(403, "quotaExceeded"));
 
-      await expect(updateVideoFromPlaylist("UUMOabc")).resolves.toEqual({
-        ok: false,
-        kind: "quotaExceeded",
-        message: "HTTP 403",
-      });
-    }
-  );
+    await expect(updateVideoFromPlaylist("UUMOabc")).resolves.toEqual({
+      ok: false,
+      kind: "quotaExceeded",
+      message: "HTTP 403",
+    });
+  });
+
+  it("does not stop the round for a rate-limit 403", async () => {
+    // Rate limiting is not an exhausted budget, and stopping is reserved for
+    // the one condition where every remaining channel is certain to fail.
+    mockPlaylistItemsList.mockRejectedValue(apiError(403, "rateLimitExceeded"));
+
+    const result = await updateVideoFromPlaylist("UUMOabc");
+
+    expect(result).toEqual({ ok: false, kind: "error", message: "HTTP 403" });
+  });
 
   it("does not call an unreadable playlist a quota failure", async () => {
     // Documented for this endpoint. It describes one playlist, not the key, so
@@ -1551,15 +1558,12 @@ export async function updateVideoFromPlaylist(
 
     // Not every 403 is a dead key. This endpoint documents
     // `playlistItemsNotAccessible` for a playlist the caller may not read,
-    // which says nothing about the remaining channels — only the reasons that
-    // describe an exhausted budget justify abandoning the round. Anything
-    // unrecognised is reported as an ordinary failure: continuing then costs a
-    // few wasted units at worst, whereas stopping on a single unreadable
-    // playlist would silently halve a round's coverage.
-    if (
-      status === 403 &&
-      (reason === "quotaExceeded" || reason === "rateLimitExceeded")
-    ) {
+    // which says nothing about the remaining channels — an exhausted budget is
+    // the one condition that justifies abandoning the round, so it is the one
+    // reason matched here. Anything else, recognised or not, is an ordinary
+    // failure: continuing costs a few wasted units at worst, whereas stopping
+    // on a single unreadable playlist would silently halve a round's coverage.
+    if (status === 403 && reason === "quotaExceeded") {
       return { ok: false, kind: "quotaExceeded", message };
     }
     if (status === 404) return { ok: false, kind: "notFound", message };
@@ -2342,6 +2346,41 @@ describe("pollMembersPlaylists", () => {
     expect(store.get("UC2")?.membersCrawledAt).toEqual(NOW);
   });
 
+  it("still stamps when the playlist helper throws outright", async () => {
+    const store = fakeChannels(
+      [
+        {
+          id: "UC1",
+          hasMembersPlaylist: true,
+          membersProbeNextAt: new Date(NOW.getTime() + 1),
+        },
+      ],
+      () => current
+    );
+    // The helper turns API failures into results, but it can still throw before
+    // reaching that point. A skipped stamp would park this channel at the head
+    // of the rotation and let it reclaim a paid slot every single round.
+    mockUpdateVideoFromPlaylist.mockRejectedValue(new Error("no api key"));
+
+    await pollMembersPlaylists();
+
+    expect(store.get("UC1")?.membersCrawledAt).toEqual(NOW);
+  });
+
+  it("still sets a probe deadline when the probe throws outright", async () => {
+    const store = fakeChannels([{ id: "UC1" }], () => current);
+    mockProbePlaylist.mockRejectedValue(new Error("boom"));
+
+    await pollMembersPlaylists();
+
+    // Treated as inconclusive: no verdict is written, and the hour-long
+    // deadline is what stops it from reclaiming a probe slot next round.
+    expect(store.get("UC1")?.hasMembersPlaylist).toBeUndefined();
+    expect(store.get("UC1")?.membersProbeNextAt).toEqual(
+      new Date(NOW.getTime() + YOUTUBE_MEMBERS_PROBE_RETRY_MS)
+    );
+  });
+
   it("keeps going when a timestamp write rejects", async () => {
     fakeChannels(
       [
@@ -2427,7 +2466,7 @@ import {
 } from "../../constants.js";
 import ChannelModel from "../../models/Channel.js";
 import { updateVideoFromPlaylist } from "../../modules/youtube.js";
-import { probePlaylist } from "./oembed.js";
+import { probePlaylist, type OembedResult } from "./oembed.js";
 
 /**
  * A channel's members-only uploads playlist id. YouTube derives it from the
@@ -2452,41 +2491,52 @@ async function probeRound(now: Date): Promise<number> {
 
   for (let index = 0; index < candidates.length; index++) {
     const channel = candidates[index];
+
+    // probePlaylist classifies its own failures into a result, but catching
+    // anyway keeps an unexpected throw from skipping the deadline write below.
+    // Without a deadline the channel stays at the head of the queue and
+    // reclaims a probe slot every round.
+    let result: OembedResult = {
+      kind: "unknown",
+      message: "probe did not run",
+    };
     try {
-      const result = await probePlaylist(membersPlaylistId(channel.id));
+      result = await probePlaylist(membersPlaylistId(channel.id));
+    } catch (error) {
+      console.warn(`Members probe failed for [${channel.id}]:`, error);
+    }
 
-      // The deadline carries the answer's shelf life. Only `present` and
-      // `absent` are answers, and they are good for a week because whether a
-      // channel offers memberships almost never changes.
-      //
-      // Everything else — a malformed-id 400, a 5xx, a timeout — taught us
-      // nothing, so it may only defer the question by an hour and must leave
-      // any existing verdict alone. Both halves matter: the scan phase ignores
-      // channels without a `true` verdict, so a week-long deferral would hide a
-      // channel's members-only videos for a week after one transient failure,
-      // and on first rollout every channel takes exactly that path. Writing a
-      // verdict here instead would be worse still — repeated failures could
-      // keep renewing an expired "no memberships" answer indefinitely.
-      const conclusive = result.kind === "present" || result.kind === "absent";
-      const update: { membersProbeNextAt: Date; hasMembersPlaylist?: boolean } =
-        conclusive
-          ? {
-              membersProbeNextAt: new Date(
-                now.getTime() + YOUTUBE_MEMBERS_PROBE_TTL_MS
-              ),
-              hasMembersPlaylist: result.kind === "present",
-            }
-          : {
-              membersProbeNextAt: new Date(
-                now.getTime() + YOUTUBE_MEMBERS_PROBE_RETRY_MS
-              ),
-            };
+    // The deadline carries the answer's shelf life. Only `present` and
+    // `absent` are answers, and they are good for a week because whether a
+    // channel offers memberships almost never changes.
+    //
+    // Everything else — a malformed-id 400, a 5xx, a timeout — taught us
+    // nothing, so it may only defer the question by an hour and must leave
+    // any existing verdict alone. Both halves matter: the scan phase ignores
+    // channels without a `true` verdict, so a week-long deferral would hide a
+    // channel's members-only videos for a week after one transient failure,
+    // and on first rollout every channel takes exactly that path. Writing a
+    // verdict here instead would be worse still — repeated failures could
+    // keep renewing an expired "no memberships" answer indefinitely.
+    const conclusive = result.kind === "present" || result.kind === "absent";
+    const update: { membersProbeNextAt: Date; hasMembersPlaylist?: boolean } =
+      conclusive
+        ? {
+            membersProbeNextAt: new Date(
+              now.getTime() + YOUTUBE_MEMBERS_PROBE_TTL_MS
+            ),
+            hasMembersPlaylist: result.kind === "present",
+          }
+        : {
+            membersProbeNextAt: new Date(
+              now.getTime() + YOUTUBE_MEMBERS_PROBE_RETRY_MS
+            ),
+          };
 
+    try {
       await ChannelModel.updateOne({ id: channel.id }, { $set: update });
     } catch (error) {
-      // Covers the write as well as the probe: a rejected update must not cost
-      // the remaining candidates their turn.
-      console.warn(`Members probe failed for [${channel.id}]:`, error);
+      console.warn(`Members probe could not stamp [${channel.id}]:`, error);
     }
 
     if (index < candidates.length - 1) {
@@ -2510,6 +2560,7 @@ async function scanRound(now: Date): Promise<void> {
   for (let index = 0; index < candidates.length; index++) {
     const channel = candidates[index];
     let outOfQuota = false;
+
     try {
       const result = await updateVideoFromPlaylist(
         membersPlaylistId(channel.id)
@@ -2527,18 +2578,26 @@ async function scanRound(now: Date): Promise<void> {
           `Members poll failed for [${channel.id}] (${result.kind}): ${result.message}`
         );
       }
+    } catch (error) {
+      // updateVideoFromPlaylist classifies API failures into a result, but it
+      // can still throw before it gets there — getYoutubeApi() asserts on a
+      // missing key, for one. Catching separately is what lets the stamp below
+      // still run.
+      console.warn(`Members poll failed for [${channel.id}]:`, error);
+    }
 
-      // Stamped on every outcome, the quota one included. This channel was
-      // attempted and its unit is already spent, so it must move to the back of
-      // the rotation like any other; only the channels never reached keep their
-      // place at the front.
+    // Its own try, outside the one above. This channel was attempted and its
+    // unit is already spent — quota failures included — so it must move to the
+    // back of the rotation like any other; only channels never reached keep
+    // their place at the front. Its own failure must not escape either, or one
+    // rejected write would end the round.
+    try {
       await ChannelModel.updateOne(
         { id: channel.id },
         { $set: { membersCrawledAt: now } }
       );
     } catch (error) {
-      // Covers the write as well as the scan, for the same reason as above.
-      console.warn(`Members poll failed for [${channel.id}]:`, error);
+      console.warn(`Members poll could not stamp [${channel.id}]:`, error);
     }
 
     if (outOfQuota) return;
@@ -2564,7 +2623,7 @@ export async function pollMembersPlaylists(): Promise<void> {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `npm run test -- src/components/youtube-discovery/members-poll.spec.ts`
-Expected: PASS, 15 tests (the TTL case runs twice via `it.each`).
+Expected: PASS, 17 tests (the TTL case runs twice via `it.each`).
 
 - [ ] **Step 5: Verify types and lint**
 
@@ -2772,19 +2831,30 @@ describe("probeMissingVideos", () => {
     );
   });
 
-  it("fills one bucket even when the other is empty", async () => {
-    fakeVideos([
-      deletedMissing("old1", OLD_AVAILABLE),
-      deletedMissing("old2", OLD_AVAILABLE),
-    ]);
+  it.each([true, false])(
+    "leaves the populated bucket its full allocation when recent=%s is empty",
+    async (recentIsEmpty) => {
+      // N+1 candidates in the populated bucket, so "took exactly N" is a real
+      // statement about its allocation rather than about how few there were.
+      const populated = Array.from(
+        { length: YOUTUBE_EXISTENCE_PROBE_BUCKET_SIZE + 1 },
+        (_, i) =>
+          deletedMissing(
+            `v${i}`,
+            recentIsEmpty ? OLD_AVAILABLE : RECENT_AVAILABLE
+          )
+      );
+      fakeVideos(populated);
 
-    await probeMissingVideos();
+      await probeMissingVideos();
 
-    expect(mockProbeVideo.mock.calls.map((call) => call[0]).sort()).toEqual([
-      "old1",
-      "old2",
-    ]);
-  });
+      // An empty bucket must not donate its slots, and must not cost the other
+      // one any either.
+      expect(mockProbeVideo).toHaveBeenCalledTimes(
+        YOUTUBE_EXISTENCE_PROBE_BUCKET_SIZE
+      );
+    }
+  );
 
   it("never probes a video a timeout heuristic marked Missing", async () => {
     const store = fakeVideos([
@@ -3049,7 +3119,7 @@ export async function probeMissingVideos(): Promise<void> {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `npm run test -- src/components/youtube-discovery/existence-probe.spec.ts`
-Expected: PASS, 14 tests (the timestamp-only case runs three times via `it.each`).
+Expected: PASS, 15 tests (`it.each` contributes two empty-bucket cases and three timestamp-only ones).
 
 - [ ] **Step 5: Verify types and lint**
 
