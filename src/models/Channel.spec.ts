@@ -175,3 +175,79 @@ describe("Channel.findPubsubRenewalCandidates", () => {
     expect(calls.select).toEqual(["id name"]);
   });
 });
+
+describe("Channel discovery candidate queries", () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  // Captures the arguments the static hands to find()/and()/sort()/limit()
+  // without touching a database. Each method returns the same recorder so the
+  // chain keeps working.
+  function recordQuery() {
+    const calls: { and: unknown[]; sort: unknown[]; limit: number[] } = {
+      and: [],
+      sort: [],
+      limit: [],
+    };
+    const chain: Record<string, unknown> = {};
+    chain.and = (clauses: unknown[]) => {
+      // Spread, so the recorded value is the list of clauses rather than a
+      // list of calls each holding a list — the assertions below read as the
+      // filter that reaches Mongo.
+      calls.and.push(...clauses);
+      return chain;
+    };
+    chain.sort = (order: unknown) => {
+      calls.sort.push(order);
+      return chain;
+    };
+    chain.limit = (n: number) => {
+      calls.limit.push(n);
+      return chain;
+    };
+    chain.select = () => chain;
+    jest.spyOn(ChannelModel, "findSubscribed").mockReturnValue(chain as never);
+    return calls;
+  }
+
+  it("orders feed candidates by the oldest fetch and caps the batch", () => {
+    const calls = recordQuery();
+
+    ChannelModel.findFeedPollCandidates(7);
+
+    expect(calls.sort).toEqual([{ feedCrawledAt: 1 }]);
+    expect(calls.limit).toEqual([7]);
+    // Never-fetched channels must be eligible, so the query cannot demand an
+    // existing timestamp.
+    expect(calls.and).toEqual([]);
+  });
+
+  it("selects members-probe candidates whose next probe time has arrived", () => {
+    const now = new Date("2026-09-18T00:00:00.000Z");
+    const calls = recordQuery();
+
+    ChannelModel.findMembersProbeCandidates(3, now);
+
+    expect(calls.and).toEqual([
+      {
+        $or: [
+          { membersProbeNextAt: null },
+          { membersProbeNextAt: { $lt: now } },
+        ],
+      },
+    ]);
+    expect(calls.sort).toEqual([{ membersProbeNextAt: 1 }]);
+    expect(calls.limit).toEqual([3]);
+  });
+
+  it("scans only channels already known to have a members playlist", () => {
+    const calls = recordQuery();
+
+    ChannelModel.findMembersPollCandidates(15);
+
+    expect(calls.and).toEqual([{ hasMembersPlaylist: true }]);
+    expect(calls.sort).toEqual([{ membersCrawledAt: 1 }]);
+    expect(calls.limit).toEqual([15]);
+  });
+});

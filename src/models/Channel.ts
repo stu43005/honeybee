@@ -24,6 +24,9 @@ import { setIfDefine } from "../util.js";
 @index({ extraCrawl: 1, isInactive: 1, hbIgnore: 1, deleted: 1 })
 @index({ updatedAt: 1 })
 @index({ pubsubExpiresAt: 1, pubsubRequestedAt: 1 })
+@index({ feedCrawledAt: 1 })
+@index({ membersProbeNextAt: 1 })
+@index({ hasMembersPlaylist: 1, membersCrawledAt: 1 })
 export class Channel extends TimeStamps {
   @prop({ required: true, unique: true })
   public id!: string;
@@ -89,6 +92,31 @@ export class Channel extends TimeStamps {
   /** When the subscription expires, derived from the lease the verification carried. */
   @prop()
   public pubsubExpiresAt?: Date;
+
+  /** When we last fetched this channel's RSS feed. */
+  @prop()
+  public feedCrawledAt?: Date;
+
+  /**
+   * Whether the channel has a members-only uploads playlist. Stays unset until
+   * a probe reaches a conclusion, and the playlist scan only accepts `true`, so
+   * an unset channel is never scanned.
+   */
+  @prop()
+  public hasMembersPlaylist?: boolean;
+
+  /**
+   * Earliest time the existence probe may run for this channel again. A
+   * conclusive answer pushes it out by the long TTL, an inconclusive one by the
+   * short retry — storing the deadline rather than the last attempt is what
+   * stops a failed re-probe from renewing a stale verdict for another week.
+   */
+  @prop()
+  public membersProbeNextAt?: Date;
+
+  /** When we last read the members-only uploads playlist. */
+  @prop()
+  public membersCrawledAt?: Date;
 
   public getUrl(this: DocumentType<Channel>): string {
     return Channel.getUrl(this);
@@ -237,6 +265,63 @@ export class Channel extends TimeStamps {
         },
       ])
       .sort({ pubsubRequestedAt: 1 })
+      .limit(limit)
+      .select("id name");
+  }
+
+  /**
+   * Channels whose RSS feed is due a fetch: the least recently fetched first,
+   * with never-fetched channels (null sorts first) ahead of them.
+   */
+  public static findFeedPollCandidates(
+    this: ReturnModelType<typeof Channel>,
+    limit: number
+  ) {
+    return this.findSubscribed()
+      .sort({ feedCrawledAt: 1 })
+      .limit(limit)
+      .select("id name");
+  }
+
+  /**
+   * Channels due an existence probe for their members-only uploads playlist.
+   * The stored timestamp is a deadline, not a history: a conclusive answer sets
+   * it a week out and an inconclusive one an hour out, so this single
+   * comparison gives both a long cache for answers and a short retry for
+   * failures.
+   */
+  public static findMembersProbeCandidates(
+    this: ReturnModelType<typeof Channel>,
+    limit: number,
+    now: Date = new Date()
+  ) {
+    return this.findSubscribed()
+      .and([
+        {
+          $or: [
+            { membersProbeNextAt: null },
+            { membersProbeNextAt: { $lt: now } },
+          ],
+        },
+      ])
+      .sort({ membersProbeNextAt: 1 })
+      .limit(limit)
+      .select("id name");
+  }
+
+  /**
+   * Channels whose members-only uploads playlist should be read. Restricted to
+   * a confirmed `true` so channels without memberships never consume a slot
+   * that costs a quota unit; that keeps the daily spend equal to the batch size
+   * regardless of how many channels have no members playlist.
+   */
+  public static findMembersPollCandidates(
+    this: ReturnModelType<typeof Channel>,
+    limit: number
+  ) {
+    return this.findSubscribed()
+      .and([{ hasMembersPlaylist: true }])
+      .sort({ membersCrawledAt: 1 })
       .limit(limit)
       .select("id name");
   }
