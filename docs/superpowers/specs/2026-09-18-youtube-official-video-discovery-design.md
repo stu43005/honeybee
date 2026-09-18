@@ -59,6 +59,19 @@
 
 不過 `playlistItems` 的 `snippet.title` 與 `channelId` 已足以完成 upsert，與 feed 提供的資訊等價，所以 UUMO 路徑不需要額外的查詢步驟。
 
+### googleapis 預設會自動重試，而失敗的請求照樣扣配額
+
+讀 `node_modules` 實際原始碼確認（`googleapis` 173.0.0 / `googleapis-common` 8.0.2 / `gaxios` 7.1.5）：
+
+- `googleapis-common` 的 `apirequest.js` 有 `options.retry = options.retry === undefined ? true : options.retry`——**重試預設開啟**，而 `getYoutubeApi()` 只設了 `version` / `auth` / `timeout`，沒有覆寫它。
+- `gaxios` 的預設是重試 **3 次**，重試範圍涵蓋 **1xx、408、429、5xx**，重試的方法涵蓋 **GET**（`playlistItems.list` 正是 GET）。退避是 100 ms → 500 ms → 1500 ms。
+- **403 `quotaExceeded` 不在重試範圍內**，所以配額耗盡時的中止判斷不會被重試掩蓋。
+- 重試次數可以逐次呼叫覆寫：在傳給方法的參數物件裡給 `retry: false`。
+
+官方配額文件寫明「Every API request, even if invalid, will cost at least one quota point」——**每一次重試都是一次請求，各自扣一個 unit**。
+
+因此一次打到持續 503 端點的 `playlistItems.list` 會發出 **4 次** HTTP 請求、花 4 units，單一呼叫最壞耗時是 4 × 15 秒逾時 + 2.1 秒退避 ≈ **62 秒**。
+
 ### oEmbed 的回應分類
 
 `https://www.youtube.com/oembed?url=<encoded>&format=json`
@@ -210,7 +223,11 @@ findSubscribed() 且 (membersProbeNextAt 為 null 或早於 now)
 
 候選查詢：`ChannelModel.findSubscribed()` 且 `hasMembersPlaylist: true`，依 `membersCrawledAt` 遞增排序，取 `YOUTUBE_MEMBERS_POLL_BATCH_SIZE` 筆。
 
-每個頻道把 `UC<suffix>` 轉成 `UUMO<suffix>` 後呼叫 `updateVideoFromPlaylist(playlistId)`（`playlistItems.list`，`part: ["snippet", "contentDetails"]`，`maxResults: 50`，不翻頁），它把每筆項目映射成 `{ videoId, title, channelId }` 並交給 `noticeUnknownVideos()`；回來之後更新 `membersCrawledAt`。
+每個頻道把 `UC<suffix>` 轉成 `UUMO<suffix>` 後呼叫 `updateVideoFromPlaylist(playlistId)`（`playlistItems.list`，`part: ["snippet", "contentDetails"]`，`maxResults: 50`，不翻頁，**`retry: false`**），它把每筆項目映射成 `{ videoId, title, channelId }` 並交給 `noticeUnknownVideos()`；回來之後更新 `membersCrawledAt`。
+
+**`retry: false` 是必要的，不是調校。** googleapis 預設會對 5xx / 429 的 GET 重試三次（見「已驗證的事實」），而每次重試都各扣一個 unit，所以端點劣化時一輪 15 次呼叫會變成 60 units、耗時從 4 分鐘變成 16 分鐘——本設計「每日配額是常數」這個核心性質會直接失效。
+
+關掉它不會損失任何可靠性，因為**輪替本身就是重試機制**：失敗的頻道 `membersCrawledAt` 照樣推進、排到隊尾，下一圈會再試一次。gaxios 在同一秒內急著重打三次，對一個每五分鐘跑一輪的背景任務沒有任何價值，卻讓配額與耗時同時變得不可預測。
 
 映射取的是 `contentDetails.videoId`（不是 `snippet.resourceId.videoId`——兩者同值，但前者是 playlistItems 專為此提供的欄位）、`snippet.title`、以及 `snippet.videoOwnerChannelId`。最後一個是**影片擁有者**的頻道，與「誰把它加進播放清單」的 `snippet.channelId` 不同；對 UU / UUMO 這種自動播放清單兩者相同，但取擁有者欄位在其他播放清單上也正確。
 
@@ -410,9 +427,11 @@ export const YOUTUBE_EXISTENCE_PROBE_RECENT_MS = 14 * 24 * 60 * 60 * 1000;
 | `mod/crawl.ts`、`mod/set-channel.ts`                 | Discord 管理員手動       | 人工              | 個位數  |
 | `youtube.ts` 內部補抓未知頻道                        | 影片的頻道不在 DB 時隨附 | 隨附於上          | 少量    |
 
-前兩列是**固定上限**：`crawler youtube update` 每輪最多把 100 個 videoId 切成 2 批，不論候選清單裡有多少東西。其餘幾列**沒有上限**，只能估算：pubsub 那一列約等於每天新影片數（每則含新影片的通知一次呼叫），raid handle 與管理員指令則取決於使用情形。
+前兩列的**呼叫次數**是固定上限：`crawler youtube update` 每輪最多把 100 個 videoId 切成 2 批，不論候選清單裡有多少東西。其餘幾列連呼叫次數都沒有上限，只能估算：pubsub 那一列約等於每天新影片數（每則含新影片的通知一次呼叫），raid handle 與管理員指令則取決於使用情形。
 
-保守合計約 **3900 units/天**，剩約 6100。
+而且這張表全部都是**呼叫次數**，不是請求次數。這些呼叫都沒有關掉 googleapis 的預設重試，所以在 YouTube 回 5xx 或 429 的期間，每一列實際消耗的 units 最高會是表上數字的四倍。本設計不改動它們的重試設定（見「Non-goals」）。
+
+保守合計約 **3900 units/天**，剩約 6100——但這是端點正常時的數字。
 
 ### 本子系統的支出
 
@@ -425,7 +444,9 @@ export const YOUTUBE_EXISTENCE_PROBE_RECENT_MS = 14 * 24 * 60 * 60 * 1000;
 | 非 deleted 重查   | 0        | —           |
 | **合計**          | **4320** | **18144**   |
 
-加上既有的約 3900，總計約 **8220 units/天**，留約 1780 緩衝。緩衝的用途正是吸收上表那三列估不準的部分——新影片數暴增、raid 密集、管理員大量手動抓取。
+與既有消費者那張表不同，**這個 4320 同時是呼叫次數與請求次數**：`updateVideoFromPlaylist()` 明確傳 `retry: false`，所以一次呼叫就是一次請求，端點劣化也不會讓它翻成四倍。
+
+加上既有的約 3900，總計約 **8220 units/天**，留約 1780 緩衝。緩衝要吸收的是既有那張表估不準的部分——新影片數暴增、raid 密集、管理員大量手動抓取，以及它們在 YouTube 回 5xx 期間的重試放大。
 
 非 deleted 重查的配額是 0，因為它不新增任何 API 呼叫：它只是往 `crawler youtube update` 的候選清單多塞兩個 id，而那一輪的呼叫次數由 `.slice(0, 100)` 決定，與清單裡有多少東西無關。代價是從 live 影片的補抓那裡挪走兩個名額，不是配額。
 
@@ -437,7 +458,7 @@ export const YOUTUBE_EXISTENCE_PROBE_RECENT_MS = 14 * 24 * 60 * 60 * 1000;
 YOUTUBE_MEMBERS_POLL_BATCH_SIZE × 每日輪數 = 15 × 288 = 4320
 ```
 
-它不隨訂閱頻道數、不隨發現影片數、不隨首次上線的回補量變化。頻道變多只會拉長輪詢週期。
+它不隨訂閱頻道數、不隨發現影片數、不隨首次上線的回補量變化，也不隨 YouTube 端的健康狀況變化。頻道變多只會拉長輪詢週期。
 
 本設計**不**新增跨 process 的配額計數器或預留機制。要讓「保留多少額度給 metadata 更新」成為可強制執行的約束，需要一個共享的每日計數器（Redis）、每個呼叫點都去扣減、以及超額後的降級策略——那等於為所有既有呼叫點補上它們現在沒有的節流，範圍遠超本設計。這裡採取的做法是把唯一由本設計引入的支出定死成常數，並把緩衝留給估不準的既有消費者；若日後真的觀察到配額耗盡，該處理的是那些無上限的既有呼叫點，不是本子系統。
 
@@ -451,15 +472,17 @@ YOUTUBE_MEMBERS_POLL_BATCH_SIZE × 每日輪數 = 15 × 288 = 4320
 
 推進的**幅度**才隨結果而異，這一點對 `membersProbeNextAt` 尤其關鍵：得到結論推七天，沒得到結論只推一小時（見「存在性探測」）。`feedCrawledAt` 與 `membersCrawledAt` 沒有這個區分——它們記錄的是「上次處理時間」，失敗與成功一樣寫入 now。
 
-**單筆失敗不中斷整輪**，唯一例外是配額耗盡。`playlistItems.list` 回 403 `quotaExceeded` 是全域狀態，繼續只會繼續失敗——照 `renewPubsubSubscriptions()` 對 throttled 的處理，記一行 warn 後中止本輪，已處理頻道的時間戳保留，其餘留給下一輪。
+**單筆失敗不中斷整輪**，唯一例外是配額耗盡。`playlistItems.list` 回 403 `quotaExceeded` 是全域狀態，繼續只會繼續失敗——照 `renewPubsubSubscriptions()` 對 throttled 的處理，記一行 warn 後中止本輪，已處理頻道的時間戳保留，其餘留給下一輪。403 不在 gaxios 的重試範圍內，所以這個判斷不會被重試延後或掩蓋。
 
-**逾時與 agenda lock。** 每輪最壞耗時：
+**逾時與 agenda lock。** 每輪最壞耗時（每筆一次請求，因為關掉了重試）：
 
-| 任務     | 每輪筆數 | 最壞耗時 |
-| -------- | -------- | -------- |
-| feed     | 20       | 3.4 分   |
-| UUMO     | 15 + 3   | 4.3 分   |
-| 復活探測 | 10       | 1.7 分   |
+| 任務     | 每輪筆數 | 每筆最壞       | 最壞耗時 |
+| -------- | -------- | -------------- | -------- |
+| feed     | 20       | 10 秒 + 250 ms | 3.4 分   |
+| UUMO     | 15 + 3   | 15 秒 / 10 秒  | 4.3 分   |
+| 復活探測 | 10       | 10 秒 + 250 ms | 1.7 分   |
+
+這張表建立在 `retry: false` 之上。若沒關掉重試，UUMO 那一列的每筆最壞會是 4 × 15 秒逾時 + 2.1 秒退避 ≈ 62 秒，整輪變成約 16 分鐘——這正是關掉它的第二個理由。
 
 feed 的週期是 2 分鐘，最壞耗時會與下一輪重疊，由 agenda 的 job lock 保證不並發、重疊時順延。這是安全的降級——全部請求同時逾時是極端情況，正常一輪約 5 秒。agenda 的 `lockLifetime` 預設值與重疊時的實際行為屬第三方套件行為，實作計畫階段須以 research 確認後再決定是否需要顯式設定，本設計不對其做假設。
 
@@ -467,22 +490,23 @@ feed 的週期是 2 分鐘，最壞耗時會與下一輪重疊，由 agenda 的 
 
 Jest ESM（`jest.unstable_mockModule` + 動態 import）。重點放在能抓到迴歸的斷言，而非覆蓋率。
 
-| 測試                 | 斷言                                                                                                                                      |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| 差集（全部已知）     | 15 筆全是已知影片 → `noticeUnknownVideos()` 內部零次 upsert                                                                               |
-| 差集（部分未知）     | 15 筆中 2 筆未知 → 實際被 upsert 的 id 集合 `toEqual` 恰好那 2 個                                                                         |
-| 發現路徑不花配額     | 一輪 feed 輪詢處理完含新影片的頻道後，`videos.list` 零次呼叫                                                                              |
-| 播放清單欄位映射     | 一筆 `playlistItems` 項目 → `toEqual({ videoId: contentDetails.videoId, title: snippet.title, channelId: snippet.videoOwnerChannelId })`  |
-| 配額中止             | 第 3 個頻道回 `quotaExceeded` → 第 4 個起不再呼叫 API，前 3 個的 `membersCrawledAt` 已寫入                                                |
-| 失敗不卡前排         | 頻道 A 拋錯 → `feedCrawledAt` 仍更新；第二輪的候選查詢不再選到 A                                                                          |
-| 分桶公平性           | 其中一桶為空 → 另一桶仍取滿 N                                                                                                             |
-| 不探測非 deleted     | 候選集合含 `deleted` 非 true 的 `Missing` 影片 → 該輪對它零次 oEmbed 呼叫，且它的 `status` 不被改成 `New`                                 |
-| 非 deleted 走重查    | `crawler youtube update` 的候選 id 集合含 `deleted` 非 true 的 `Missing` 影片，且該影片全程維持 `status: Missing`（不經過 `New`）         |
-| 復活寫入             | oEmbed 200 → `status: New`、`deleted` 與 `detectedDeletionAt` 被移除、`crawledAt` 為 null；404/400 → 只更新 `crawledAt`，`status` 不動    |
-| oEmbed 分類          | 200/404/400/網路錯誤 四種輸入的分類結果，以及 URL 編碼正確（內層 `?v=` 必須被編碼）                                                       |
-| 結論性探測套 TTL     | 得到 200 或 404 的頻道，在七天內不再進入探測候選；`hasMembersPlaylist: false` 的頻道不觸發任何 API 呼叫                                   |
-| 首次探測失敗可重試   | 首次探測逾時（`hasMembersPlaylist` 仍未知）→ 該頻道在一小時後**重新**進入探測候選，而非七天後                                             |
-| 已有結論者失敗可重試 | `false` 的頻道在 TTL 到期後重探又逾時 → `membersProbeNextAt` 只推進一小時；連續三次逾時後它仍每小時回到候選，證明過期的結論沒有被續成七天 |
+| 測試                 | 斷言                                                                                                                                           |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| 差集（全部已知）     | 15 筆全是已知影片 → `noticeUnknownVideos()` 內部零次 upsert                                                                                    |
+| 差集（部分未知）     | 15 筆中 2 筆未知 → 實際被 upsert 的 id 集合 `toEqual` 恰好那 2 個                                                                              |
+| 發現路徑不花配額     | 一輪 feed 輪詢處理完含新影片的頻道後，`videos.list` 零次呼叫                                                                                   |
+| 播放清單欄位映射     | 一筆 `playlistItems` 項目 → `toEqual({ videoId: contentDetails.videoId, title: snippet.title, channelId: snippet.videoOwnerChannelId })`       |
+| 配額中止             | 第 3 個頻道回 `quotaExceeded` → 第 4 個起不再呼叫 API，前 3 個的 `membersCrawledAt` 已寫入                                                     |
+| 失敗不卡前排         | 頻道 A 拋錯 → `feedCrawledAt` 仍更新；第二輪的候選查詢不再選到 A                                                                               |
+| 分桶公平性           | 其中一桶為空 → 另一桶仍取滿 N                                                                                                                  |
+| 不探測非 deleted     | 候選集合含 `deleted` 非 true 的 `Missing` 影片 → 該輪對它零次 oEmbed 呼叫，且它的 `status` 不被改成 `New`                                      |
+| 非 deleted 走重查    | `crawler youtube update` 的候選 id 集合含 `deleted` 非 true 的 `Missing` 影片，且該影片全程維持 `status: Missing`（不經過 `New`）              |
+| 播放清單不重試       | HTTP 層持續回 503 → 一次 `updateVideoFromPlaylist()` 只發出 **1 次**請求就放棄。必須攔在 HTTP 傳輸層，mock `playlistItems.list` 本身看不到重試 |
+| 復活寫入             | oEmbed 200 → `status: New`、`deleted` 與 `detectedDeletionAt` 被移除、`crawledAt` 為 null；404/400 → 只更新 `crawledAt`，`status` 不動         |
+| oEmbed 分類          | 200/404/400/網路錯誤 四種輸入的分類結果，以及 URL 編碼正確（內層 `?v=` 必須被編碼）                                                            |
+| 結論性探測套 TTL     | 得到 200 或 404 的頻道，在七天內不再進入探測候選；`hasMembersPlaylist: false` 的頻道不觸發任何 API 呼叫                                        |
+| 首次探測失敗可重試   | 首次探測逾時（`hasMembersPlaylist` 仍未知）→ 該頻道在一小時後**重新**進入探測候選，而非七天後                                                  |
+| 已有結論者失敗可重試 | `false` 的頻道在 TTL 到期後重探又逾時 → `membersProbeNextAt` 只推進一小時；連續三次逾時後它仍每小時回到候選，證明過期的結論沒有被續成七天      |
 
 前三項是最重要的迴歸防線。第一、二項守住「每輪把數千支已知影片丟回補抓佇列」這個會靜默拖垮 `crawler youtube update` 的失誤；第三項守住整份設計的配額前提——一旦有人在發現路徑上加回 `updateVideoFromYoutube()`，配額就不再是常數，而這個測試會立刻失敗。
 
@@ -551,6 +575,12 @@ feed 是 900 秒 edge cache，所以發現延遲是「輪詢週期 + 最多 15 �
 **決定**：維持 `availableAt`，不改用 `detectedDeletionAt`，也不新增「何時變成 Missing」的時間戳。
 
 **理由**：這個關切的前提不成立。`Missing` 不等於被刪除——超時判定那一類根本沒有任何「消失事件」可以標時間；而 `detectedDeletionAt` 記的是「我們**看到**它消失的時間」，由輪詢排程決定，不是影片真正變得不可存取的時間，拿它當「剛消失」的依據一樣不準。分桶的目的也不是按消失時間排序，而是**讓比較新的影片有機會分到名額**，不被數量龐大的老影片完全擠掉——`availableAt` 正是表達「比較新」的正確欄位。舊影片重新抓取本來就慢，那是預期內的。
+
+### 不改動既有呼叫點的重試設定
+
+`getYoutubeApi()` 建立的是共用 client，既有的 `updateVideoFromYoutube()` / `updateChannelFromYoutube()` / `updateChannelByHandle()` 都沿用 googleapis 的預設重試（5xx / 429 的 GET 重試三次）。本設計只對它新增的 `updateVideoFromPlaylist()` 傳 `retry: false`，不去動那個共用設定，也不逐一修改既有呼叫點。
+
+理由是重試對它們**有**價值而對輪替任務沒有：pubsub 通知後的補抓錯過就沒有第二次機會，raid handle 解析是使用者可感知的即時路徑，管理員指令更是有人在等回應。把重試一次關掉會改變這些路徑既有的可靠性特性，那是另一份設計該評估的事。代價是既有那張表的估計值在 YouTube 劣化期間最高可能翻四倍，已記於「配額與速率預算」。
 
 ### 不接上 YoutubeWatchGate
 
