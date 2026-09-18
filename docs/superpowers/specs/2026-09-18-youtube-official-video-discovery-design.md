@@ -8,7 +8,7 @@
 
 目前影片發現有三個來源，各有缺口：
 
-1. **Holodex 輪詢**（`crawler holodex update live` / `update past`）——只回傳直播（`VideoType.Stream`），完全不含上傳影片與 shorts，且受 Holodex 自身的抓取延遲影響。
+1. **Holodex 輪詢**（`crawler holodex update live` / `update past`）——`update past` 明確以 `type: VideoType.Stream` 查詢，所以上傳影片與 shorts 完全不在覆蓋範圍內；而整條管道依賴第三方的抓取節奏與編輯者維護，honeybee 對它的延遲與完整性沒有控制權。
 2. **PubSubHubbub push**（`src/modules/youtube-pubsub/`）——官方唯一的即時推送管道，但 hub 不保證送達：租約過期、服務停機、hub 自身丟棄，都會讓該次通知永久消失。通知一旦漏掉，沒有任何機制會重新發現那支影片——所有既有的候選查詢都要求文件已經存在於 videos collection。
 3. **Raid 撿漏**（`noticeFromRaid`）——只在別人 raid 過來時才會發現，覆蓋面是偶然的。
 
@@ -17,12 +17,12 @@
 - `updateVideoFromYoutube()` 在 YouTube 省略該 id 時標記 `Missing` + `deleted`。私人轉公開、YouTube 暫時性的查詢失敗，都會讓影片永久停在這裡。
 - 同一個函式的狀態機還會因為「排定時間已到但未開播超過 2 天」「有 `actualStart` 卻無觀眾數超過 2 天」（停止串流但沒關台）「無排程也無開播且發布超過 5 天」而標記 `Missing`，這時 `deleted` **不是** true。若該直播後來延期開播了、或後來補按了關台，沒有任何東西會察覺。
 
-會員限定影片則是完全的空白：公開 RSS feed 不含它們，Holodex 不提供，pubsub 的 topic 是公開 feed 所以也推送不到。
+會員限定影片則完全沒有官方來源：公開 RSS feed 不含它們，pubsub 的 topic 就是那份公開 feed 所以也推送不到。目前唯一的來源是 Holodex——它確實收錄會員直播，靠的是大量編輯者，原則上不會漏，但那是第三方人工維護的覆蓋，honeybee 對它的延遲與完整性沒有任何控制權。`playlistItems.list` 讀 UUMO 是唯一的官方途徑。
 
 ## 目標
 
 1. 任何訂閱頻道發布的新影片（含上傳影片、shorts、排程直播），即使 pubsub 漏送，也能在**一小時內**被發現。
-2. 會員限定上傳影片能被發現並寫入 videos collection。
+2. 會員限定影片（含會員直播）能透過**官方來源**被發現並寫入 videos collection，不再只能依賴 Holodex 的人工編輯覆蓋。
 3. 消失後恢復可存取的影片，能自動回到收錄範圍；被超時判定為 `Missing` 的直播，若狀態後來真的改變，也有機會被更新。
 4. 上述三者的每日 YouTube Data API 用量有明確上限，且該上限**不隨訂閱頻道數成長**——頻道變多只會拉長輪詢週期，不會排擠既有的 `videos.list` / `channels.list` 流量。
 
@@ -142,7 +142,7 @@ pubsub 的 `routes.ts` 維持原樣、不改用這個 static：它需要逐支�
 
 `src/modules/youtube-pubsub/routes.ts` 在回應 hub 之後會立刻對新影片呼叫 `updateVideoFromYoutube()`，因為 pubsub 是即時管道——推送到達時直播可能再幾分鐘就開播，metadata 晚一輪就來不及。
 
-本子系統沒有這個需求：feed 發現本身已經落後最多 45 分鐘，UUMO 影片抓不到聊天，再省下的幾分鐘沒有任何價值。而代價很具體：`updateVideoFromYoutube()` 是**每個呼叫**至少消耗 1 unit（`videos.list` 一批最多 50 支），所以在發現當下逐頻道呼叫，配額用量會正比於「有新影片的頻道數」，而那個數字在首次上線、新增訂閱、或長時間停機後的回補時會急遽上升——固定批次大小完全保護不到它。
+本子系統沒有這個需求：feed 發現本身已經落後最多 45 分鐘，UUMO 是每小時一輪的補漏管道，兩者都不是為了搶那幾分鐘而存在的。而代價很具體：`updateVideoFromYoutube()` 是**每個呼叫**至少消耗 1 unit（`videos.list` 一批最多 50 支），所以在發現當下逐頻道呼叫，配額用量會正比於「有新影片的頻道數」，而那個數字在首次上線、新增訂閱、或長時間停機後的回補時會急遽上升——固定批次大小完全保護不到它。
 
 交給既有的 `crawler youtube update` 之後，補 metadata 的配額是**每分鐘最多 2 units 的固定上限**，與發現量完全無關。
 
@@ -556,13 +556,19 @@ Jest ESM（`jest.unstable_mockModule` + 動態 import）。重點放在能抓到
 
 只做增量發現：feed 的 15 筆窗口、UUMO 播放清單的首頁 50 筆，不翻頁、不做一次性深掃。頻道歷史影片的價值遠低於導入成本（大量文件湧入會排擠即時影片的 metadata 補抓名額）。
 
-### 會員影片只做記錄，不抓聊天
+### 不處理 worker 對會員影片的既有行為
 
-worker 沒有任何 cookie / credentials 設定，`src/commands/worker.ts` 對會員限定影片直接回 `ErrorCode.MembersOnly`。UUMO 掃描寫入的影片，價值在於 metadata 記錄、webhook 通知與 track 統計，不在聊天收集。要抓會員聊天需要 worker 具備會員身分，屬於另一份設計的範圍。
+worker 沒有 cookie / credentials 設定，對會員限定影片會走到 `ErrorCode.MembersOnly`；而排程側的 `findLiveVideos()`、`isLive()`、`getReplicas()` 都不看 `memberLimited`，所以一支處於 `Upcoming` / `Live` 的會員直播會被反覆排程、每次都在 `mc.iterate()` 之後才拿到那個錯誤。
+
+**決定**：不在本設計處理，不新增排程排除，也不改 `Video` model 的排程查詢。
+
+**理由**：這是既有行為，與影片從哪個來源被發現無關——任何進到 videos collection 的會員直播都會如此，本設計只是讓這類影片更完整地被收錄。要改動它必須評估 worker 側的權衡（是否讓 worker 具備會員身分、排除後 track 的 `memberVideos` 功能與 webhook 通知時機受到什麼影響），那是另一份設計的題目。
+
+**會員影片本身不是副產物，是本設計的目標之一。** `memberLimited` 是 track 與 webhook 的一等公民欄位：`getMemberVideosFilter()` 讓 track 能選擇只追會員影片或只追非會員影片，webhook 訊息會據此標上 "Members-only content."。UUMO 掃描存在的理由正是讓這些影片不漏，而不是「順便記一筆」。
 
 ### UUMO 覆蓋週期可能超過一小時
 
-若訂閱頻道中開了會員的超過 180 個，UUMO 的輪替週期會線性超過一小時（240 個時約 80 分鐘）。要壓回一小時內，唯一的辦法是提高 `YOUTUBE_MEMBERS_POLL_BATCH_SIZE`，而那必須從別處挪配額——削減 `crawler youtube update` 的頻率，或壓縮留給那些無上限既有呼叫點的緩衝。前者是拿公開影片的即時性換會員影片的即時性，後者是拿安全邊際換即時性。鑑於會員影片本來就抓不到聊天（見上），兩種交換都不划算，因此接受這個限制。
+若訂閱頻道中開了會員的超過 180 個，UUMO 的輪替週期會線性超過一小時（240 個時約 80 分鐘）。要壓回一小時內，唯一的辦法是提高 `YOUTUBE_MEMBERS_POLL_BATCH_SIZE`，而那必須從別處挪配額——削減 `crawler youtube update` 的頻率，或壓縮留給那些無上限既有呼叫點的緩衝。前者是拿公開影片的即時性換會員影片的即時性，後者是拿安全邊際換即時性。而這條管道的目標是**不漏**而非搶快——Holodex 仍在以它自己的節奏收錄會員直播，UUMO 是官方來源的保障；八十分鐘與六十分鐘的差別不值得用那兩種交換去換，因此接受這個限制。
 
 ### 一小時的發現目標以 450 個訂閱頻道為界
 
