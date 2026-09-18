@@ -66,7 +66,8 @@
 - `googleapis-common` 的 `apirequest.js` 有 `options.retry = options.retry === undefined ? true : options.retry`——**重試預設開啟**，而 `getYoutubeApi()` 只設了 `version` / `auth` / `timeout`，沒有覆寫它。
 - `gaxios` 的預設是重試 **3 次**，重試範圍涵蓋 **1xx、408、429、5xx**，重試的方法涵蓋 **GET**（`playlistItems.list` 正是 GET）。退避是 100 ms → 500 ms → 1500 ms。
 - **403 `quotaExceeded` 不在重試範圍內**，所以配額耗盡時的中止判斷不會被重試掩蓋。
-- 重試次數可以逐次呼叫覆寫：在傳給方法的參數物件裡給 `retry: false`。
+- 重試可以逐次呼叫覆寫，但**必須放在第二個參數**：generated method 的簽名是 `list(params, options)`，而 `parameters.options` 只由第二個參數組成（`Object.assign({ url, method, apiVersion }, options)`），第一個參數則會被轉成 query string。因此正確寫法是 `playlistItems.list({ part, playlistId, maxResults }, { retry: false })`；寫成 `list({ part, ..., retry: false })` 只會多送一個沒有意義的 `retry=false` 查詢參數給 YouTube，重試照樣發生。
+- `google.youtube({ ... })` 傳入的全域設定（honeybee 目前在那裡設 `timeout`）會進到 `parameters.context._options`，是生效的。
 
 官方配額文件寫明「Every API request, even if invalid, will cost at least one quota point」——**每一次重試都是一次請求，各自扣一個 unit**。
 
@@ -223,7 +224,16 @@ findSubscribed() 且 (membersProbeNextAt 為 null 或早於 now)
 
 候選查詢：`ChannelModel.findSubscribed()` 且 `hasMembersPlaylist: true`，依 `membersCrawledAt` 遞增排序，取 `YOUTUBE_MEMBERS_POLL_BATCH_SIZE` 筆。
 
-每個頻道把 `UC<suffix>` 轉成 `UUMO<suffix>` 後呼叫 `updateVideoFromPlaylist(playlistId)`（`playlistItems.list`，`part: ["snippet", "contentDetails"]`，`maxResults: 50`，不翻頁，**`retry: false`**），它把每筆項目映射成 `{ videoId, title, channelId }` 並交給 `noticeUnknownVideos()`；回來之後更新 `membersCrawledAt`。
+每個頻道把 `UC<suffix>` 轉成 `UUMO<suffix>` 後呼叫 `updateVideoFromPlaylist(playlistId)`，它內部發出：
+
+```ts
+youtube.playlistItems.list(
+  { part: ["snippet", "contentDetails"], playlistId, maxResults: 50 },
+  { retry: false }
+);
+```
+
+不翻頁。回來的每筆項目映射成 `{ videoId, title, channelId }` 交給 `noticeUnknownVideos()`；之後更新 `membersCrawledAt`。
 
 **`retry: false` 是必要的，不是調校。** googleapis 預設會對 5xx / 429 的 GET 重試三次（見「已驗證的事實」），而每次重試都各扣一個 unit，所以端點劣化時一輪 15 次呼叫會變成 60 units、耗時從 4 分鐘變成 16 分鐘——本設計「每日配額是常數」這個核心性質會直接失效。
 
@@ -259,9 +269,15 @@ findSubscribed() 且 (membersProbeNextAt 為 null 或早於 now)
 | 1   | `true`    | 晚於 `now - YOUTUBE_EXISTENCE_PROBE_RECENT_MS` |
 | 2   | `true`    | 早於該界線                                     |
 
-兩桶皆附加 `status: VideoStatus.Missing`，依 `crawledAt` 遞增排序。
+兩桶皆附加 `status: VideoStatus.Missing` 與 **`crawledAt: { $ne: null }`**，依 `crawledAt` 遞增排序。
 
 分桶的目的是公平性：兩週以前消失的族群遠大於近期的，單一查詢會讓它獨占所有名額，近期消失、最可能復活的影片永遠排不到。
+
+**排除 `crawledAt` 為 null 的文件是必要的。** 那個 null 是一個待處理的重抓請求——`noticeFromNotification()` 正是這樣標記的，而 `routes.ts` 對**既有**影片不會立即補抓，所以一支被標為 deleted Missing、後來又被 pubsub 推送的影片，會在 `crawledAt` 為 null 的狀態下等 `crawler youtube update` 來處理。
+
+若不排除，這類文件反而會**優先**被探測選中（null 在遞增排序裡排最前），而探測一旦拿到 404 或逾時就把 `crawledAt` 寫成 now，把那個重抓請求抹掉——該影片得等整個輪替一圈（可能數週）才會再被看到。下一節的「釘住選中狀態」擋不住這種情況，因為選中時讀到的值本來就是 null，比對會通過。
+
+語意上這也是對的：`videos.list` 能回答的比 oEmbed 多，既然已經排隊要重抓了，探測沒有理由插隊，更沒有理由覆蓋它。
 
 每支影片以 oEmbed 請求 `https://www.youtube.com/watch?v=<id>`：
 
@@ -274,7 +290,7 @@ findSubscribed() 且 (membersProbeNextAt 為 null 或早於 now)
 { id, status: Missing, deleted: true, crawledAt: <選中時讀到的值> }
 ```
 
-沒有文件匹配時就丟棄這次結果、不重試——代表在 oEmbed 往返的那段時間裡有別人改動了這份文件，而對方看到的狀態比我們新。
+候選查詢已經排除了 `crawledAt` 為 null 的文件，所以這裡釘住的一定是一個實際的時間戳。沒有文件匹配時就丟棄這次結果、不重試——代表在 oEmbed 往返的那段時間裡有別人改動了這份文件，而對方看到的狀態比我們新。
 
 窗口不長（oEmbed 正常 40–50 ms，最壞 10 秒）但不是零，而不釘住狀態的兩個後果都是實質的：
 
@@ -519,6 +535,7 @@ Jest ESM（`jest.unstable_mockModule` + 動態 import）。重點放在能抓到
 | 播放清單不重試       | HTTP 層持續回 503 → 一次 `updateVideoFromPlaylist()` 只發出 **1 次**請求就放棄。必須攔在 HTTP 傳輸層，mock `playlistItems.list` 本身看不到重試 |
 | 復活寫入             | oEmbed 200 → `status: New`、`deleted` 與 `detectedDeletionAt` 被移除、`crawledAt` 為 null；404/400 → 只更新 `crawledAt`，`status` 不動         |
 | 陳舊結果被丟棄       | 選中後、oEmbed 回來前，把該文件的 `crawledAt` 改成 null（模擬 pubsub 重抓訊號）→ 404 的結果寫不進去，`crawledAt` 仍是 null                     |
+| 待重抓者不被選中     | `crawledAt` 在**選中之前**就已是 null 的 deleted Missing 影片 → 兩個桶都選不到它，該輪對它零次 oEmbed，`crawledAt` 仍是 null                   |
 | 倒退被擋下           | 選中後、oEmbed 回來前，把該文件改成 `status: Past` 且移除 `deleted` → 200 的結果寫不進去，`status` 仍是 `Past`                                 |
 | oEmbed 分類          | 200/404/400/網路錯誤 四種輸入的分類結果，以及 URL 編碼正確（內層 `?v=` 必須被編碼）                                                            |
 | 結論性探測套 TTL     | 得到 200 或 404 的頻道，在七天內不再進入探測候選；`hasMembersPlaylist: false` 的頻道不觸發任何 API 呼叫                                        |
