@@ -193,3 +193,67 @@ export const PUBSUB_REQUEST_TIMEOUT_MS = 30 * 1000;
 // hang forever. Looser than the hub request because one call carries up to 50
 // ids; still far below agenda's 10 minute lockLifetime.
 export const YOUTUBE_API_TIMEOUT_MS = 15 * 1000;
+
+// --- YouTube official video discovery (src/components/youtube-discovery/) ---
+
+// Channels fetched in one feed-poll round. On the 2-minute schedule that is 600
+// channels/hour. Discovery latency is one rotation plus the feed's 15-minute
+// edge cache, so the one-hour target holds up to 450 subscribed channels; 300
+// channels land around 45 minutes. Raise this if the subscription list grows
+// past that — the feed costs no quota, only outbound requests.
+export const YOUTUBE_FEED_POLL_BATCH_SIZE = 20;
+
+// Gap between two outbound requests inside any discovery round. Both endpoints
+// served 10 req/s for 10 seconds and 120-concurrent bursts without a single
+// 429, so 4 req/s keeps a 2.5x margin below what was actually verified.
+export const YOUTUBE_DISCOVERY_REQUEST_SPACING_MS = 250;
+
+// Per-request timeout for the channel RSS feed. A healthy response takes about
+// 100 ms; this is generous enough to ride out a slow edge node while keeping a
+// fully stalled round inside agenda's 10 minute lock.
+export const YOUTUBE_FEED_TIMEOUT_MS = 10 * 1000;
+
+// Per-request timeout for oEmbed probes. Measured latency is 40-50 ms; same
+// reasoning as the feed timeout.
+export const YOUTUBE_OEMBED_TIMEOUT_MS = 10 * 1000;
+
+// Channels whose members-only uploads playlist is read in one round. Each read
+// costs one quota unit, so on the 5-minute schedule this is 4320 units/day.
+// That is what the 10000-unit daily budget can spare once every existing
+// consumer is counted, not just the two scheduled jobs: the pubsub notification
+// handler hydrates each newly inserted video outside any cap, and the raid
+// handle lookup and the moderator commands are uncapped too. The buffer left
+// over absorbs the ones that cannot be bounded in advance.
+export const YOUTUBE_MEMBERS_POLL_BATCH_SIZE = 15;
+
+// Channels probed per round for whether a members-only uploads playlist exists.
+// Costs no quota; 3 per round is 864 probes/day, enough to re-probe every
+// channel well inside the TTL below.
+export const YOUTUBE_MEMBERS_PROBE_BATCH_SIZE = 3;
+
+// How far ahead a CONCLUSIVE probe pushes the channel's next probe. Whether a
+// channel offers memberships almost never changes, so a channel that newly
+// opens them is picked up within a week and asking more often buys nothing.
+export const YOUTUBE_MEMBERS_PROBE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+// How far ahead an INCONCLUSIVE probe pushes it instead (a 5xx, a timeout, a
+// network error). A channel with no conclusion is excluded from the playlist
+// scan, so pushing a failure out by the full week would hide that channel's
+// members-only videos until then — and on first rollout every channel takes
+// that path. An hour keeps the blast radius in hours, and still pushes a
+// persistently failing channel far enough back that it cannot reclaim a probe
+// slot every round.
+export const YOUTUBE_MEMBERS_PROBE_RETRY_MS = 60 * 60 * 1000;
+
+// Videos each of the two buckets contributes to one existence-probe round.
+// Two buckets x 5 x 288 rounds/day = 2880 probes/day, all quota-free. Only
+// videos YouTube no longer returns are probed: for the ones marked Missing by a
+// timeout heuristic the video still exists, so oEmbed would answer 200 every
+// time and teach us nothing.
+export const YOUTUBE_EXISTENCE_PROBE_BUCKET_SIZE = 5;
+
+// The availableAt boundary splitting recent Missing videos from old ones. A
+// video that vanished in the last two weeks is far likelier to return than one
+// gone for years, and the split stops the much larger old population from
+// starving the recent one.
+export const YOUTUBE_EXISTENCE_PROBE_RECENT_MS = 14 * 24 * 60 * 60 * 1000;
