@@ -265,8 +265,23 @@ findSubscribed() 且 (membersProbeNextAt 為 null 或早於 now)
 
 每支影片以 oEmbed 請求 `https://www.youtube.com/watch?v=<id>`：
 
-- **200** → `updateOne`：`status` 設為 `New`，移除 `deleted` 與 `detectedDeletionAt`，`crawledAt` 設為 null。
+- **200** → `status` 設為 `New`，移除 `deleted` 與 `detectedDeletionAt`，`crawledAt` 設為 null。
 - **其他**（404 私人或不存在、400 無效 id、網路錯誤）→ 只把 `crawledAt` 更新為 now。
+
+兩種寫入都是 `updateOne`，而且 filter 必須**釘住選中時的狀態**：
+
+```text
+{ id, status: Missing, deleted: true, crawledAt: <選中時讀到的值> }
+```
+
+沒有文件匹配時就丟棄這次結果、不重試——代表在 oEmbed 往返的那段時間裡有別人改動了這份文件，而對方看到的狀態比我們新。
+
+窗口不長（oEmbed 正常 40–50 ms，最壞 10 秒）但不是零，而不釘住狀態的兩個後果都是實質的：
+
+- 一支影片剛從私人轉回公開、pubsub 重新推送並把 `crawledAt` 設成 null 要求重抓，此時一個稍早發出、拿到 404 的探測回來把 `crawledAt` 寫成 now，**抹掉那個重抓訊號**，該影片要等整個輪替一圈（可能數週）才會再被看到。
+- 反過來，一個拿到 200 的探測回來時，該影片可能已經被補抓成 `Past`，這一寫會把它**倒退回 `New`**。
+
+agenda 的 job lock 只保證同一個任務不並發，管不到不同的寫入者。釘住狀態的成本只是 filter 多三個條件，沒有新機制、新欄位或額外查詢。
 
 使用 `updateOne` 而非 document `save()`：這些正是 `2026-09-09-crawler-unconfirmed-video-cleanup-design.md` 描述的族群，可能缺少 `title` / `channelId` 這類 required 欄位，`save()` 會被 validator 擋下、寫不進去，於是每輪重複被選中。
 
@@ -503,6 +518,8 @@ Jest ESM（`jest.unstable_mockModule` + 動態 import）。重點放在能抓到
 | 非 deleted 走重查    | `crawler youtube update` 的候選 id 集合含 `deleted` 非 true 的 `Missing` 影片，且該影片全程維持 `status: Missing`（不經過 `New`）              |
 | 播放清單不重試       | HTTP 層持續回 503 → 一次 `updateVideoFromPlaylist()` 只發出 **1 次**請求就放棄。必須攔在 HTTP 傳輸層，mock `playlistItems.list` 本身看不到重試 |
 | 復活寫入             | oEmbed 200 → `status: New`、`deleted` 與 `detectedDeletionAt` 被移除、`crawledAt` 為 null；404/400 → 只更新 `crawledAt`，`status` 不動         |
+| 陳舊結果被丟棄       | 選中後、oEmbed 回來前，把該文件的 `crawledAt` 改成 null（模擬 pubsub 重抓訊號）→ 404 的結果寫不進去，`crawledAt` 仍是 null                     |
+| 倒退被擋下           | 選中後、oEmbed 回來前，把該文件改成 `status: Past` 且移除 `deleted` → 200 的結果寫不進去，`status` 仍是 `Past`                                 |
 | oEmbed 分類          | 200/404/400/網路錯誤 四種輸入的分類結果，以及 URL 編碼正確（內層 `?v=` 必須被編碼）                                                            |
 | 結論性探測套 TTL     | 得到 200 或 404 的頻道，在七天內不再進入探測候選；`hasMembersPlaylist: false` 的頻道不觸發任何 API 呼叫                                        |
 | 首次探測失敗可重試   | 首次探測逾時（`hasMembersPlaylist` 仍未知）→ 該頻道在一小時後**重新**進入探測候選，而非七天後                                                  |
