@@ -33,18 +33,19 @@ These were verified before planning. Do **not** re-derive them; they are stated 
 
 ## File Structure
 
-| File                                                           | Responsibility                                                                 |
-| -------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `src/constants.ts` (modify)                                    | 10 new tuning constants                                                        |
-| `src/models/Channel.ts` (modify)                               | 4 new optional fields, 3 new indexes, 3 new candidate-query statics            |
-| `src/models/Video.ts` (modify)                                 | 1 new partial index, `noticeUnknownVideos()`, `findExistenceProbeCandidates()` |
-| `src/components/youtube-discovery/oembed.ts` (create)          | Zero-quota existence probing: URL building, status-code classification         |
-| `src/modules/youtube.ts` (modify)                              | `updateVideoFromPlaylist()` — the only new googleapis call site                |
-| `src/modules/youtube-playlist-transport.spec.ts` (create)      | Retry and error-body behavior, observed at the HTTP layer via `nock`           |
-| `src/components/youtube-discovery/feed-poll.ts` (create)       | One feed-poll round                                                            |
-| `src/components/youtube-discovery/members-poll.ts` (create)    | One members round: probe phase then scan phase                                 |
-| `src/components/youtube-discovery/existence-probe.ts` (create) | One existence-probe round over two buckets                                     |
-| `src/commands/crawler.ts` (modify)                             | Register the three agenda jobs; add the sixth candidate query                  |
+| File                                                           | Responsibility                                                                      |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `src/constants.ts` (modify)                                    | 10 new tuning constants                                                             |
+| `src/models/Channel.ts` (modify)                               | 4 new optional fields, 3 new indexes, 3 new candidate-query statics                 |
+| `src/models/Video.ts` (modify)                                 | 1 new partial index, `noticeUnknownVideos()`, `findExistenceProbeCandidates()`      |
+| `src/components/youtube-discovery/oembed.ts` (create)          | Zero-quota existence probing: URL building, status-code classification              |
+| `src/modules/youtube.ts` (modify)                              | `updateVideoFromPlaylist()` — the only new googleapis call site                     |
+| `src/modules/youtube-playlist-transport.spec.ts` (create)      | Retry and error-body behavior, observed at the HTTP layer via `nock`                |
+| `src/components/youtube-discovery/feed-poll.ts` (create)       | One feed-poll round                                                                 |
+| `src/components/youtube-discovery/members-poll.ts` (create)    | One members round: probe phase then scan phase                                      |
+| `src/components/youtube-discovery/existence-probe.ts` (create) | One existence-probe round over two buckets                                          |
+| `src/commands/crawler.ts` (modify)                             | Register the three agenda jobs; lift the candidate list out and add the sixth query |
+| `src/commands/crawler-candidates.spec.ts` (create)             | That the sixth query survives the 100-id cap, which depends on its position         |
 
 Tests sit beside their implementation (`*.spec.ts`), matching the repo layout.
 
@@ -1754,18 +1755,30 @@ describe("pollChannelFeeds", () => {
   it("never spends quota: no Data API client is ever built", async () => {
     fakeChannels(["UC1"]);
     mockGet.mockResolvedValue({ data: feedXml("UC1", ["v1"]) });
-    jest.spyOn(VideoModel, "noticeUnknownVideos").mockResolvedValue(undefined);
+    // Deliberately NOT mocking noticeUnknownVideos: the real writer runs, with
+    // only the database calls underneath it stubbed. Mocking the writer would
+    // hide hydration added inside it, which is one of the two places it could
+    // creep back in.
+    jest.spyOn(VideoModel, "find").mockReturnValue({
+      select: () => Promise.resolve([]),
+    } as never);
+    const insertMany = jest
+      .spyOn(VideoModel, "insertMany")
+      .mockResolvedValue([] as never);
 
     await pollChannelFeeds();
 
-    // The entire quota argument of this design rests on the discovery path
+    // The whole quota argument of this design rests on the discovery path
     // writing to the database and stopping there. Asserting at the googleapis
-    // boundary rather than on this module's own calls is what makes the check
-    // real: any route back to the Data API — importing updateVideoFromYoutube,
-    // calling videos.list directly — runs getYoutubeApi(), which constructs the
-    // client through google.youtube(). Zero constructions means zero units.
+    // boundary is what makes the check real: every route back to the Data API —
+    // importing updateVideoFromYoutube here or calling it inside the writer —
+    // goes through getYoutubeApi(), which builds the client via
+    // google.youtube(). Zero constructions means zero units.
     expect(mockYoutube).not.toHaveBeenCalled();
     expect(mockVideosList).not.toHaveBeenCalled();
+    // And the round did reach the write, so the assertion above is about a path
+    // that actually ran rather than one that was never entered.
+    expect(insertMany).toHaveBeenCalledTimes(1);
   });
 
   it("spaces the requests and does not wait after the last one", async () => {
@@ -2657,6 +2670,12 @@ function applyUpdate(doc: VideoDoc, update: Record<string, unknown>): void {
  * candidate query runs against it, so the exclusion rules are exercised rather
  * than stubbed away, and `updateOne` only writes when its filter still matches
  * — which is the whole point of the guarded write.
+ *
+ * Reads return **detached copies**. A real query hands back a snapshot, and the
+ * distinction is load-bearing here: the race tests mutate the stored document
+ * while a probe is in flight, and if the candidate were the same object it
+ * would change underneath the caller, so the guard would compare the new state
+ * against itself and match — hiding the very bug these tests exist to catch.
  */
 function fakeVideos(docs: VideoDoc[]) {
   const store = new Map(docs.map((doc) => [doc.id, { ...doc }]));
@@ -2676,6 +2695,9 @@ function fakeVideos(docs: VideoDoc[]) {
                   ((b.crawledAt as Date | undefined)?.getTime() ?? 0)
               )
               .slice(0, n)
+              // Detached, so a later mutation of the stored document cannot
+              // reach back into the candidate the caller is holding.
+              .map((doc) => ({ ...doc }))
           ),
       }),
     }),
@@ -2710,11 +2732,18 @@ function deletedMissing(id: string, availableAt: Date): VideoDoc {
 
 describe("probeMissingVideos", () => {
   beforeEach(() => {
+    // The bucket split is "now minus fourteen days", so the fixtures below only
+    // land in the buckets they are named for while the clock is held here.
+    // Without this the suite would start failing once the real date moved past
+    // RECENT_AVAILABLE's two-week window.
+    jest.useFakeTimers({ doNotFake: ["performance"] });
+    jest.setSystemTime(new Date("2026-09-18T00:00:00.000Z"));
     mockSleep.mockResolvedValue(undefined);
     mockProbeVideo.mockResolvedValue({ kind: "absent" });
   });
 
   afterEach(() => {
+    jest.useRealTimers();
     jest.restoreAllMocks();
     mockProbeVideo.mockReset();
     mockSleep.mockReset();
@@ -2887,6 +2916,24 @@ describe("probeMissingVideos", () => {
     expect(store.get("v1")?.crawledAt).not.toEqual(STAMP);
   });
 
+  it("keeps going when one write rejects", async () => {
+    fakeVideos([
+      deletedMissing("v1", RECENT_AVAILABLE),
+      deletedMissing("v2", OLD_AVAILABLE),
+    ]);
+    const update = jest.spyOn(VideoModel, "updateOne");
+    const original = update.getMockImplementation();
+    update
+      .mockRejectedValueOnce(new Error("write concern error") as never)
+      .mockImplementation(original as never);
+
+    await probeMissingVideos();
+
+    // A rejected write must cost only its own candidate, not every candidate
+    // behind it.
+    expect(mockProbeVideo).toHaveBeenCalledTimes(2);
+  });
+
   it("does nothing when neither bucket has a candidate", async () => {
     fakeVideos([]);
 
@@ -3002,7 +3049,7 @@ export async function probeMissingVideos(): Promise<void> {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `npm run test -- src/components/youtube-discovery/existence-probe.spec.ts`
-Expected: PASS, 13 tests (the timestamp-only case runs three times via `it.each`).
+Expected: PASS, 14 tests (the timestamp-only case runs three times via `it.each`).
 
 - [ ] **Step 5: Verify types and lint**
 
@@ -3023,42 +3070,255 @@ git commit -m "feat(discovery): probe deleted videos for a return and pin the wr
 **Files:**
 
 - Modify: `src/commands/crawler.ts`
+- Test: `src/commands/crawler-candidates.spec.ts` (create)
 
-No new test file. The query itself is `VideoModel.findMissingRecheckCandidates`,
-written and tested in Task 3; the round bodies are covered by Tasks 6-8. What is
-left here is registration and placement, which the type check and the build
-verify.
+The candidate list decides which videos get hydrated, and both the new query's
+**position** and the 100-id cap are load-bearing — neither is something a type
+check or a build can see. It currently lives inside `runCrawler()`, so Step 1
+lifts it out unchanged to make it reachable from a test, and only then does
+Step 4 add the query.
 
-- [ ] **Step 1: Add the re-check query to the candidate list**
+- [ ] **Step 1: Lift the candidate list out of `runCrawler()`**
 
-In `src/commands/crawler.ts`, inside `JOB_YOUTUBE_UPDATE_VIDEOS`, insert this entry into the `new Set<string>([...])` literal **between** the `findRecentlyEndedVideos(1)` block and the final `findLiveVideos()` block:
+In `src/commands/crawler.ts`, move `mapToId` and the whole `videoIds`
+expression to module scope as an exported function. The body is unchanged —
+same queries, same order, same limits, same `.slice(0, 100)`:
 
 ```ts
-        // Streams a timeout heuristic marked Missing: the scheduled start came
-        // and went, or the stream stopped without being ended. The video is
-        // still on YouTube, so only videos.list can tell whether it has since
-        // started or finally ended, and nothing else re-checks it — the one
-        // query above that touches Missing is limited to hbEnd within the hour.
-        // They stay Missing throughout; nothing flips them to New first, so
-        // there is no round trip through the two queries at the top of this
-        // list.
-        //
-        // Two per round because the hit rate is low and the population large:
-        // for most of them YouTube never does fill in actualEnd. The position
-        // matters as much as the limit — the live query below covers every
-        // upcoming and live video and would fill the slice on its own, so
-        // anything after it would never be reached.
-        ...mapToId(
-          await VideoModel.findMissingRecheckCandidates(2).select("id")
-        ),
+function mapToId(list: { id: string }[]): string[] {
+  return list.map((item) => item.id);
+}
+
+/**
+ * The videos one `crawler youtube update` round will hydrate.
+ *
+ * Exported for testing: the order of these queries is the actual priority
+ * ordering, because `Set` keeps insertion order and `.slice(0, 100)` is what
+ * finally decides. A query placed after the live one below can be starved
+ * entirely, and nothing about that is visible to the compiler.
+ */
+export async function collectVideoUpdateCandidates(): Promise<string[]> {
+  const videoIds = Array.from(
+    new Set<string>([
+      // These two sit first in the Set, so without a cap they fill the whole
+      // 100-slot slice and push live videos out. Newest-first matters: _id is
+      // immutable, so an ascending cap would keep re-selecting the same
+      // oldest ids forever and starve newer videos behind them if those ids
+      // never manage to save. Descending puts new videos first and lets
+      // permanently unsavable ones fall past the cap instead of blocking
+      // discovery, and it runs off the default _id index with no in-memory
+      // sort stage. Documents that do save leave these queries on their own,
+      // so nothing is skipped — only the order changes. The scheduled-start
+      // query below stays unbounded on purpose: a stream about to go live has
+      // to be fetched now, and that spike drains within a round.
+      ...mapToId(
+        await VideoModel.find({ status: VideoStatus.New })
+          .sort({ _id: -1 })
+          .limit(25)
+          .select("id")
+      ),
+      ...mapToId(
+        await VideoModel.find({ crawledAt: null })
+          .sort({ _id: -1 })
+          .limit(25)
+          .select("id")
+      ),
+      ...mapToId(
+        await VideoModel.findLiveVideos()
+          .and([
+            {
+              actualStart: null,
+              scheduledStart: {
+                $lt: moment.tz("UTC").add(5, "minutes").toDate(),
+                $gt: moment.tz("UTC").subtract(5, "minutes").toDate(),
+              },
+            },
+          ])
+          .select("id")
+      ),
+      ...mapToId(
+        await VideoModel.findRecentlyEndedVideos(1)
+          .sort({ crawledAt: 1 })
+          .limit(5)
+          .select("id")
+      ),
+      ...mapToId(
+        await VideoModel.findLiveVideos()
+          .sort({ crawledAt: 1 })
+          .limit(100)
+          .select("id")
+      ),
+    ])
+  ).slice(0, 100);
+  return videoIds;
+}
 ```
 
-- [ ] **Step 2: Verify the existing crawler still compiles**
+Then replace the body of `JOB_YOUTUBE_UPDATE_VIDEOS` inside `runCrawler()` with:
 
-Run: `npx tsc --noEmit`
-Expected: no errors.
+```ts
+agenda.define(JOB_YOUTUBE_UPDATE_VIDEOS, async (_job: Job): Promise<void> => {
+  const videoIds = await collectVideoUpdateCandidates();
+  const batch: string[][] = [];
+  while (videoIds.length) batch.push(videoIds.splice(0, 50));
+  await Promise.all(batch.map((perBatch) => updateVideoFromYoutube(perBatch)));
+});
+```
 
-- [ ] **Step 3: Register the three discovery jobs**
+`mapToId` is no longer needed inside `runCrawler()`; the channel job below it
+now uses the module-scope one.
+
+- [ ] **Step 2: Verify the refactor changed nothing**
+
+Run: `npx tsc --noEmit && npm run lint && npm test`
+Expected: no errors, all existing tests still pass. Nothing new is expected to
+pass yet — this step only moved code.
+
+- [ ] **Step 3: Write the failing test**
+
+Create `src/commands/crawler-candidates.spec.ts`:
+
+```ts
+/// <reference types="jest" />
+import { afterEach, describe, expect, it, jest } from "@jest/globals";
+import { VideoStatus } from "holodex.js";
+
+process.env.GOOGLE_API_KEY = "test-key";
+
+const { default: VideoModel } = await import("../models/Video.js");
+const { collectVideoUpdateCandidates } = await import("./crawler.js");
+
+function idList(ids: string[]) {
+  return ids.map((id) => ({ id }));
+}
+
+// Each query in the list is stubbed independently so the assembled result can
+// be attributed to the right one.
+function stubQueries(options: {
+  newVideos?: string[];
+  uncrawled?: string[];
+  recheck?: string[];
+  live?: string[];
+}) {
+  jest.spyOn(VideoModel, "find").mockImplementation(((filter: {
+    status?: unknown;
+    crawledAt?: unknown;
+    deleted?: unknown;
+  }) => {
+    let rows: { id: string }[] = [];
+    if (filter.status === VideoStatus.New) {
+      rows = idList(options.newVideos ?? []);
+    } else if (filter.crawledAt === null) {
+      rows = idList(options.uncrawled ?? []);
+    } else if (filter.status === VideoStatus.Missing) {
+      rows = idList(options.recheck ?? []);
+    }
+    const chain = {
+      sort: () => chain,
+      limit: (n: number) => ({
+        select: () => Promise.resolve(rows.slice(0, n)),
+        // findMissingRecheckCandidates returns the query itself, so the caller
+        // adds .select() after .limit().
+      }),
+      select: () => Promise.resolve(rows),
+    };
+    return chain;
+  }) as never);
+
+  const liveChain = {
+    and: () => ({ select: () => Promise.resolve([]) }),
+    sort: () => ({
+      limit: (n: number) => ({
+        select: () => Promise.resolve(idList(options.live ?? []).slice(0, n)),
+      }),
+    }),
+  };
+  jest.spyOn(VideoModel, "findLiveVideos").mockReturnValue(liveChain as never);
+  jest.spyOn(VideoModel, "findRecentlyEndedVideos").mockReturnValue({
+    sort: () => ({ limit: () => ({ select: () => Promise.resolve([]) }) }),
+  } as never);
+}
+
+describe("collectVideoUpdateCandidates", () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it("includes heuristically-Missing videos without routing them through New", async () => {
+    stubQueries({ recheck: ["miss1", "miss2"] });
+
+    const ids = await collectVideoUpdateCandidates();
+
+    // They arrive as candidates directly. Nothing had to flip their status to
+    // New first, which is what would otherwise bounce them New -> Missing on
+    // every rotation.
+    expect(ids).toEqual(["miss1", "miss2"]);
+  });
+
+  it("keeps the re-check ids even when live videos could fill the whole slice", async () => {
+    stubQueries({
+      recheck: ["miss1", "miss2"],
+      live: Array.from({ length: 200 }, (_, i) => `live${i}`),
+    });
+
+    const ids = await collectVideoUpdateCandidates();
+
+    // The cap is 100 and the live query alone could supply more than that, so
+    // this only holds because the re-check query is ordered ahead of it.
+    expect(ids).toHaveLength(100);
+    expect(ids.slice(0, 2)).toEqual(["miss1", "miss2"]);
+  });
+
+  it("still lets the live query fill the rest of the slice", async () => {
+    stubQueries({
+      recheck: ["miss1"],
+      live: Array.from({ length: 200 }, (_, i) => `live${i}`),
+    });
+
+    const ids = await collectVideoUpdateCandidates();
+
+    expect(ids).toHaveLength(100);
+    expect(ids.filter((id) => id.startsWith("live"))).toHaveLength(99);
+  });
+});
+```
+
+- [ ] **Step 4: Run the test to verify it fails**
+
+Run: `npm run test -- src/commands/crawler-candidates.spec.ts`
+Expected: FAIL — the first test reports `[]` because no query returns the
+re-check ids yet.
+
+- [ ] **Step 5: Add the re-check query to the candidate list**
+
+In `collectVideoUpdateCandidates()`, insert this entry into the `new Set<string>([...])` literal **between** the `findRecentlyEndedVideos(1)` block and the final `findLiveVideos()` block:
+
+```ts
+      // Streams a timeout heuristic marked Missing: the scheduled start came
+      // and went, or the stream stopped without being ended. The video is
+      // still on YouTube, so only videos.list can tell whether it has since
+      // started or finally ended, and nothing else re-checks it — the one
+      // query above that touches Missing is limited to hbEnd within the hour.
+      // They stay Missing throughout; nothing flips them to New first, so
+      // there is no round trip through the two queries at the top of this
+      // list.
+      //
+      // Two per round because the hit rate is low and the population large:
+      // for most of them YouTube never does fill in actualEnd. The position
+      // matters as much as the limit — the live query below covers every
+      // upcoming and live video and would fill the slice on its own, so
+      // anything after it would never be reached.
+      ...mapToId(
+        await VideoModel.findMissingRecheckCandidates(2).select("id")
+      ),
+```
+
+- [ ] **Step 6: Run the test to verify it passes**
+
+Run: `npm run test -- src/commands/crawler-candidates.spec.ts`
+Expected: PASS, 3 tests.
+
+- [ ] **Step 7: Register the three discovery jobs**
 
 In `src/commands/crawler.ts`, add these imports alongside the existing ones:
 
@@ -3098,20 +3358,20 @@ agenda.define(JOB_YOUTUBE_EXISTENCE_PROBE, async (_job: Job): Promise<void> => {
 void agenda.every("5 minutes", JOB_YOUTUBE_EXISTENCE_PROBE);
 ```
 
-- [ ] **Step 4: Verify types, lint and the whole suite**
+- [ ] **Step 8: Verify types, lint and the whole suite**
 
 Run: `npx tsc --noEmit && npm run lint && npm test`
 Expected: no type errors, no lint errors, all tests pass.
 
-- [ ] **Step 5: Verify the build produces a runnable crawler**
+- [ ] **Step 9: Verify the build produces a runnable crawler**
 
 Run: `npm run build`
 Expected: build succeeds and `dist/commands/crawler.js` exists.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add src/commands/crawler.ts
+git add src/commands/crawler.ts src/commands/crawler-candidates.spec.ts
 git commit -m "feat(crawler): schedule the discovery rounds and re-check stuck streams"
 ```
 

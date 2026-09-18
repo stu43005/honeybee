@@ -148,6 +148,8 @@ VideoModel.noticeUnknownVideos(entries)
 
 `availableAt` 是 required 且沒有 default，取來源提供的發布時間（feed entry 的 `published`、playlistItems 的 `contentDetails.videoPublishedAt`）。這只是個起始值，`updateVideoFromYoutube()` 補完 metadata 時會以 `actualStart ?? scheduledStart ?? publishedAt` 覆寫它；但它有索引，用來源的真實時間比用「現在」準確得多——尤其對 feed 裡那些早就發布的影片。
 
+兩個來源都可能沒給這個時間（`parseNotification()` 的 `published` 是 optional，`playlistItems` 的 `videoPublishedAt` 同理）。那種情況下退回「現在」，**不**把該筆丟掉：欄位必填只是要求有個值，而拿不到發布時間不是漏收這支影片的理由——反正它很快就會被 metadata 補抓覆寫成正確值。
+
 pubsub 的 `routes.ts` 維持原樣、不改用這個 static：它需要逐支影片的 `upsertedCount` 來決定要不要立刻補 metadata 與記 log，而且它對既有影片刻意要寫 `crawledAt: null`——那是它要求重抓的方式，與發現路徑的語意相反。
 
 ### 為什麼不在發現當下補 metadata
