@@ -57,7 +57,7 @@
 
 `updateVideoFromYoutube()` 的整套狀態判定——Upcoming / Live / Past / Missing 的分支、`duration`、`premiere`、`memberLimited`（正是靠 `statistics.viewCount === undefined` 判定）、`viewers`、`likes`——全部建立在這四塊缺失的資料上。因此 `videos.list` 無法省略。
 
-不過 `playlistItems` 的 `snippet.title` 與 `channelId` 已足以完成 upsert，與 feed 提供的資訊等價，所以 UUMO 路徑不需要額外的查詢步驟。
+不過 `playlistItems` 提供的 `snippet.title`、`snippet.videoOwnerChannelId` 與 `contentDetails.videoPublishedAt` 已足以建立文件，與 feed 提供的資訊等價，所以 UUMO 路徑不需要額外的查詢步驟。
 
 ### googleapis 預設會自動重試，而失敗的請求照樣扣配額
 
@@ -120,23 +120,35 @@ src/components/youtube-discovery/
 
 ### 共用寫入路徑
 
-差集寫入放在 `VideoModel` 的 static，與既有的 `noticeFromNotification()` / `noticeFromRaid()` 同層：
+發現路徑的寫入放在 `VideoModel` 的 static，與既有的 `noticeFromNotification()` / `noticeFromRaid()` 同層：
 
 ```text
-發現來源 → { videoId, title, channelId }[]
+發現來源 → { videoId, title, channelId, publishedAt }[]
     ↓
 VideoModel.noticeUnknownVideos(entries)
-    ├ find({ id: { $in: ids } }).select("id")    差集比對
-    └ 僅對未知的 id 執行 upsert                    status = New、crawledAt = null
+    ├ find({ id: { $in: ids } }).select("id")    差集：跳過已知的 id
+    └ insertMany(docs, { ordered: false })        建立，不是更新
 ```
 
 放在 model 而不是 component，是因為兩邊都要用它，而分層只有這一個方向說得通：`updateVideoFromPlaylist()` 在 `src/modules/youtube.ts` 裡就要寫入結果，若差集邏輯住在 `src/components/` 底下，module 就得反向依賴 component。model 是兩者共同的下游。
 
 到此為止——**寫入路徑不呼叫 `updateVideoFromYoutube()`**。
 
-**差集比對不可省略。** `noticeFromNotification()` 的 `$set` 含 `crawledAt: null`。若每輪對 feed 裡全部 15 支影片（絕大多數是已知的）都呼叫一次，等於持續把數千支已知影片丟回 `crawler youtube update` 的補抓佇列，把真正的 live 影片擠出 `.slice(0, 100)` 的名額——這正是 `2026-09-09-crawler-unconfirmed-video-cleanup-design.md` 記錄過的排擠問題。
+### 是建立，不是更新
 
-pubsub 的 `routes.ts` 維持原樣、不改用這個 static：它需要逐支影片的 `upsertedCount` 來決定要不要立刻補 metadata 與記 log，而它的通知量本來就只有真正變動的那幾支，沒有差集的必要。
+發現路徑要做的事就是「把我沒見過的影片建起來」，所以用 `insertMany` 而不是 upsert。既有的 `noticeFromNotification()` / `noticeFromRaid()` 都是 upsert，但那是因為它們**需要**對既有文件做事（前者寫 `crawledAt: null` 要求重抓）；發現路徑不需要，用 upsert 只會把「碰到既有文件時該怎麼辦」變成一個要回答的問題。
+
+這帶來三個性質：
+
+**既有文件不可能被動到。** 差集查詢與寫入之間有一個毫秒級的窗口，pubsub、Holodex 或另一個發現任務可能在那期間插入該影片並補完 metadata。`insertMany` 對一個已存在的 `id` 只會撞上 unique index 而失敗，不會改到它。差集因此退回成單純的最佳化——它省掉的是資料庫往返，不是正確性。
+
+**`ordered: false` 讓一筆重複不會拖垮整批。** 那幾筆會失敗、其餘照常插入。失敗的錯誤帶 `code: 11000`，對發現路徑而言那是**正常結果**（代表差集之後有人搶先插入），不是需要回報的錯誤；其他 code 才要記 log。成功插入的文件在 `insertedDocs` 裡。
+
+**schema validator 會執行。** 這是比 upsert 更重要的差別：`title` 或 `channelId` 為空的文件會被擋在資料庫之外，而不是寫進去、之後每次 `save()` 都失敗——那正是 `2026-09-09-crawler-unconfirmed-video-cleanup-design.md` 記錄的那類文件的來源，而所有 upsert 路徑都繞過 validator。`duration`、`status`、`hbStatus` 等有 default 的欄位與 `createdAt` / `updatedAt` 由 mongoose 在建構文件時填好。
+
+`availableAt` 是 required 且沒有 default，取來源提供的發布時間（feed entry 的 `published`、playlistItems 的 `contentDetails.videoPublishedAt`）。這只是個起始值，`updateVideoFromYoutube()` 補完 metadata 時會以 `actualStart ?? scheduledStart ?? publishedAt` 覆寫它；但它有索引，用來源的真實時間比用「現在」準確得多——尤其對 feed 裡那些早就發布的影片。
+
+pubsub 的 `routes.ts` 維持原樣、不改用這個 static：它需要逐支影片的 `upsertedCount` 來決定要不要立刻補 metadata 與記 log，而且它對既有影片刻意要寫 `crawledAt: null`——那是它要求重抓的方式，與發現路徑的語意相反。
 
 ### 為什麼不在發現當下補 metadata
 
@@ -146,7 +158,7 @@ pubsub 的 `routes.ts` 維持原樣、不改用這個 static：它需要逐支�
 
 交給既有的 `crawler youtube update` 之後，補 metadata 的配額是**每分鐘最多 2 units 的固定上限**，與發現量完全無關。
 
-代價是吞吐量：該任務的候選查詢前兩條是 `{ status: New }` 與 `{ crawledAt: null }`，各取 25 筆、都以 `_id` 遞減排序，而 `noticeFromNotification()` 同時寫入 `status: New` 與 `crawledAt: null`——所以本子系統發現的影片會**同時命中兩條查詢**，經 `Set` 去重後實際只佔 25 個名額，不是 50。補 metadata 的吞吐量因此是 **25 支/分鐘 = 36000 支/天**。
+代價是吞吐量：該任務的候選查詢前兩條是 `{ status: New }` 與 `{ crawledAt: null }`，各取 25 筆、都以 `_id` 遞減排序。新建立的文件 `status` 是 default 的 `New`，而 `crawledAt` 從未被寫入——MongoDB 的 `{ crawledAt: null }` 同時匹配值為 null 與欄位不存在的文件，所以它**同時命中兩條查詢**，經 `Set` 去重後實際只佔 25 個名額，不是 50。補 metadata 的吞吐量因此是 **25 支/分鐘 = 36000 支/天**。
 
 這讓本子系統的**全部**配額用量收斂成一個常數：`YOUTUBE_MEMBERS_POLL_BATCH_SIZE` × 每日輪數。
 
@@ -233,13 +245,15 @@ youtube.playlistItems.list(
 );
 ```
 
-不翻頁。回來的每筆項目映射成 `{ videoId, title, channelId }` 交給 `noticeUnknownVideos()`；之後更新 `membersCrawledAt`。
+不翻頁。回來的每筆項目映射成 `{ videoId, title, channelId, publishedAt }` 交給 `noticeUnknownVideos()`；之後更新 `membersCrawledAt`。
 
 **`retry: false` 是必要的，不是調校。** googleapis 預設會對 5xx / 429 的 GET 重試三次（見「已驗證的事實」），而每次重試都各扣一個 unit，所以端點劣化時一輪 15 次呼叫會變成 60 units、耗時從 4 分鐘變成 16 分鐘——本設計「每日配額是常數」這個核心性質會直接失效。
 
 關掉它不會損失任何可靠性，因為**輪替本身就是重試機制**：失敗的頻道 `membersCrawledAt` 照樣推進、排到隊尾，下一圈會再試一次。gaxios 在同一秒內急著重打三次，對一個每五分鐘跑一輪的背景任務沒有任何價值，卻讓配額與耗時同時變得不可預測。
 
-映射取的是 `contentDetails.videoId`（不是 `snippet.resourceId.videoId`——兩者同值，但前者是 playlistItems 專為此提供的欄位）、`snippet.title`、以及 `snippet.videoOwnerChannelId`。最後一個是**影片擁有者**的頻道，與「誰把它加進播放清單」的 `snippet.channelId` 不同；對 UU / UUMO 這種自動播放清單兩者相同，但取擁有者欄位在其他播放清單上也正確。
+映射取的是 `contentDetails.videoId`（不是 `snippet.resourceId.videoId`——兩者同值，但前者是 playlistItems 專為此提供的欄位）、`snippet.title`、`snippet.videoOwnerChannelId`，以及 `contentDetails.videoPublishedAt`。
+
+後兩個都刻意避開了同名的 `snippet` 欄位：`videoOwnerChannelId` 是**影片擁有者**的頻道，而 `snippet.channelId` 是「誰把它加進播放清單」；`contentDetails.videoPublishedAt` 是影片發布到 YouTube 的時間，而 `snippet.publishedAt` 是它被加進播放清單的時間。對 UU / UUMO 這種自動播放清單兩組值通常相同，但取 `contentDetails` 的版本在任何播放清單上都正確。
 
 分成兩條候選查詢而非一條的原因：沒有會員影片的頻道若混在掃描佇列裡，會白白佔用名額卻不產生任何發現。分開之後，配額預算直接等於 `YOUTUBE_MEMBERS_POLL_BATCH_SIZE`，與「有多少頻道沒開會員」無關。
 
@@ -521,28 +535,31 @@ feed 的週期是 2 分鐘，最壞耗時會與下一輪重疊，由 agenda 的 
 
 Jest ESM（`jest.unstable_mockModule` + 動態 import）。重點放在能抓到迴歸的斷言，而非覆蓋率。
 
-| 測試                 | 斷言                                                                                                                                           |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| 差集（全部已知）     | 15 筆全是已知影片 → `noticeUnknownVideos()` 內部零次 upsert                                                                                    |
-| 差集（部分未知）     | 15 筆中 2 筆未知 → 實際被 upsert 的 id 集合 `toEqual` 恰好那 2 個                                                                              |
-| 發現路徑不花配額     | 一輪 feed 輪詢處理完含新影片的頻道後，`videos.list` 零次呼叫                                                                                   |
-| 播放清單欄位映射     | 一筆 `playlistItems` 項目 → `toEqual({ videoId: contentDetails.videoId, title: snippet.title, channelId: snippet.videoOwnerChannelId })`       |
-| 配額中止             | 第 3 個頻道回 `quotaExceeded` → 第 4 個起不再呼叫 API，前 3 個的 `membersCrawledAt` 已寫入                                                     |
-| 失敗不卡前排         | 頻道 A 拋錯 → `feedCrawledAt` 仍更新；第二輪的候選查詢不再選到 A                                                                               |
-| 分桶公平性           | 其中一桶為空 → 另一桶仍取滿 N                                                                                                                  |
-| 不探測非 deleted     | 候選集合含 `deleted` 非 true 的 `Missing` 影片 → 該輪對它零次 oEmbed 呼叫，且它的 `status` 不被改成 `New`                                      |
-| 非 deleted 走重查    | `crawler youtube update` 的候選 id 集合含 `deleted` 非 true 的 `Missing` 影片，且該影片全程維持 `status: Missing`（不經過 `New`）              |
-| 播放清單不重試       | HTTP 層持續回 503 → 一次 `updateVideoFromPlaylist()` 只發出 **1 次**請求就放棄。必須攔在 HTTP 傳輸層，mock `playlistItems.list` 本身看不到重試 |
-| 復活寫入             | oEmbed 200 → `status: New`、`deleted` 與 `detectedDeletionAt` 被移除、`crawledAt` 為 null；404/400 → 只更新 `crawledAt`，`status` 不動         |
-| 陳舊結果被丟棄       | 選中後、oEmbed 回來前，把該文件的 `crawledAt` 改成 null（模擬 pubsub 重抓訊號）→ 404 的結果寫不進去，`crawledAt` 仍是 null                     |
-| 待重抓者不被選中     | `crawledAt` 在**選中之前**就已是 null 的 deleted Missing 影片 → 兩個桶都選不到它，該輪對它零次 oEmbed，`crawledAt` 仍是 null                   |
-| 倒退被擋下           | 選中後、oEmbed 回來前，把該文件改成 `status: Past` 且移除 `deleted` → 200 的結果寫不進去，`status` 仍是 `Past`                                 |
-| oEmbed 分類          | 200/404/400/網路錯誤 四種輸入的分類結果，以及 URL 編碼正確（內層 `?v=` 必須被編碼）                                                            |
-| 結論性探測套 TTL     | 得到 200 或 404 的頻道，在七天內不再進入探測候選；`hasMembersPlaylist: false` 的頻道不觸發任何 API 呼叫                                        |
-| 首次探測失敗可重試   | 首次探測逾時（`hasMembersPlaylist` 仍未知）→ 該頻道在一小時後**重新**進入探測候選，而非七天後                                                  |
-| 已有結論者失敗可重試 | `false` 的頻道在 TTL 到期後重探又逾時 → `membersProbeNextAt` 只推進一小時；連續三次逾時後它仍每小時回到候選，證明過期的結論沒有被續成七天      |
+| 測試                 | 斷言                                                                                                                                                                                   |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 差集（全部已知）     | 15 筆全是已知影片 → 完全不呼叫 `insertMany`                                                                                                                                            |
+| 差集（部分未知）     | 15 筆中 2 筆未知 → 送進 `insertMany` 的文件 id 集合 `toEqual` 恰好那 2 個                                                                                                              |
+| 重複不拖垮整批       | 3 筆中 1 筆撞 `code: 11000` → 另外 2 筆確實寫入，且該輪不以錯誤結束                                                                                                                    |
+| 差集失效仍不覆寫     | 差集查詢之後、寫入之前插入一支已補完 metadata 的同 id 影片（`crawledAt` 非 null、`status: Past`、正式標題）→ 寫入後這三個值**原封不動**                                                |
+| 缺欄位進不了 DB      | `title` 為空字串的 entry → 該筆未被寫入（validator 擋下），同批其餘的照常寫入                                                                                                          |
+| 發現路徑不花配額     | 一輪 feed 輪詢處理完含新影片的頻道後，`videos.list` 零次呼叫                                                                                                                           |
+| 播放清單欄位映射     | 一筆 `playlistItems` 項目 → `toEqual({ videoId: contentDetails.videoId, title: snippet.title, channelId: snippet.videoOwnerChannelId, publishedAt: contentDetails.videoPublishedAt })` |
+| 配額中止             | 第 3 個頻道回 `quotaExceeded` → 第 4 個起不再呼叫 API，前 3 個的 `membersCrawledAt` 已寫入                                                                                             |
+| 失敗不卡前排         | 頻道 A 拋錯 → `feedCrawledAt` 仍更新；第二輪的候選查詢不再選到 A                                                                                                                       |
+| 分桶公平性           | 其中一桶為空 → 另一桶仍取滿 N                                                                                                                                                          |
+| 不探測非 deleted     | 候選集合含 `deleted` 非 true 的 `Missing` 影片 → 該輪對它零次 oEmbed 呼叫，且它的 `status` 不被改成 `New`                                                                              |
+| 非 deleted 走重查    | `crawler youtube update` 的候選 id 集合含 `deleted` 非 true 的 `Missing` 影片，且該影片全程維持 `status: Missing`（不經過 `New`）                                                      |
+| 播放清單不重試       | HTTP 層持續回 503 → 一次 `updateVideoFromPlaylist()` 只發出 **1 次**請求就放棄。必須攔在 HTTP 傳輸層，mock `playlistItems.list` 本身看不到重試                                         |
+| 復活寫入             | oEmbed 200 → `status: New`、`deleted` 與 `detectedDeletionAt` 被移除、`crawledAt` 為 null；404/400 → 只更新 `crawledAt`，`status` 不動                                                 |
+| 陳舊結果被丟棄       | 選中後、oEmbed 回來前，把該文件的 `crawledAt` 改成 null（模擬 pubsub 重抓訊號）→ 404 的結果寫不進去，`crawledAt` 仍是 null                                                             |
+| 待重抓者不被選中     | `crawledAt` 在**選中之前**就已是 null 的 deleted Missing 影片 → 兩個桶都選不到它，該輪對它零次 oEmbed，`crawledAt` 仍是 null                                                           |
+| 倒退被擋下           | 選中後、oEmbed 回來前，把該文件改成 `status: Past` 且移除 `deleted` → 200 的結果寫不進去，`status` 仍是 `Past`                                                                         |
+| oEmbed 分類          | 200/404/400/網路錯誤 四種輸入的分類結果，以及 URL 編碼正確（內層 `?v=` 必須被編碼）                                                                                                    |
+| 結論性探測套 TTL     | 得到 200 或 404 的頻道，在七天內不再進入探測候選；`hasMembersPlaylist: false` 的頻道不觸發任何 API 呼叫                                                                                |
+| 首次探測失敗可重試   | 首次探測逾時（`hasMembersPlaylist` 仍未知）→ 該頻道在一小時後**重新**進入探測候選，而非七天後                                                                                          |
+| 已有結論者失敗可重試 | `false` 的頻道在 TTL 到期後重探又逾時 → `membersProbeNextAt` 只推進一小時；連續三次逾時後它仍每小時回到候選，證明過期的結論沒有被續成七天                                              |
 
-前三項是最重要的迴歸防線。第一、二項守住「每輪把數千支已知影片丟回補抓佇列」這個會靜默拖垮 `crawler youtube update` 的失誤；第三項守住整份設計的配額前提——一旦有人在發現路徑上加回 `updateVideoFromYoutube()`，配額就不再是常數，而這個測試會立刻失敗。
+前六項是最重要的迴歸防線。前兩項守住「每輪把數千支已知影片丟回補抓佇列」這個會靜默拖垮 `crawler youtube update` 的失誤；第三、四項是它的底線——一筆重複不該影響同批其餘的，而即使差集完全失效，既有文件也不該被動到；第五項守住「無效文件進不了資料庫」這個只有 `insertMany` 才給得起的保證；第六項守住整份設計的配額前提，一旦有人在發現路徑上加回 `updateVideoFromYoutube()`，配額就不再是常數，這個測試會立刻失敗。
 
 最後兩項守住「不確定的探測只推遲一小時」這條規則。前者對應首次上線的必經路徑（每個頻道都是第一次探測）；後者對應更難發現的那條路徑——已有結論的頻道在 TTL 到期後重探失敗，若失敗也套用七天，過期的結論會被無限續命。兩者都要用 stateful fake 記下前一輪寫入的 `membersProbeNextAt`，再以推進後的時間重跑候選查詢，才能觀察到推遲的究竟是一小時還是七天。
 
@@ -628,4 +645,4 @@ feed 是 900 秒 edge cache，所以發現延遲是「輪詢週期 + 最多 15 �
 
 ### 不改動 pubsub 訂閱機制
 
-pubsub 仍是即時主力，其續訂節奏（每 10 分鐘 5 個頻道）與本子系統無關，不在本設計的變更範圍。兩者的寫入路徑共用同一組 model 方法，`noticeFromNotification()` 是 upsert，同一支影片被兩邊同時發現是冪等的。
+pubsub 仍是即時主力，其續訂節奏（每 10 分鐘 5 個頻道）與本子系統無關，不在本設計的變更範圍。兩邊各自寫入同一個 collection 而不互相踩踏：pubsub 走 upsert，對既有影片會刻意寫 `crawledAt: null` 要求重抓；發現路徑只做建立，對既有影片撞上 unique index 而放棄。同一支影片被兩邊同時發現時，先到的建立、後到的失敗，或由 pubsub 覆上它要的重抓請求——兩種順序的結果都是正確的。
