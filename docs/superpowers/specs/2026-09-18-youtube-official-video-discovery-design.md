@@ -108,7 +108,7 @@ src/modules/youtube.ts                     唯一呼叫 googleapis 的檔案
   + updateVideoFromPlaylist(playlistId)      playlistItems.list
 
 src/components/youtube-discovery/
-  oembed.ts            零配額存在性探測（純 fetch）
+  oembed.ts            零配額存在性探測（axios，不經 googleapis）
   feed-poll.ts         一輪 feed 輪詢
   members-poll.ts      一輪 UUMO 探測 + 掃描
   existence-probe.ts   一輪復活探測
