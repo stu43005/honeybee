@@ -14,6 +14,7 @@ import { Video as HolodexVideo, VideoStatus } from "holodex.js";
 import moment from "moment-timezone";
 import type { FlattenMaps } from "mongoose";
 import assert from "node:assert";
+import { YOUTUBE_EXISTENCE_PROBE_RECENT_MS } from "../constants.js";
 import {
   HoneybeeStatus,
   PrivacyStatus,
@@ -61,6 +62,18 @@ export const IsNotShortQuery = Object.freeze({
   duration: { $gt: 60 },
 });
 
+/**
+ * One video as an official discovery source reports it. The RSS feed and
+ * `playlistItems.list` both supply exactly these four values, which is the
+ * whole reason neither path needs a `videos.list` call to create a document.
+ */
+export interface DiscoveredVideo {
+  videoId: string;
+  title: string;
+  channelId: string;
+  publishedAt?: Date;
+}
+
 @modelOptions({ schemaOptions: { collection: "videos" } })
 @index(
   { availableAt: 1 },
@@ -93,6 +106,19 @@ export const IsNotShortQuery = Object.freeze({
 )
 @index(
   { detectedDeletionAt: 1 },
+  {
+    partialFilterExpression: {
+      status: VideoStatus.Missing,
+    },
+  }
+)
+// Serves both existence-probe buckets (equality on `deleted`, range on
+// `availableAt`) and the re-check query for heuristically-Missing videos, which
+// skips `availableAt` entirely. Both sort on `crawledAt` after a range, so both
+// fall back to an in-memory sort — but their limits are 5 and 2, which makes it
+// a top-k sort with constant memory rather than a full one.
+@index(
+  { deleted: 1, availableAt: 1, crawledAt: 1 },
   {
     partialFilterExpression: {
       status: VideoStatus.Missing,
@@ -586,6 +612,119 @@ export class Video extends TimeStamps {
         upsert: true,
       }
     );
+  }
+
+  /**
+   * Creates the videos this collection has never seen and leaves every existing
+   * document untouched.
+   *
+   * Two layers, answering two different problems. The lookup is an
+   * optimisation: a feed round carries 15 entries of which nearly all are
+   * already known, and sending those to the database is pure waste. The insert
+   * is where correctness lives: between the lookup and the write, pubsub or
+   * another discovery round can create the very same video and hydrate it, and
+   * an insert simply loses that race against the unique index instead of
+   * overwriting a title or resetting `crawledAt`.
+   *
+   * Unlike every upsert path in this file, this runs schema validators, so a
+   * document missing `title` or `channelId` is refused at the boundary rather
+   * than written and then failing every later `save()`.
+   */
+  public static async noticeUnknownVideos(
+    this: ReturnModelType<typeof Video>,
+    entries: DiscoveredVideo[]
+  ): Promise<void> {
+    if (entries.length === 0) return;
+
+    const ids = entries.map((entry) => entry.videoId);
+    const known = new Set(
+      (await this.find({ id: { $in: ids } }).select("id")).map(
+        (video) => video.id
+      )
+    );
+    const unknown = entries.filter((entry) => !known.has(entry.videoId));
+    if (unknown.length === 0) return;
+
+    const docs = unknown.map((entry) => ({
+      id: entry.videoId,
+      title: entry.title,
+      channelId: entry.channelId,
+      // `availableAt` is required with no default. It is only a starting value
+      // — updateVideoFromYoutube overwrites it with actualStart/scheduledStart
+      // /publishedAt — but it is indexed, so the source's real publish time
+      // beats "now" for the feed entries that are already days old.
+      availableAt: entry.publishedAt ?? new Date(),
+    }));
+
+    try {
+      await this.insertMany(docs, { ordered: false });
+    } catch (error) {
+      // A duplicate key is the expected outcome of losing the race described
+      // above, not a failure worth reporting. Anything else is real.
+      const writeErrors = (error as { writeErrors?: { code?: number }[] })
+        .writeErrors;
+      const onlyDuplicates =
+        Array.isArray(writeErrors) &&
+        writeErrors.length > 0 &&
+        writeErrors.every((writeError) => writeError.code === 11000);
+      if (!onlyDuplicates) throw error;
+    }
+  }
+
+  /**
+   * One bucket of the existence probe: videos YouTube stopped returning,
+   * split by whether they became available within the recent window so the far
+   * larger old population cannot starve the recent one.
+   *
+   * `crawledAt: { $ne: null }` excludes documents with a pending hydration
+   * request. A null there means someone (pubsub, via noticeFromNotification)
+   * asked for a refresh that `crawler youtube update` has not served yet, and
+   * null sorts first — so without this the probe would preferentially grab
+   * exactly those documents and overwrite the request with its own timestamp.
+   */
+  public static findExistenceProbeCandidates(
+    this: ReturnModelType<typeof Video>,
+    recent: boolean,
+    limit: number,
+    now: Date = new Date()
+  ) {
+    const boundary = new Date(
+      now.getTime() - YOUTUBE_EXISTENCE_PROBE_RECENT_MS
+    );
+    return this.find({
+      status: VideoStatus.Missing,
+      deleted: true,
+      crawledAt: { $ne: null },
+      availableAt: recent ? { $gte: boundary } : { $lt: boundary },
+    })
+      .sort({ crawledAt: 1 })
+      .limit(limit)
+      .select("id crawledAt");
+  }
+
+  /**
+   * The Missing videos the existence probe deliberately leaves alone: the ones
+   * a timeout heuristic marked, whose `deleted` was never set because YouTube
+   * still returns them.
+   *
+   * An oEmbed probe cannot help here — the video is there, so it would answer
+   * 200 forever and bounce the document New → Missing on every rotation. Only
+   * videos.list can see whether the stream finally started or ended, so these
+   * join the hydration candidate list instead and never leave Missing until
+   * something really changed.
+   */
+  public static findMissingRecheckCandidates(
+    this: ReturnModelType<typeof Video>,
+    limit: number
+  ) {
+    return this.find({
+      status: VideoStatus.Missing,
+      // `$in` rather than `$ne: true`, to keep the equality shape the index can
+      // use; it also matches documents where the field was never written.
+      deleted: { $in: [null, false] },
+    })
+      .sort({ crawledAt: 1 })
+      .limit(limit);
   }
 
   //#endregion update methods
