@@ -406,7 +406,14 @@ alias 命名空間讓跨服務 import **可見**（只能寫成相對路徑）�
 必然在有壓力時失效。
 
 採用核心 ESLint 的 `no-restricted-imports`，不引入新依賴。該規則比對的是
-**原始 specifier 字串**，不呼叫 resolver，因此模式必須自行涵蓋任意深度：
+**原始 specifier 字串**，不呼叫 resolver，因此模式必須自行涵蓋同一個目標的
+所有寫法。需要封住的有兩個方向：
+
+1. 服務 → 另一個服務。除了 `../webhook/x.js` 這種直接寫法，還有先爬到
+   `src/` 再走回來的 `../../services/webhook/x.js`、`../../../src/services/webhook/x.js`。
+2. 共用層（`modules/`、`models/`、`utils/`）→ 任何服務。這個方向若不封，
+   共用層可以 import 服務私有程式碼並把它傳遞暴露給所有其他服務，重整想
+   防止的依賴倒置會從這裡回來。
 
 ```js
 const SERVICES = [
@@ -419,26 +426,56 @@ const SERVICES = [
   "metrics",
 ];
 
+const SHARED_MESSAGE =
+  "Use a #models / #modules / #utils alias, or promote the shared code out of src/services/.";
+
 const crossServiceOverrides = SERVICES.map((service) => ({
   files: [`src/services/${service}/**/*.ts`],
   rules: {
     "no-restricted-imports": [
       "error",
       {
-        patterns: SERVICES.filter((sibling) => sibling !== service).map(
-          (sibling) => ({
-            // Matches a relative specifier at any depth ("./webhook/x.js",
-            // "../webhook/x.js", "../../webhook/x.js"). Anchoring on the
-            // leading dot keeps alias specifiers such as
-            // "#modules/webhook-template.js" out of the pattern.
-            regex: `^\\.\\.?(\\/\\.\\.)*\\/${sibling}(\\/|$)`,
-            message: `Cross-service import into "${sibling}" is forbidden. Use a #models / #modules / #utils alias, or promote the shared code out of src/services/.`,
-          })
+        patterns: SERVICES.filter((sibling) => sibling !== service).flatMap(
+          (sibling) => [
+            {
+              // Direct sibling reference at any ascent depth:
+              // "./webhook/x.js", "../webhook/x.js", "../../webhook/x.js".
+              regex: `^\\.\\.?(\\/\\.\\.)*\\/${sibling}(\\/|$)`,
+              message: `Cross-service import into "${sibling}" is forbidden. ${SHARED_MESSAGE}`,
+            },
+            {
+              // Any relative spelling that climbs out and names the segment
+              // again: "../../services/webhook/x.js",
+              // "../../../src/services/webhook/x.js".
+              regex: `^\\.\\.?\\/(.*\\/)?services\\/${sibling}(\\/|$)`,
+              message: `Cross-service import into "${sibling}" is forbidden. ${SHARED_MESSAGE}`,
+            },
+          ]
         ),
       },
     ],
   },
 }));
+
+const sharedLayerOverride = {
+  files: ["src/models/**/*.ts", "src/modules/**/*.ts", "src/utils/**/*.ts"],
+  rules: {
+    "no-restricted-imports": [
+      "error",
+      {
+        patterns: [
+          {
+            // Shared code must never reach into a service. Relative-anchored so
+            // an unrelated package path such as "some-pkg/services/x" is not hit.
+            regex: `^\\.\\.?\\/(.*\\/)?services\\/`,
+            message:
+              "Shared code must not import service-private modules; that would re-expose one service's internals to every other service.",
+          },
+        ],
+      },
+    ],
+  },
+};
 ```
 
 **必須用 `regex` 而非 gitignore-style 的 `group` glob。** 實測確認
@@ -446,18 +483,28 @@ const crossServiceOverrides = SERVICES.map((service) => ({
 判成違規；錨定在開頭那個點的 `regex` 才能區分「相對路徑跨服務」與「alias
 進入同名子目錄」。
 
-驗證過的比對結果（規則內部以 `regexMatcher.test(importSource)` 求值）：
+實測驗證過的比對結果（規則內部以 `regexMatcher.test(importSource)` 求值）：
 
-| specifier（以 worker 為來源）                                                 | 結果 |
-| ----------------------------------------------------------------------------- | ---- |
-| `./webhook/x.js`、`../webhook/x.js`、`../../../webhook/deep/x.js`             | 擋下 |
-| `../worker/foo.js`、`../webhookish/index.js`                                  | 放行 |
-| `#modules/webhook-template.js`、`#models/Webhook.js`、`some-pkg/webhook/x.js` | 放行 |
+| 來源                  | specifier                                                                                      | 結果 |
+| --------------------- | ---------------------------------------------------------------------------------------------- | ---- |
+| `services/worker/**`  | `./webhook/x.js`、`../webhook/x.js`、`../../../webhook/deep/x.js`                              | 擋下 |
+| `services/worker/**`  | `../../services/webhook/x.js`、`../../../src/services/webhook/x.js`、`./services/webhook/x.js` | 擋下 |
+| `services/worker/**`  | `../worker/foo.js`、`../webhookish/index.js`、`../../services/webhookish/x.js`                 | 放行 |
+| `services/worker/**`  | `#modules/webhook-template.js`、`#models/Webhook.js`、`some-pkg/services/webhook/x.js`         | 放行 |
+| `modules/**` 等共用層 | `../services/worker/gift.js`、`../../src/services/worker/gift.js`、`./services/worker/gift.js` | 擋下 |
+| `modules/**` 等共用層 | `./cache.js`、`../models/Video.js`、`#models/Video.js`、`mongoose`                             | 放行 |
 
-`src/scripts/**` 不需要例外條款：override 的 `files:` 只涵蓋
-`src/services/<X>/**`，而 `scripts/` 不在該樹下，§7.4 的例外自動成立。
+`src/scripts/**` 不需要例外條款：兩組 override 的 `files:` 都不涵蓋
+`scripts/`，§7.4 的例外自動成立。
 
-此規則的盲點（動態 `import()` 不被訪問）已列入 §2 的已接受限制。
+**這套模式封住的是「順手寫出來」的跨界寫法，不是刻意規避。** 由於規則比對
+字串而非解析後路徑，`../worker/../webhook/x.js` 這類繞路寫法仍會通過。要真正
+以正規化路徑判定必須改用 resolver 型工具（`dependency-cruiser` 比對解析後
+路徑、且涵蓋動態 `import()`），代價是一個新 devDependency 與一個獨立於
+`npm run lint` 的 CI 步驟。威脅模型是「開發者走捷徑」而非「開發者刻意繞過
+檢查」，因此先採字串規則；若日後實際出現繞路案例，再評估升級。
+
+此規則的另一個盲點（動態 `import()` 不被訪問）已列入 §2 的已接受限制。
 
 ## 8. 遷移順序
 
@@ -492,10 +539,16 @@ entrypoint，可作為 alias 方案的實地驗證。
 
 | 現況                                         | 改為                                                    |
 | -------------------------------------------- | ------------------------------------------------------- |
-| `modules/youtube-playlist-transport.spec.ts` | 與被測的 `modules/youtube.ts` 同名對齊                  |
-| `commands/crawler-candidates.spec.ts`        | 隨 `crawler` 搬移並與被測檔對齊                         |
-| `commands/webhook-dm.spec.ts`                | 隨 `webhook` 搬移並與被測檔對齊                         |
+| `modules/youtube-playlist-transport.spec.ts` | `modules/youtube.transport.spec.ts`                     |
+| `commands/crawler-candidates.spec.ts`        | `services/crawler/index.candidates.spec.ts`             |
+| `commands/webhook-dm.spec.ts`                | `services/webhook/index.dm.spec.ts`                     |
 | `modules/webhook/simplifyMatch.ts`           | `services/webhook/simplify-match.ts`（統一 kebab-case） |
+
+這三個 spec 檔都是**同一個被測檔的第二套測試**，不能直接改成
+`<被測檔>.spec.ts`——`modules/youtube.spec.ts`、`services/crawler/index.spec.ts`
+之類的名稱已經（或將會）被主測試檔佔用。因此採 `<被測檔>.<主題>.spec.ts` 形式：
+前綴標明被測對象，中綴保留原本的主題區分，兩套測試並存且都仍被
+`jest.config.mjs` 的 `**/?(*.)+(spec|test).ts?(x)` 樣式收錄。
 
 ## 9. 驗證
 
@@ -505,24 +558,75 @@ entrypoint，可作為 alias 方案的實地驗證。
 2. `npm run lint` — ESLint 走 `tsconfig.eslint.json`（extends 主 tsconfig，
    繼承 `rootDir`/`outDir`），需確認 `#` specifier 在 lint 階段也能解析
 3. `npm test` — Jest
-4. 第 4 步之後額外確認 `node dist/index.js --help` 能列出七個子命令，證明
-   `"imports"` 在實際執行期成立而非只有型別層面成立
 
-第 5 步搬完 `webhook` 之後，額外驗證 `importAllModels()` 仍能在 `dist/` 掃到
-全部 model（§6.1），這是 tsc 與 Jest 都抓不到的那一類失敗。
+### 9.1 執行期冒煙檢查（第 4 步起每一步都要跑）
 
-第 7 步必須做一次**否定測試**：在任一服務內加一行跨服務相對 import，確認
-`npm run lint` 報錯，再還原該行。只跑「lint 通過」無法區分「規則有效」與
-「規則的 `files:` glob 打錯、涵蓋不到任何檔案」。
+tsc 與 Jest 都證明不了 `"imports"` 在實際執行期成立：tsc 走的是
+dist→src fallback，Jest 走的是自己的 `moduleNameMapper`，**兩者都不經過 Node
+的 imports map**。必須在編譯產物上另外驗。
+
+`node dist/index.js --help` **不足以當這個驗證**：`src/index.ts` 只在各個
+yargs command handler 內部才 lazy-import 服務模組，`--help` 印完用法就結束，
+一個服務模組都不會被載入（Docker 映像檔的預設 `CMD` 正是 `--help`，同樣證明
+不了任何事）。
+
+改為在乾淨 build 後，逐一於獨立行程載入每個編譯後的服務入口，但不呼叫其
+runner：
+
+```bash
+for s in scheduler worker crawler manager webhook discord-bot metrics; do
+  node --input-type=module -e "
+    const t = setTimeout(() => {
+      console.error('TIMEOUT: module did not finish loading');
+      process.exit(2);
+    }, 20000);
+    await import('./dist/services/$s/index.js');
+    clearTimeout(t);
+    process.exit(0);
+  " || exit 1
+done
+```
+
+入口路徑依步驟而異：第 4 步時 `services/` 尚未建立，路徑是
+`./dist/commands/$s.js`；第 5 步逐服務搬移完成後才變成
+`./dist/services/$s/index.js`。搬移進行中的那幾個 commit，兩種路徑並存，
+檢查腳本需按當時實際位置取用。
+
+**`process.exit(0)` 不可省略。** 部分服務入口有 module-level 副作用會讓
+event loop 不退出——`webhook` 的入口在 module 層呼叫 `getCacheInstance()`，
+在 `REDIS_URI` 有值時會建立 Redis 連線與 `CacheableMemory` 的 `checkInterval`
+計時器。若以「行程是否自然結束」當成功判準，`webhook` 會永遠掛住而被誤判成
+失敗。判準是「`import()` 有沒有 resolve」，不是行程有沒有自己退出。
+
+同理，`setTimeout` 的自我設限不可省略：沒有它，一個真的卡在 module 層的入口
+會讓檢查無限等待而不是回報失敗。
+
+### 9.2 各步驟的額外驗證
+
+- **第 5 步搬完 `webhook` 之後**：驗證 `importAllModels()` 仍能在 `dist/`
+  掃到全部 model（§6.1）。這是 tsc 與 Jest 都抓不到的那一類失敗。
+- **第 7 步**：必須做一次**否定測試**——在任一服務內加一行跨服務相對
+  import，確認 `npm run lint` 報錯，再還原該行；並對 `modules/` 底下的檔案
+  加一行 `../services/<x>/...` 重複一次。只跑「lint 通過」無法區分「規則
+  有效」與「規則的 `files:` glob 打錯、涵蓋不到任何檔案」。
+- **第 4 步**：確認 `"imports"` 欄位在產品映像檔中仍然生效。現行
+  `Dockerfile` 以 `COPY package*.json /app/` 與
+  `COPY --from=build /app/dist /app/dist` 組出 `/app/package.json` 與
+  `/app/dist/`，entry 為 `node dist/index.js`，往上找到的最近 `package.json`
+  即帶有 imports map，因此**目前成立**。但這是個容易被日後改動 Dockerfile
+  的人無聲破壞的不變量：只要 `package.json` 不再與 `dist/` 同層，所有 `#`
+  specifier 會在容器啟動時才失敗。此依賴關係記於 §10。
 
 ## 10. 風險
 
-| 風險                                     | 緩解                                               |
-| ---------------------------------------- | -------------------------------------------------- |
-| `importAllModels()` 的路徑假設被破壞     | §6.1 列為硬約束；第 9 節列為獨立驗證項             |
-| ESLint 在 `#` specifier 上解析失敗       | 第 4 步先只導入 alias 不搬檔，單獨驗證 lint        |
-| diff 過大導致 review 失效                | 逐服務 commit；搬移步驟不混入邏輯變更              |
-| `models/` ↔ `modules/` 循環依賴          | 既有狀況，§5.2 記錄成因與為何無法在本次消除        |
-| §3.1 提升規則被繞過（直接跨服務 import） | §7.6 的 ESLint 規則機械阻擋；盲點見 §2 已接受限制  |
-| §3.4 分佈表隨時間失準                    | 第 9 步把維護義務寫入 `AGENTS.md`                  |
-| k8s 部署引用舊路徑                       | 入口仍是 `node dist/index.js <subcommand>`，未改變 |
+| 風險                                                                                                 | 緩解                                                                     |
+| ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `importAllModels()` 的路徑假設被破壞                                                                 | §6.1 列為硬約束；§9.2 列為獨立驗證項                                     |
+| ESLint 在 `#` specifier 上解析失敗                                                                   | 第 4 步先只導入 alias 不搬檔，單獨驗證 lint                              |
+| diff 過大導致 review 失效                                                                            | 逐服務 commit；搬移步驟不混入邏輯變更                                    |
+| `models/` ↔ `modules/` 循環依賴                                                                      | 既有狀況，§5.2 記錄成因與為何無法在本次消除                              |
+| §3.1 提升規則被繞過（直接跨服務 import）                                                             | §7.6 的 ESLint 規則機械阻擋；盲點見 §2 已接受限制                        |
+| §3.4 分佈表隨時間失準                                                                                | 第 9 步把維護義務寫入 `AGENTS.md`                                        |
+| k8s 部署引用舊路徑                                                                                   | 入口仍是 `node dist/index.js <subcommand>`，未改變                       |
+| 日後改動 `Dockerfile` 使 `package.json` 不再與 `dist/` 同層，令所有 `#` specifier 在容器啟動時才失敗 | §9.2 記錄此不變量；映像檔內 `package.json` 與 `dist/` 的相對位置不得更動 |
+| 共用層反向 import 服務私有程式碼，把單一服務的內部傳遞暴露給所有服務                                 | §7.6 的共用層 override 機械阻擋；第 7 步的否定測試涵蓋此方向             |
