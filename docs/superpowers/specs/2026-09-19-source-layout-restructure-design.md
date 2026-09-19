@@ -54,10 +54,10 @@
 - 讓目錄結構直接表達「這段程式碼屬於哪個服務」或「這是跨服務共用的」
 - 修正 `models/` → `components/` 的層級反轉
 - 解散定位模糊的 `data/` 與 `components/`
-- 以 path alias 表達「跨越服務邊界」的 import，使違規可被肉眼與工具識別
+- 以 path alias 表達「跨越服務邊界」的 import，並以 lint 規則阻擋跨服務依賴
 - 刪除 dead code
 
-### 非目標
+### 非目標／已接受的限制（Non-goals / Accepted limitations）
 
 - **不改變任何執行期行為。** 本次重整是純粹的檔案搬移、模組切分與 import
   路徑改寫；不調整演算法、不改 API、不動資料結構。
@@ -66,7 +66,37 @@
 - **不引入 barrel file（`index.ts` re-export）。** 只會增加一層無邏輯的間接。
 - **不補測試覆蓋率。** 既有測試隨被測檔案一起搬移，不新增也不刪除。
 
+**已接受的限制：跨服務 import 的檢查不涵蓋動態 `import()`**
+
+- **疑慮**：§7.6 的 ESLint 規則只訪問 `ImportDeclaration` /
+  `ExportNamedDeclaration` / `ExportAllDeclaration` /
+  `TSImportEqualsDeclaration`，因此 `await import("../webhook/x.js")` 這種
+  跨服務動態 import 不會被擋下。
+- **決定**：不實作額外防護。
+- **理由**：補這個洞需引入 `dependency-cruiser` 一個新 devDependency 與一個
+  獨立於 `npm run lint` 的 CI 步驟（因此進不了編輯器即時提示）。本專案全部
+  的動態 import 只有兩處——`src/index.ts` 的 yargs 分派（位於 `src/` 根層，
+  本來就不在規則的 `files:` 涵蓋範圍內）與 `db.ts` 的 model 掃描——兩者都不是
+  跨服務存取。為一個目前不存在、且需要開發者刻意繞路才會出現的情境增加建置
+  機制，與其成本不成比例。
+
 ## 3. 三層定位規則
+
+### 3.0 定位維度採部署單元（服務），而非領域
+
+找程式碼的直覺起點是「哪個 process 出問題」或「哪個介面」，因此頂層以服務
+（k8s deployment）切分。
+
+**已評估並否決的替代方案：`src/domains/` 領域根。** 實測顯示變更模式有兩種
+形狀：`youtube-discovery`、`youtube-pubsub`、`chats-archive`、webhook 分區等
+功能只動單一服務；而 `track` 與 `youtube-dm` 兩個功能各自橫跨 discord-bot、
+webhook、manager 三個服務。後者一度支持改用領域軸。
+
+否決理由是可發現性：領域軸會把 `/youtube-dm` 這個 Discord 斜線指令從
+discord-bot 底下搬到 `domains/youtube-dm/`，但該指令的契約面是 discord.js 的
+slash command 註冊、且只有 discord-bot 可達——要找它的人必然先開 discord-bot
+資料夾。領域資料夾的凝聚度不值得犧牲這個直覺。跨服務垂直功能的可發現性改以
+§3.4 的分佈表解決，不靠目錄結構。
 
 取代目前 `modules/` 與 `components/` 的二分：
 
@@ -87,6 +117,33 @@
 `VideoUserStats`、`ErrorLog`、`CurrencyExchange`），但**不依判定準則下放**。
 除了「資料庫有哪些 collection」需要單一查詢點之外，更硬的理由見 §6.1。
 
+### 3.3 `modules/` 底下的領域名子資料夾是分組，不是第二條軸
+
+`modules/track/`、`modules/youtube-dm/` 這類以領域命名的子資料夾，其內容仍然
+完全由 §3 的 entrypoint 計數決定——它們裝的是某個垂直功能中「兩個以上服務
+需要」的那一片，子資料夾只是讓這一片有個名字，避免 `modules/` 變成平坦的
+雜物抽屜。
+
+判定順序不因此改變：先數 entrypoint 決定檔案屬於哪一層，再決定要不要在
+`modules/` 底下給它一個領域名子資料夾。**不存在「因為屬於某領域所以放進
+`modules/`」這種規則**；同一個垂直中只有單一服務可達的部分，照樣留在該服務
+資料夾內。
+
+### 3.4 跨服務垂直功能的分佈
+
+`track` 與 `youtube-dm` 兩個垂直功能各自橫跨三個服務。依 §3.0 的決定，它們
+不會被收進單一資料夾，因此改以本表作為可發現性的入口：
+
+| 垂直         | 共用片（≥2 服務）                       | Discord 介面                                | 派送側                                         | manager 對帳殼                            | 資料模型                     |
+| ------------ | --------------------------------------- | ------------------------------------------- | ---------------------------------------------- | ----------------------------------------- | ---------------------------- |
+| `track`      | `modules/track/{features,transform}.ts` | `services/discord-bot/commands/track/`      | —                                              | `services/manager/track-operator.ts`      | `models/Track.ts`            |
+| `youtube-dm` | `modules/youtube-dm/transform.ts`       | `services/discord-bot/commands/youtube-dm/` | `services/webhook/index.ts` 的 `sendDiscordDm` | `services/manager/youtube-dm-operator.ts` | `models/YoutubeDmBinding.ts` |
+
+兩者共用的下游是 `models/Webhook.ts`：使用者在 Discord 設定 → 投影成 Webhook
+文件 → webhook 服務派送 → manager 定期對帳並清理孤兒列。
+
+新增跨服務垂直功能時，必須同步在本表加一列。
+
 ## 4. 目標佈局
 
 ```
@@ -95,7 +152,7 @@ src/
 ├── constants.ts
 ├── interfaces.ts
 ├── utils/
-│   ├── index.ts                      # ← src/util.ts
+│   ├── common.ts                     # ← src/util.ts
 │   └── esm.ts
 ├── models/                           # 位置與扁平結構不變
 │
@@ -110,8 +167,7 @@ src/
 │   │   └── transform.ts              # ← components/track-operator.ts 的 transform 部分
 │   ├── youtube-dm/
 │   │   └── transform.ts              # ← components/youtube-dm-operator.ts 的 transform 部分
-│   └── webhook-template/
-│       └── index.ts                  # ← data/webhook.ts（webhook 服務 + manager 共用）
+│   └── webhook-template.ts           # ← data/webhook.ts（webhook 服務 + manager 共用）
 │
 ├── services/
 │   ├── scheduler/index.ts            # ← commands/scheduler.ts
@@ -160,7 +216,10 @@ src/
 ```
 
 `src/commands/`、`src/components/`、`src/data/`、`src/discord/` 四個目錄消失。
-`src/util.ts` 併入 `src/utils/index.ts`。
+`src/util.ts` 併入 `src/utils/common.ts`——刻意不叫 `index.ts`，因為
+`"#utils/*"` alias 會讓它寫成 `#utils/index.js`，既冗贅又會誘使後人把它當成
+barrel file 使用（見 §2 非目標）。同理，`modules/webhook-template` 是單一檔案
+而非「單檔案資料夾 + `index.ts`」。
 
 `.spec.ts` 檔案一律隨被測檔案移動，維持同目錄相鄰。
 
@@ -214,9 +273,24 @@ export default function trackOperator(app: Application) {
 互相依賴」，但並未消除循環：`models/Track.ts` 需要 `transformTrack`，而
 `modules/track/transform.ts` 需要 `TrackModel` 與 `WebhookModel`。
 
-這個循環今天就存在，ESM 的 live binding 能正常處理，本次不動它。要真正消除
-必須把 transform 呼叫從 model static 移到呼叫端，那是會改變行為的重新設計，
-不在本次範圍。
+**只要 model 的 static mutator 仍然呼叫 transform，任何擺放位置都會產生
+循環**，因為 transform 必須寫入 `WebhookModel`，而 `models/Webhook.ts` 已經
+import `./Track.js`：
+
+- transform 放在 `modules/track/` → `models/Track.ts ↔ modules/track/transform.ts`
+- transform 改放進 `models/Track.ts` → 新增 `Track.ts → Webhook.ts`，與既有的
+  `Webhook.ts → Track.ts` 形成 `models/Track ↔ models/Webhook`
+
+唯一能消除的做法是讓 model 不再呼叫 transform、改由每個呼叫端自行負責，那會
+失去「改了 Track 就一定會重算對應 Webhook 列」這個由 model 層保證的不變量，
+屬於會改變行為的重新設計，不在本次範圍。循環今天就存在，ESM 的 live binding
+能正常處理，本次重整不改變它的存在與否，只改變它跨越的目錄。
+
+附帶澄清一條容易誤判為循環的邊：`modules/track/features.ts` 從
+`models/Video.ts` 匯入的 `IsShortQuery` / `IsNotShortQuery` 是 value（凍結的
+query 物件）而非 type，但 `models/Video.ts` 不 import `models/Track.ts`，因此
+`models/Track → modules/track/transform → modules/track/features → models/Video`
+這條路徑無環。
 
 ## 6. 硬約束
 
@@ -298,15 +372,15 @@ moduleNameMapper: {
 
 ### 7.3 import 撰寫規則
 
-| 來源 → 目標                                                        | 寫法                |
-| ------------------------------------------------------------------ | ------------------- |
-| 服務內部 → 同服務其他檔案                                          | 相對路徑 `./` `../` |
-| 服務 → `models` / `modules` / `utils` / `constants` / `interfaces` | alias `#...`        |
-| `modules/` → `models` / `utils` / `constants` / `interfaces`       | alias `#...`        |
-| `modules/` → 同目錄或子目錄                                        | 相對路徑            |
-| `models/` → `modules` / `utils` / `constants` / `interfaces`       | alias `#...`        |
-| `models/` → 其他 model                                             | 相對路徑            |
-| 任何服務 → 另一個服務                                              | **禁止**            |
+| 來源 → 目標                                                        | 寫法                  |
+| ------------------------------------------------------------------ | --------------------- |
+| 服務內部 → 同服務其他檔案                                          | 相對路徑 `./` `../`   |
+| 服務 → `models` / `modules` / `utils` / `constants` / `interfaces` | alias `#...`          |
+| `modules/` → `models` / `utils` / `constants` / `interfaces`       | alias `#...`          |
+| `modules/` → 同目錄或子目錄                                        | 相對路徑              |
+| `models/` → `modules` / `utils` / `constants` / `interfaces`       | alias `#...`          |
+| `models/` → 其他 model                                             | 相對路徑              |
+| 任何服務 → 另一個服務                                              | **禁止**（§7.6 強制） |
 
 `.js` 副檔名在 alias 形式下仍然保留（`#models/Video.js`），與 NodeNext 的既有
 慣例一致。
@@ -324,6 +398,67 @@ mock key 是原始碼中的字面 specifier 字串，不是解析後的檔案路
 mock 呼叫的遷移就是把字串換掉，與改 import 敘述同一個機械動作，不需要重構
 mock 的結構。
 
+### 7.6 跨服務 import 的強制檢查
+
+alias 命名空間讓跨服務 import **可見**（只能寫成相對路徑），但不會**阻擋**。
+這對 §3.1 的提升規則是致命的：當第二個服務需要某個服務私有檔案時，正確做法
+是把它提升到 `modules/`，偷懶做法是直接相對 import 過去。沒有檢查，提升規則
+必然在有壓力時失效。
+
+採用核心 ESLint 的 `no-restricted-imports`，不引入新依賴。該規則比對的是
+**原始 specifier 字串**，不呼叫 resolver，因此模式必須自行涵蓋任意深度：
+
+```js
+const SERVICES = [
+  "scheduler",
+  "worker",
+  "crawler",
+  "manager",
+  "webhook",
+  "discord-bot",
+  "metrics",
+];
+
+const crossServiceOverrides = SERVICES.map((service) => ({
+  files: [`src/services/${service}/**/*.ts`],
+  rules: {
+    "no-restricted-imports": [
+      "error",
+      {
+        patterns: SERVICES.filter((sibling) => sibling !== service).map(
+          (sibling) => ({
+            // Matches a relative specifier at any depth ("./webhook/x.js",
+            // "../webhook/x.js", "../../webhook/x.js"). Anchoring on the
+            // leading dot keeps alias specifiers such as
+            // "#modules/webhook-template.js" out of the pattern.
+            regex: `^\\.\\.?(\\/\\.\\.)*\\/${sibling}(\\/|$)`,
+            message: `Cross-service import into "${sibling}" is forbidden. Use a #models / #modules / #utils alias, or promote the shared code out of src/services/.`,
+          })
+        ),
+      },
+    ],
+  },
+}));
+```
+
+**必須用 `regex` 而非 gitignore-style 的 `group` glob。** 實測確認
+`group: ["**/webhook/**"]` 會把 alias 形式的 `#modules/webhook/foo.js` 一併
+判成違規；錨定在開頭那個點的 `regex` 才能區分「相對路徑跨服務」與「alias
+進入同名子目錄」。
+
+驗證過的比對結果（規則內部以 `regexMatcher.test(importSource)` 求值）：
+
+| specifier（以 worker 為來源）                                                 | 結果 |
+| ----------------------------------------------------------------------------- | ---- |
+| `./webhook/x.js`、`../webhook/x.js`、`../../../webhook/deep/x.js`             | 擋下 |
+| `../worker/foo.js`、`../webhookish/index.js`                                  | 放行 |
+| `#modules/webhook-template.js`、`#models/Webhook.js`、`some-pkg/webhook/x.js` | 放行 |
+
+`src/scripts/**` 不需要例外條款：override 的 `files:` 只涵蓋
+`src/services/<X>/**`，而 `scripts/` 不在該樹下，§7.4 的例外自動成立。
+
+此規則的盲點（動態 `import()` 不被訪問）已列入 §2 的已接受限制。
+
 ## 8. 遷移順序
 
 每一步都是獨立 commit。`npm run build`（tsc）會抓出所有斷掉的 import，
@@ -333,18 +468,27 @@ mock 的結構。
 | --- | ------------------------------------------------------------------ | ------------------------ |
 | 1   | 刪除 `modules/action-counter.ts`                                   | 無（零引用已驗證）       |
 | 2   | 建立 `modules/track/`、`modules/youtube-dm/`，切分兩個 operator    | 中：唯一有邏輯搬動的一步 |
-| 3   | `src/util.ts` 併入 `src/utils/index.ts`                            | 低（11 個 importer）     |
+| 3   | `src/util.ts` 併入 `src/utils/common.ts`                           | 低（11 個 importer）     |
 | 4   | 導入 `"imports"` 欄位與 `moduleNameMapper`，現有 import 改為 alias | 中：牽動範圍最廣         |
 | 5   | 建立 `services/`，逐服務搬移                                       | 低，但 diff 大           |
 | 6   | 解散 `data/`                                                       | 低                       |
-| 7   | 對齊 spec 檔名                                                     | 無                       |
-| 8   | 更新 `AGENTS.md`、`docs/data-contract/` 的路徑引用                 | 無                       |
+| 7   | 加入 §7.6 的 `no-restricted-imports` override                      | 低                       |
+| 8   | 對齊 spec 檔名                                                     | 無                       |
+| 9   | 更新 `AGENTS.md`、`docs/data-contract/` 的路徑引用                 | 無                       |
 
 第 5 步的服務順序由小到大：`metrics` → `scheduler` → `crawler` →
 `discord-bot` → `webhook` → `worker` → `manager`。前兩者無私有檔案，只是搬
 entrypoint，可作為 alias 方案的實地驗證。
 
-### 8.1 第 7 步的檔名對齊
+第 7 步必須排在第 5、6 步之後——規則的 `files:` glob 指向
+`src/services/<X>/**`，在 `services/` 建立且所有檔案就位前，該規則涵蓋不到
+任何檔案，通過 lint 不代表規則有效。加入後應以一個刻意寫錯的跨服務 import
+確認規則真的會報錯，再把該行還原。
+
+第 9 步的 `AGENTS.md` 更新必須包含 §3.1 的提升規則與 §3.4 的分佈表維護義務，
+否則規則只存在於本文件，不會進入日常開發的視野。
+
+### 8.1 第 8 步的檔名對齊
 
 | 現況                                         | 改為                                                    |
 | -------------------------------------------- | ------------------------------------------------------- |
@@ -367,12 +511,18 @@ entrypoint，可作為 alias 方案的實地驗證。
 第 5 步搬完 `webhook` 之後，額外驗證 `importAllModels()` 仍能在 `dist/` 掃到
 全部 model（§6.1），這是 tsc 與 Jest 都抓不到的那一類失敗。
 
+第 7 步必須做一次**否定測試**：在任一服務內加一行跨服務相對 import，確認
+`npm run lint` 報錯，再還原該行。只跑「lint 通過」無法區分「規則有效」與
+「規則的 `files:` glob 打錯、涵蓋不到任何檔案」。
+
 ## 10. 風險
 
-| 風險                                 | 緩解                                               |
-| ------------------------------------ | -------------------------------------------------- |
-| `importAllModels()` 的路徑假設被破壞 | §6.1 列為硬約束；第 9 節列為獨立驗證項             |
-| ESLint 在 `#` specifier 上解析失敗   | 第 4 步先只導入 alias 不搬檔，單獨驗證 lint        |
-| diff 過大導致 review 失效            | 逐服務 commit；搬移步驟不混入邏輯變更              |
-| `models/` ↔ `modules/` 循環依賴      | 既有狀況，§5.2 記錄，不在本次處理                  |
-| k8s 部署引用舊路徑                   | 入口仍是 `node dist/index.js <subcommand>`，未改變 |
+| 風險                                     | 緩解                                               |
+| ---------------------------------------- | -------------------------------------------------- |
+| `importAllModels()` 的路徑假設被破壞     | §6.1 列為硬約束；第 9 節列為獨立驗證項             |
+| ESLint 在 `#` specifier 上解析失敗       | 第 4 步先只導入 alias 不搬檔，單獨驗證 lint        |
+| diff 過大導致 review 失效                | 逐服務 commit；搬移步驟不混入邏輯變更              |
+| `models/` ↔ `modules/` 循環依賴          | 既有狀況，§5.2 記錄成因與為何無法在本次消除        |
+| §3.1 提升規則被繞過（直接跨服務 import） | §7.6 的 ESLint 規則機械阻擋；盲點見 §2 已接受限制  |
+| §3.4 分佈表隨時間失準                    | 第 9 步把維護義務寫入 `AGENTS.md`                  |
+| k8s 部署引用舊路徑                       | 入口仍是 `node dist/index.js <subcommand>`，未改變 |
