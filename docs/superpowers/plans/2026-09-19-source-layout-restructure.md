@@ -27,6 +27,20 @@ Moving the two shared modules first removes the problem rather than working arou
 
 Everything else follows the design document's ordering. No other deviation is intended; if a reviewer finds one, treat it as a plan defect.
 
+## Accepted limitation: import rewrites are specified as tables, not code blocks
+
+Steps that rewrite import specifiers give an exhaustive old → new table rather than the resulting import block. This is deliberate and was decided explicitly after review raised it twice.
+
+Every such table is generated from the files themselves, then checked against them. The alternative — transcribing each file's resulting import block by hand, including binding lists such as the worker entrypoint's eighteen model imports — is the same manual step that produced this plan's first round of defects, and it would add roughly a thousand lines that carry no information the table does not already carry. A specifier rewrite is fully described by the pair of strings and the instruction that bindings are unchanged.
+
+Three things make the tables safe to work from:
+
+- They are exhaustive per file, not illustrative.
+- Each service task ends with a grep that must return empty, proving no cross-tier specifier was left relative.
+- `npm run build` catches every wrong path in production code, and the per-service test run catches every wrong `jest.unstable_mockModule` key, which the build cannot see.
+
+Reviewers should not re-raise this. If a table turns out to be wrong or incomplete, that is a defect in the table and must be fixed; the format itself is settled.
+
 ## Constraints that must survive every task
 
 These were established empirically. Violating any of them produces a failure that `npm run build`, `npm run lint` and `npm test` all pass through silently.
@@ -666,6 +680,16 @@ git mv src/data/webhook.spec.ts src/modules/webhook-template.spec.ts
 
 `webhook-template` is a single file, not a directory holding one `index.ts`; a one-file directory adds nesting and no information.
 
+`features.ts` gained a directory level, so its own imports are now stale and must be fixed in this same step — otherwise this move alone leaves a tree that does not compile:
+
+| File                        | Old                    | New                       |
+| --------------------------- | ---------------------- | ------------------------- |
+| `modules/track/features.ts` | `../models/Track.js`   | `../../models/Track.js`   |
+| `modules/track/features.ts` | `../models/Video.js`   | `../../models/Video.js`   |
+| `modules/track/features.ts` | `../models/Webhook.js` | `../../models/Webhook.js` |
+
+`webhook-template.ts` stays at the same depth as `data/webhook.ts` was, so its `../models/...` and `../utils/...` imports are already correct and need no change here. Step 4 converts all of these to aliases.
+
 Then repoint the five consumers. Three already exist, two were created by Tasks 2 and 3:
 
 | File                                  | Old                      | New                                  |
@@ -733,6 +757,8 @@ In `src/models/**`, `src/modules/**`, `src/utils/**` and `src/constants.ts`, rew
 | `../models/X.js`, `../../models/X.js`     | `#models/X.js`   |
 | `../modules/X.js`, `../../modules/X.js`   | `#modules/X.js`  |
 | `../utils/X.js`, `../../utils/X.js`       | `#utils/X.js`    |
+
+One file needs naming explicitly because the table's patterns do not describe it: `src/constants.ts` imports `./utils/common.js` after Task 4, which is a single-segment relative path rather than a `../` climb. It converts to `#utils/common.js` like the rest.
 
 Leave these alone:
 
@@ -1003,12 +1029,13 @@ This list is exhaustive — it was generated from the files themselves, and cove
 | `pubsub/routes.ts`                  | `./atom.js`                            | `../atom.js`              |
 | `pubsub/routes.spec.ts`             | `../../constants.js`                   | `#constants.js`           |
 | `pubsub/routes.spec.ts`             | `../../models/Channel.js`              | `#models/Channel.js`      |
+| `pubsub/routes.spec.ts`             | `../youtube.js`                        | `#modules/youtube.js`     |
 | `pubsub/youtube-pubsub.ts`          | `../../constants.js`                   | `#constants.js`           |
 | `pubsub/youtube-pubsub.ts`          | `../application.js`                    | `#modules/application.js` |
 | `pubsub/youtube-pubsub.ts`          | `../module.js`                         | `#modules/module.js`      |
 | `pubsub/youtube-pubsub.ts`          | `../schedule.js`                       | `#modules/schedule.js`    |
 
-`pubsub/routes.spec.ts`'s `../../models/Video.js` was already converted to `#models/Video.js` by Task 6, so it does not appear here.
+`pubsub/routes.spec.ts`'s `../../models/Video.js` was already converted to `#models/Video.js` by Task 6, so it does not appear here. Its `../youtube.js` does appear: Task 6 left that one relative because at the time both files were inside `src/modules/`, and it is a `jest.unstable_mockModule` key, so nothing in the build catches it — only the crawler suite does.
 
 Everything not listed stays exactly as it is. In particular `./oembed.js`, `./hub-client.js`, `./renewal.js`, `./routes.js` and `./build-video-summary.js`-style sibling paths survive the move untouched, because the whole subtree moved together and their relationship did not change.
 
@@ -1286,25 +1313,28 @@ Expected: the webhook suite passes, the grep prints nothing, the standard checks
 
 ```bash
 npm run clean && npm run build
-EXPECTED=$(ls src/models/*.ts | grep -v '\.spec\.ts' | wc -l | tr -d ' ')
 node --input-type=module -e "
-  const t = setTimeout(() => { console.error('TIMEOUT'); process.exit(2); }, 20000);
+  const t = setTimeout(() => { console.error('TIMEOUT'); process.exit(2); }, 30000);
+  const { readdirSync } = await import('node:fs');
+  const expected = readdirSync('src/models')
+    .filter((f) => f.endsWith('.ts') && !f.endsWith('.spec.ts')).length;
   const { importAllModels } = await import('./dist/modules/db.js');
   await importAllModels();
   const { mongoose } = await import('@typegoose/typegoose');
   const names = Object.keys(mongoose.models).sort();
-  const expected = Number(process.env.EXPECTED);
-  console.log(names.length, 'of', expected, 'registered:', names.join(', '));
+  console.log(names.length + ' of ' + expected + ' registered: ' + names.join(', '));
   if (names.length !== expected) {
     console.error('model registration mismatch');
     process.exit(1);
   }
   clearTimeout(t);
   process.exit(0);
-" EXPECTED="$EXPECTED"
+"
 ```
 
-Expected: `26 of 26 registered: ...` and exit 0.
+Expected: `26 of 26 registered: ...` and exit 0. Verified against the current tree.
+
+Both numbers are computed inside the one Node process — the expected count from `src/models/`, the actual from Mongoose's registry after `importAllModels()`. Nothing is passed through the shell, which keeps the check free of the quoting and environment-passing mistakes that a two-part command invites.
 
 Both sides are derived, so no stored baseline is needed and the check stays correct if a model is legitimately added later. An exact match is required rather than a floor: the failure this guards against is one model silently dropping out, and any floor low enough to be safe against future additions is too low to catch that.
 
@@ -1388,12 +1418,11 @@ These two are written as they appear in the file **after Task 6**, not as they a
 | ---------------------------- | ---------------------------------- | ------------------------- |
 | `gift.spec.ts`               | `../interfaces.js`                 | `#interfaces.js`          |
 | `gift.spec.ts`               | `../models/GiftPrice.js`           | `#models/GiftPrice.js`    |
-| `gift.spec.ts`               | `../models/Gift.js`                | `#models/Gift.js`         |
 | `youtube-watch-gate.spec.ts` | `../constants.js`                  | `#constants.js`           |
 | `index.spec.ts`              | `../modules/youtube-watch-gate.js` | `./youtube-watch-gate.js` |
 | `index.spec.ts`              | `./worker.js`                      | `./index.js`              |
 
-Only the `gift.spec.ts` model rows are `jest.unstable_mockModule` keys; the rest are ordinary imports. Both kinds are literal strings, so both break the same way if missed — the mock key fails at test time, the ordinary import at build time.
+Only `gift.spec.ts`'s `../models/GiftPrice.js` is a `jest.unstable_mockModule` key; the rest are ordinary imports. Both kinds are literal strings, so both break the same way if missed — the mock key fails at test time, the ordinary import at build time.
 
 - [ ] **Step 5: Repoint the dispatcher**
 
@@ -1508,10 +1537,11 @@ Every `../constants.js`, `../interfaces.js`, `../models/*.js`, `../modules/*.js`
 | `chats-archive/*.spec.ts`                     | `../../models/Video.js`  | `#models/Video.js`     |
 | `gift-price.spec.ts`                          | `../models/Gift.js`      | `#models/Gift.js`      |
 | `gift-price.spec.ts`                          | `../models/GiftPrice.js` | `#models/GiftPrice.js` |
-| `video-stats.spec.ts`                         | `../models/*.js`         | `#models/*.js`         |
-| `webhook-prepare.spec.ts`                     | `../models/Webhook.js`   | `#models/Webhook.js`   |
+| `video-stats.spec.ts`                         | `../interfaces.js`       | `#interfaces.js`       |
 
-The `gift-price.spec.ts` rows are `jest.unstable_mockModule` keys and are the ones most easily missed, because that file mocks two models by literal path and nothing in the build catches a stale key.
+`webhook-prepare.spec.ts` needs no change: its only relative import is `./webhook-prepare.js`, and the subject moves with it.
+
+The two `gift-price.spec.ts` rows are `jest.unstable_mockModule` keys and are the ones most easily missed, because that file mocks both models by literal path and nothing in the build catches a stale key.
 
 - [ ] **Step 5: Repoint the dispatcher**
 
@@ -1542,13 +1572,11 @@ Then repeat the model-registration check from Task 11 Step 7 verbatim. Expected:
 
 This task touches roughly 35 files. Ask git-master to split it, but with one hard rule: **every commit must build, lint and test on its own.** That means a move and the repointing of everything that referenced the moved file belong in the same commit — splitting "move the files" from "fix the imports" produces a broken intermediate that defeats the point of committing in steps.
 
-A split that satisfies that rule:
+**Commit this task as a single commit.** A split was considered and does not work here. The obvious one — archive first, then the rest — breaks immediately: `chats-archive/gen-index-file.ts` and `gen-channel-index-file.ts` import `../video-stats.js`, and `video-stats.ts` would not have moved yet, so the first commit would not build. Reversing the order does not help either, because `manager.ts` imports every one of these files and would be pointing at `../components/` for whichever group moved first.
 
-1. `chats-archive.ts` → `chats-archive/index.ts` plus the directory's contents, with all of their imports converted.
-2. The remaining manager files (`cleanup`, `gift-price`, `video-scaler`, `video-stats`, `webhook-prepare`, the two operator shells) with their imports converted.
-3. `manager.ts` → `services/manager/index.ts` together with the `src/index.ts` dispatcher line, since the entrypoint and the dispatcher that loads it cannot be separated.
+The dependency graph here is a star centred on the entrypoint: nothing in this group can move without the entrypoint's import list moving with it. Splitting would require writing temporary import paths into the intermediate commits, which is the same defect this rule exists to prevent, traded for a cosmetic improvement in commit granularity.
 
-Run the standard checks after each of the three, not only at the end.
+Tell git-master that this is a deliberate single commit with that justification, so it is not split to satisfy a file-count heuristic. Suggested subject: `refactor(manager): gather the scheduled jobs under the service`.
 
 ---
 
@@ -1779,7 +1807,31 @@ Line numbers are from the pre-restructure file and will drift as earlier lines c
 
 - [ ] **Step 2: Replace the composition subsection and add the placement rules**
 
-Replace the "Composition (modules vs components)" subsection with the three-tier description, and add these rules under "Project conventions":
+Replace the whole "Composition (modules vs components)" subsection with this. The existing text calls `src/modules/` a home for "long-lived infrastructure singletons", which stopped being true once Tasks 2, 3 and 6 put shared domain logic there, so the description is rewritten rather than patched:
+
+```markdown
+### Composition (three tiers)
+
+- `src/services/<service>/` — everything reachable from exactly one entrypoint.
+  Each directory holds that service's runner (`index.ts`) and its private
+  modules. Services never import each other; ESLint enforces it.
+- `src/modules/` — everything reachable from two or more entrypoints. This is
+  both infrastructure composed via the `Application` container
+  ([src/modules/application.ts](src/modules/application.ts)) — `MongodbModule`,
+  `QueueModule`, `AgendaModule`, `RedisModule`, `HttpServerModule`,
+  `CollectionWatcher`, `Cache` — and shared domain logic that several services
+  need, such as `modules/track/` and `modules/youtube-dm/`. A domain-named
+  subdirectory here is grouping, not a second organising axis: what belongs in
+  it is still decided by counting entrypoints.
+- `src/models/`, `src/constants.ts`, `src/interfaces.ts`, `src/utils/` — shared
+  unconditionally, regardless of how many services read them.
+
+Dependencies run one way: `services/ → modules/ → models/`. The one exception
+is that a few model statics call a transform in `modules/`, which leaves a
+cycle between those two tiers; it predates this layout and is left alone.
+```
+
+Then add these rules under "Project conventions":
 
 ```markdown
 ### Where a new file goes
@@ -1823,15 +1875,18 @@ The table is written out here rather than referenced, so that someone reading `A
 
 - [ ] **Step 3: Repoint the stale paths in source comments**
 
-Three comments name directories that no longer exist. These are comments only — no code changes:
+Four comments name files or directories that this restructure moves. These are comments only — no code changes:
 
-| File                            | Comment mentions                    | Replace with                      |
-| ------------------------------- | ----------------------------------- | --------------------------------- |
-| `src/constants.ts:100`          | `src/components/cleanup.ts`         | `src/services/manager/cleanup.ts` |
-| `src/constants.ts:197`          | `src/components/youtube-discovery/` | `src/services/crawler/discovery/` |
-| `src/services/webhook/claim.ts` | `src/components/cleanup.ts`         | `src/services/manager/cleanup.ts` |
+| File                            | Comment mentions                    | Replace with                                |
+| ------------------------------- | ----------------------------------- | ------------------------------------------- |
+| `src/constants.ts:100`          | `src/components/cleanup.ts`         | `src/services/manager/cleanup.ts`           |
+| `src/constants.ts:104`          | `src/modules/youtube-watch-gate.ts` | `src/services/worker/youtube-watch-gate.ts` |
+| `src/constants.ts:197`          | `src/components/youtube-discovery/` | `src/services/crawler/discovery/`           |
+| `src/services/webhook/claim.ts` | `src/components/cleanup.ts`         | `src/services/manager/cleanup.ts`           |
 
 `claim.ts` is listed at its post-Task-11 path; the comment travels with the file.
+
+The `youtube-watch-gate` one is the reason Step 5's search covers more than the four removed directory names: that comment points at a path under `src/modules/` which is valid today and stale only after Task 12 moves the file, so a search for `src/components` and friends would report success while leaving it broken.
 
 - [ ] **Step 4: Update the writer paths in the data contract documents**
 
@@ -1860,12 +1915,14 @@ Expected after editing: no output.
 - [ ] **Step 5: Check for stale references across the whole repository**
 
 ```bash
-grep -rn "src/components\|src/commands\|src/data/\|src/discord" \
+grep -rn -E 'src/(components|commands|data|discord)/|src/util\.ts|src/modules/(youtube-pubsub|webhook|oauth|holodex|matching|currency-convert|youtube-watch-gate)' \
   --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=.git \
   --exclude-dir=specs --exclude-dir=plans .
 ```
 
-Expected: no output. The two excluded directories hold the design and planning documents, which describe the before state on purpose and must not be rewritten. Any hit outside them is a stale reference.
+Expected: no output. The pattern covers the four removed top-level directories, the renamed root utility, **and** the paths that moved out of `src/modules/` — those last ones are the trap, because they name a directory that still exists and so survive a search for the removed names alone.
+
+The two excluded directories hold the design and planning documents, which describe the before state on purpose and must not be rewritten. Any hit outside them is a stale reference.
 
 - [ ] **Step 6: Run the standard checks**
 
