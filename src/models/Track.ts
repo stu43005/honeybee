@@ -8,7 +8,7 @@ import {
 } from "@typegoose/typegoose";
 import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses.js";
 import { defaultTrackFeatures } from "../data/track.js";
-import { transformTrack } from "../components/track-operator.js";
+import { transformTrack } from "../modules/track/transform.js";
 import type {
   Webhook as DiscordWebhook,
   WebhookType as DiscordWebhookType,
