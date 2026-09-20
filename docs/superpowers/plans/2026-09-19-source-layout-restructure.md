@@ -635,7 +635,7 @@ Expected: seven `MISSING` lines and a non-zero exit, because `dist/` has just be
 npm run clean && npm run build && ./scripts/smoke-entrypoints.sh
 ```
 
-Expected: seven lines ending `ok`, each naming a path under `dist/commands/`, exit code 0.
+Expected: seven lines each containing `ok` followed by the entrypoint path it loaded, all under `dist/commands/` at this point, exit code 0.
 
 The `npm run clean` is not optional anywhere it appears in this plan. `npm run build` runs `tsc` and a chmod; it never deletes previous output. Without the clean, a file deleted or moved in `src/` leaves its stale `dist/` copy behind, and the smoke check happily loads the old one — which is exactly the failure this check exists to catch.
 
@@ -645,7 +645,7 @@ The `npm run clean` is not optional anywhere it appears in this plan. `npm run b
 ls src/models/*.ts | grep -v '\.spec\.ts' | wc -l
 ```
 
-Expected: `26`. This number is the assertion used by Task 12 and by final acceptance — the count of models Mongoose registers at runtime must equal the count of non-test files in `src/models/`. Because both sides are derived, no baseline file needs to be stored, and the check stays correct if a model is legitimately added later.
+Expected: `26`. This number is the assertion used by Task 11 Step 7, repeated in Task 13 and at final acceptance — the count of models Mongoose registers at runtime must equal the count of non-test files in `src/models/`. Because both sides are derived, no baseline file needs to be stored, and the check stays correct if a model is legitimately added later.
 
 - [ ] **Step 6: Run the standard checks**
 
@@ -1578,7 +1578,7 @@ Then repeat the model-registration check from Task 11 Step 7 verbatim. Expected:
 
 - [ ] **Step 8: Commit via git-master**
 
-This task touches roughly 35 files. Ask git-master to split it, but with one hard rule: **every commit must build, lint and test on its own.** That means a move and the repointing of everything that referenced the moved file belong in the same commit — splitting "move the files" from "fix the imports" produces a broken intermediate that defeats the point of committing in steps.
+This task touches roughly 35 files, and the rule that governs it is: **every commit must build, lint and test on its own.** A move and the repointing of everything that referenced the moved file therefore belong in the same commit — splitting "move the files" from "fix the imports" produces a broken intermediate that defeats the point of committing in steps.
 
 **This task is one commit.** Tell git-master that explicitly, with the reasoning below, so it is not split to satisfy a file-count heuristic. A split was considered and does not work here. The obvious one — archive first, then the rest — breaks immediately: `chats-archive/gen-index-file.ts` and `gen-channel-index-file.ts` import `../video-stats.js`, and `video-stats.ts` would not have moved yet, so the first commit would not build. Reversing the order does not help either, because `manager.ts` imports every one of these files and would be pointing at `../components/` for whichever group moved first.
 
@@ -1838,7 +1838,14 @@ Replace the whole "Composition (modules vs components)" subsection with this. Th
 Dependencies run one way: `services/ → modules/ → models/`. The one exception
 is that a few model statics call a transform in `modules/`, which leaves a
 cycle between those two tiers; it predates this layout and is left alone.
+
+Module lifecycle is unchanged: each `Module` exposes `init()` / `close()`,
+`Application.use()` registers them, `Application.close()` runs them in reverse
+registration order, and `SHUTDOWN_TIMEOUT` (45s, under the k8s 60s grace
+period) bounds the drain.
 ```
+
+Keep the existing "Application close order is LIFO" subsection under "Project conventions" as it stands — it is about registration order, not about which directory a file belongs in, and nothing in this restructure changes it.
 
 Then add these rules under "Project conventions":
 
