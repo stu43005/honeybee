@@ -1,6 +1,6 @@
 /// <reference types="jest" />
 import { describe, expect, it } from "@jest/globals";
-import { getChannelIdFilter } from "./track.js";
+import { getChannelIdFilter } from "./features.js";
 
 describe("getChannelIdFilter", () => {
   it("returns null for empty list", () => {

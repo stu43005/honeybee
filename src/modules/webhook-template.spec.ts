@@ -1,6 +1,6 @@
 /// <reference types="jest" />
 import { describe, expect, it } from "@jest/globals";
-import { checkIsDiscordDmUrl } from "./webhook.js";
+import { checkIsDiscordDmUrl } from "./webhook-template.js";
 
 describe("checkIsDiscordDmUrl", () => {
   it("matches the discord-dm scheme", () => {

@@ -5,7 +5,10 @@ import assert from "node:assert";
 import http from "node:http";
 import https from "node:https";
 import { setTimeout } from "node:timers/promises";
-import { checkIsDiscordDmUrl, matchPresets } from "../data/webhook.js";
+import {
+  checkIsDiscordDmUrl,
+  matchPresets,
+} from "../modules/webhook-template.js";
 import { type Webhook } from "../models/Webhook.js";
 import WebhookModel from "../models/Webhook.js";
 import type { Application } from "../modules/application.js";

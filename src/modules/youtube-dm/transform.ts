@@ -1,5 +1,5 @@
 import type { DocumentType } from "@typegoose/typegoose";
-import { getChannelIdFilter } from "../../data/track.js";
+import { getChannelIdFilter } from "../track/features.js";
 import WebhookModel from "../../models/Webhook.js";
 import YoutubeDmBindingModel, {
   type YoutubeDmBinding,

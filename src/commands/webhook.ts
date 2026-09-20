@@ -27,7 +27,7 @@ import {
   defaultUpdateUrl,
   fixLongText,
   templatePreset,
-} from "../data/webhook.js";
+} from "../modules/webhook-template.js";
 import type { WebhookJob } from "../interfaces.js";
 import ChannelModel from "../models/Channel.js";
 import VideoModel, { Video } from "../models/Video.js";

@@ -23,7 +23,7 @@ import {
   allTrackFeatures,
   defaultTrackFeatures,
   trackFeatures,
-} from "../../../data/track.js";
+} from "../../../modules/track/features.js";
 import ChannelModel from "../../../models/Channel.js";
 import TrackModel, {
   type Track,
