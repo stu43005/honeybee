@@ -16,8 +16,14 @@ The design document's step 4 reads "introduce the imports field and rewrite exis
 
 This plan therefore splits that step:
 
-- **Task 6** introduces the `"imports"` field, the Jest mapper, and rewrites only the files that never move — `src/models/**`, `src/modules/**`, `src/utils/**`, `src/constants.ts`. That is enough to prove the alias mechanism works under tsc, ESLint, Jest and Node.
-- **Tasks 8–14 and 15** rewrite each moved file's imports as part of the move that touches it.
+- **Task 6** introduces the `"imports"` field, the Jest mapper, and rewrites only the files that stay in a shared tier — `src/models/**`, `src/modules/**`, `src/utils/**`, `src/constants.ts`. That is enough to prove the alias mechanism works under tsc, ESLint, Jest and Node.
+- **Tasks 7–13** rewrite each moved file's imports as part of the move that touches it.
+
+**Second deviation: `src/data/track.ts` and `src/data/webhook.ts` move in Task 6, not in the dissolution step.**
+
+The design document dissolves `src/data/` after the services move. Doing it in that order breaks intermediate commits. Three files that Tasks 10, 11 and 13 relocate import those two modules by relative path; once the importer moves a directory deeper, `../data/...` and `../../../data/...` resolve inside `src/services/`, where nothing exists. The alternative — writing temporary deeper paths into three files and rewriting them a task later — leaves specifiers in the tree that are wrong by construction and correct only by accident of depth.
+
+Moving the two shared modules first removes the problem rather than working around it. `src/data/currency.ts` is unaffected: worker is its only consumer, so it travels with worker in Task 12, which is what finally removes the directory.
 
 Everything else follows the design document's ordering. No other deviation is intended; if a reviewer finds one, treat it as a plan defect.
 
@@ -107,10 +113,13 @@ src/
 - [ ] **Step 1: Confirm nothing references it**
 
 ```bash
-grep -rn "action-counter\|ActionCounter" --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=.git .
+grep -rn "action-counter\|ActionCounter" --include='*.ts' --include='*.json' \
+  --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=.git .
 ```
 
-Expected: exactly one line, the class declaration inside the file itself. If any other line appears, stop and report — the file is not dead and this task must not proceed.
+Expected: exactly one line — `src/modules/action-counter.ts:3`, the class declaration inside the file itself. If any other line appears, stop and report: the file has a live consumer and this task must not proceed.
+
+The search is restricted to source and config files on purpose. A repository-wide grep also matches the design and planning documents, which discuss this deletion by name, and those matches say nothing about whether code depends on it.
 
 - [ ] **Step 2: Delete the file**
 
@@ -536,7 +545,9 @@ Stage `src/utils/common.ts`, `src/util.ts` (the deletion) and the 11 modified im
 
 ## Task 5: Add the runtime smoke check script
 
-Tasks 6 onward need a way to prove that compiled code still loads. Build that first, so every later task can call it.
+Every task from Task 6 onward has to prove that the compiled tree still loads. Build that tool first.
+
+The script finds each service wherever it currently lives, so it works unchanged through the intermediate states of Tasks 7-13, when some services have moved and others have not.
 
 **Files:**
 
@@ -549,24 +560,20 @@ Create `scripts/smoke-entrypoints.sh`:
 ```bash
 #!/usr/bin/env bash
 # Loads every compiled service entrypoint in its own Node process to prove the
-# emitted code resolves and evaluates. Pass the directory layout in use:
-#   ./scripts/smoke-entrypoints.sh commands   -> dist/commands/<name>.js
-#   ./scripts/smoke-entrypoints.sh services   -> dist/services/<name>/index.js
+# emitted code resolves and evaluates. Each service is looked up at whichever
+# location it currently occupies, so a half-migrated tree still checks all seven.
 set -euo pipefail
 
-LAYOUT="${1:-services}"
 SERVICES=(scheduler worker crawler manager webhook discord-bot metrics)
 FAILED=0
 
 for s in "${SERVICES[@]}"; do
-  case "$LAYOUT" in
-    commands) target="./dist/commands/$s.js" ;;
-    services) target="./dist/services/$s/index.js" ;;
-    *) echo "unknown layout: $LAYOUT" >&2; exit 64 ;;
-  esac
-
-  if [ ! -f "${target#./}" ]; then
-    printf '%-14s MISSING %s\n' "$s" "$target"
+  if [ -f "dist/services/$s/index.js" ]; then
+    target="./dist/services/$s/index.js"
+  elif [ -f "dist/commands/$s.js" ]; then
+    target="./dist/commands/$s.js"
+  else
+    printf '%-14s MISSING (no compiled entrypoint)\n' "$s"
     FAILED=1
     continue
   fi
@@ -584,9 +591,9 @@ for s in "${SERVICES[@]}"; do
       clearTimeout(t);
       process.exit(0);
     "; then
-    printf '%-14s ok\n' "$s"
+    printf '%-14s ok   %s\n' "$s" "$target"
   else
-    printf '%-14s FAILED\n' "$s"
+    printf '%-14s FAILED %s\n' "$s" "$target"
     FAILED=1
   fi
 done
@@ -600,23 +607,33 @@ exit "$FAILED"
 chmod +x scripts/smoke-entrypoints.sh
 ```
 
-- [ ] **Step 3: Run it against the current layout and watch it pass**
+- [ ] **Step 3: Prove the script can fail**
 
 ```bash
-npm run build && ./scripts/smoke-entrypoints.sh commands
+npm run clean && ./scripts/smoke-entrypoints.sh
 ```
 
-Expected: seven lines, each ending `ok`, exit code 0. This is the baseline — the layout has not changed yet, so anything other than seven passes means the script is wrong, not the code.
+Expected: seven `MISSING` lines and a non-zero exit, because `dist/` has just been deleted. Do this before the passing run: a checker that cannot fail would report success for the rest of the plan.
 
-- [ ] **Step 4: Prove the script can fail**
+- [ ] **Step 4: Run it against a clean build and watch it pass**
 
 ```bash
-./scripts/smoke-entrypoints.sh services
+npm run clean && npm run build && ./scripts/smoke-entrypoints.sh
 ```
 
-Expected: seven `MISSING` lines and a non-zero exit, because `dist/services/` does not exist yet. A script that reports success here would report success for the rest of the plan too.
+Expected: seven lines ending `ok`, each naming a path under `dist/commands/`, exit code 0.
 
-- [ ] **Step 5: Commit via git-master**
+The `npm run clean` is not optional anywhere it appears in this plan. `npm run build` runs `tsc` and a chmod; it never deletes previous output. Without the clean, a file deleted or moved in `src/` leaves its stale `dist/` copy behind, and the smoke check happily loads the old one — which is exactly the failure this check exists to catch.
+
+- [ ] **Step 5: Record the model-registration baseline**
+
+```bash
+ls src/models/*.ts | grep -v '\.spec\.ts' | wc -l
+```
+
+Expected: `26`. This number is the assertion used by Task 12 and by final acceptance — the count of models Mongoose registers at runtime must equal the count of non-test files in `src/models/`. Because both sides are derived, no baseline file needs to be stored, and the check stays correct if a model is legitimately added later.
+
+- [ ] **Step 6: Commit via git-master**
 
 Stage `scripts/smoke-entrypoints.sh`. Suggested subject: `build: add a smoke check that loads each compiled entrypoint`.
 
@@ -624,15 +641,52 @@ Stage `scripts/smoke-entrypoints.sh`. Suggested subject: `build: add a smoke che
 
 ## Task 6: Introduce the subpath-import aliases
 
-Add the alias namespace and convert the files that will never move. `src/services/` gets no alias on purpose — that is what makes a cross-service import spellable only as a relative path, which Task 16 then rejects.
+Add the alias namespace and convert every file that stays in a shared tier. `src/services/` gets no alias on purpose — that is what makes a cross-service import spellable only as a relative path, which Task 14 then rejects.
+
+This task also relocates the two shared modules currently sitting in `src/data/`. They move **before** the services do, not after, because three files that Tasks 10, 11 and 13 relocate import them. Moving the consumers first would leave those imports pointing at `src/services/data/`, which does not exist, and every intermediate commit would fail to build. `src/data/currency.ts` is not part of this — worker is its only consumer, so it travels with worker in Task 12, which is what finally removes `src/data/`.
+
+"Shared tier" here means `src/models/`, `src/utils/`, `src/constants.ts`, `src/interfaces.ts`, and those parts of `src/modules/` that remain after Tasks 9–12 lift out `holodex.ts`, `youtube-pubsub/`, `oauth/`, `webhook/`, `matching.ts`, `youtube-watch-gate.ts` and `currency-convert.ts`. Converting all of `src/modules/**` now is still correct: a file that later moves has its imports rewritten again by the task that moves it, and the tables in those tasks are written against the post-conversion state.
 
 **Files:**
 
+- Move: `src/data/track.ts` (+ spec) → `src/modules/track/features.ts`
+- Move: `src/data/webhook.ts` (+ spec) → `src/modules/webhook-template.ts`
 - Modify: `package.json`
 - Modify: `jest.config.mjs`
 - Modify: all of `src/models/**/*.ts`, `src/modules/**/*.ts`, `src/utils/**/*.ts`, `src/constants.ts`
 
-- [ ] **Step 1: Add the imports field to package.json**
+- [ ] **Step 1: Relocate the two shared data modules**
+
+```bash
+git mv src/data/track.ts src/modules/track/features.ts
+git mv src/data/track.spec.ts src/modules/track/features.spec.ts
+git mv src/data/webhook.ts src/modules/webhook-template.ts
+git mv src/data/webhook.spec.ts src/modules/webhook-template.spec.ts
+```
+
+`webhook-template` is a single file, not a directory holding one `index.ts`; a one-file directory adds nesting and no information.
+
+Then repoint the five consumers. Three already exist, two were created by Tasks 2 and 3:
+
+| File                                  | Old                      | New                                  |
+| ------------------------------------- | ------------------------ | ------------------------------------ |
+| `src/modules/track/transform.ts`      | `../../data/track.js`    | `./features.js`                      |
+| `src/modules/youtube-dm/transform.ts` | `../../data/track.js`    | `../track/features.js`               |
+| `src/models/Track.ts`                 | `../data/track.js`       | `../modules/track/features.js`       |
+| `src/discord/commands/track/track.ts` | `../../../data/track.js` | `../../../modules/track/features.js` |
+| `src/commands/webhook.ts`             | `../data/webhook.js`     | `../modules/webhook-template.js`     |
+| `src/components/webhook-prepare.ts`   | `../data/webhook.js`     | `../modules/webhook-template.js`     |
+
+And inside the two moved spec files:
+
+| File                                   | Old            | New                     |
+| -------------------------------------- | -------------- | ----------------------- |
+| `src/modules/track/features.spec.ts`   | `./track.js`   | `./features.js`         |
+| `src/modules/webhook-template.spec.ts` | `./webhook.js` | `./webhook-template.js` |
+
+These are written as relative paths for now; Step 3 converts the ones that cross a tier into aliases, and Tasks 10–13 convert the rest as they move those files.
+
+- [ ] **Step 2: Add the imports field to package.json**
 
 Insert this top-level field, alphabetically after `"description"` and before `"main"`:
 
@@ -648,7 +702,7 @@ Insert this top-level field, alphabetically after `"description"` and before `"m
 
 The targets point at `dist/`. TypeScript follows its `rootDir`/`outDir` mapping back to `src/` for type-checking; Node uses the `dist/` path directly at runtime.
 
-- [ ] **Step 2: Teach Jest the same namespace**
+- [ ] **Step 3: Teach Jest the same namespace**
 
 In `jest.config.mjs`, replace:
 
@@ -668,7 +722,7 @@ with:
 
 The keys are listed one by one rather than as a single wildcard so that Jest and Node agree on which aliases exist. A catch-all `^#(.*)` would let a test import `#services/...`, which Node would reject at runtime.
 
-- [ ] **Step 3: Convert imports in the files that never move**
+- [ ] **Step 4: Convert imports in the shared tiers**
 
 In `src/models/**`, `src/modules/**`, `src/utils/**` and `src/constants.ts`, rewrite cross-tier relative specifiers to aliases using this mapping:
 
@@ -686,37 +740,56 @@ Leave these alone:
 - Model-to-model paths inside `src/models/` (for example `./Channel.js`, `./Track.js`).
 - `src/modules/db.ts`'s `path.join(__dirname(import.meta), "../models")` — that is a filesystem read, not an import, and no alias applies. Changing it breaks model registration silently.
 
-- [ ] **Step 4: Update the mock specifiers in the moved files' tests**
+- [ ] **Step 5: Update the mock specifiers in the shared tiers' tests**
 
 `jest.unstable_mockModule` keys are literal specifier strings. Inside the converted files' tests, change:
 
-| File                                       | Old key                   | New key                                  |
-| ------------------------------------------ | ------------------------- | ---------------------------------------- |
-| `src/components/gift.spec.ts`              | `../models/GiftPrice.js`  | leave as-is (this file moves in Task 12) |
-| `src/modules/webhook/changestream.spec.ts` | `../db.js`                | leave as-is (same tier)                  |
-| `src/modules/webhook/changestream.spec.ts` | `../../models/Webhook.js` | `#models/Webhook.js`                     |
+| File                                        | Old key                   | New key              |
+| ------------------------------------------- | ------------------------- | -------------------- |
+| `src/modules/webhook/changestream.spec.ts`  | `../../models/Webhook.js` | `#models/Webhook.js` |
+| `src/modules/youtube-pubsub/routes.spec.ts` | `../../models/Video.js`   | `#models/Video.js`   |
+| `src/modules/youtube-pubsub/routes.spec.ts` | `../../models/Channel.js` | `#models/Channel.js` |
+| `src/modules/youtube-pubsub/routes.spec.ts` | `../../constants.js`      | `#constants.js`      |
 
-Only tests under the converted directories change in this task.
+Leave these keys alone:
 
-- [ ] **Step 5: Run the standard checks**
+- `src/modules/webhook/changestream.spec.ts`'s `../db.js` — same tier, stays relative.
+- `src/modules/youtube-pubsub/routes.spec.ts`'s `./hub-client.js` and `./renewal.js` — same directory.
+- Anything under `src/components/`, `src/commands/` or `src/discord/`. Those files have not moved yet; the task that moves each one converts its keys.
+
+Mock keys are matched as literal strings, so a key left pointing at a path that no longer resolves fails at test time rather than build time. After this step, run `npm test` before moving on — Step 5 does exactly that.
+
+- [ ] **Step 6: Run the standard checks**
 
 ```bash
 npm run build && npm run lint && npm test
 ```
 
-Expected: all pass. A `Cannot find module '#...'` from Jest means Step 2's mapper is wrong; the same error from tsc means Step 1's field is wrong.
+Expected: all pass. A `Cannot find module '#...'` from Jest means Step 3's mapper is wrong; the same error from tsc means Step 2's field is wrong.
 
-- [ ] **Step 6: Prove the aliases resolve at runtime, not just in tsc and Jest**
+- [ ] **Step 7: Prove the aliases resolve at runtime, not just in tsc and Jest**
 
 ```bash
-npm run build && ./scripts/smoke-entrypoints.sh commands
+npm run clean && npm run build && ./scripts/smoke-entrypoints.sh
 ```
 
 Expected: seven `ok` lines. This is the check that matters — tsc resolved through its `dist`→`src` fallback and Jest through `moduleNameMapper`, and **neither** exercised Node's imports map. Only this step does.
 
-- [ ] **Step 7: Commit via git-master**
+- [ ] **Step 8: Confirm the production image still resolves the alias namespace**
 
-Stage `package.json`, `jest.config.mjs`, and each converted source file by explicit path. Suggested subject: `refactor(imports): address the shared tiers through subpath aliases`.
+`#` specifiers resolve against the nearest `package.json` above the importing file. In the container that is `/app/package.json`, because the Dockerfile copies `package*.json` to `/app/` and `dist` to `/app/dist`, and the entrypoint is `node dist/index.js`. Confirm that relationship is intact:
+
+```bash
+grep -n 'COPY.*package\*\.json\|COPY.*dist\|ENTRYPOINT' Dockerfile
+```
+
+Expected: `package*.json` copied to `/app/`, `dist` copied to `/app/dist`, entrypoint `node dist/index.js`. If a future change ever puts `package.json` somewhere other than the directory above `dist/`, every `#` specifier fails at container start — and nothing in `npm run build`, `npm run lint` or `npm test` would notice, because all three run from the repository root where the relationship happens to hold.
+
+Do not change the Dockerfile in this task. This step exists to record the dependency and to catch the case where it is already broken.
+
+- [ ] **Step 9: Commit via git-master**
+
+Two concerns here, so ask git-master for two commits: one relocating `src/data/track.ts` and `src/data/webhook.ts` into `src/modules/` together with the six consumers repointed in Step 1, and one adding the alias namespace and converting the shared tiers. Both must build, lint and test on their own.
 
 ---
 
@@ -766,27 +839,24 @@ to:
 const { metrics } = await import("./services/metrics/index.js");
 ```
 
-- [ ] **Step 4: Run the standard checks and the smoke check**
+- [ ] **Step 4: Confirm no cross-tier reach was left relative**
+
+```bash
+grep -rn --include='*.ts' -E 'from "\.\.[^"]*/(models|modules|utils|constants|interfaces)' src/services/metrics
+```
+
+Expected: no output. Every specifier leaving the service must now be an alias. Run this same check, with the service directory substituted, at the end of Tasks 8 through 13.
+
+- [ ] **Step 5: Run the standard checks and the smoke check**
 
 ```bash
 npm run build && npm run lint && npm test
-npm run build && ./scripts/smoke-entrypoints.sh commands
+npm run clean && npm run build && ./scripts/smoke-entrypoints.sh
 ```
 
-Expected: standard checks pass. The smoke check reports `metrics MISSING` and exits non-zero, because metrics now lives at `dist/services/metrics/index.js` while the other six are still under `dist/commands/`. That is correct for this intermediate state — confirm the other six still say `ok`, then additionally run:
+Expected: standard checks pass, then seven `ok` lines. The smoke script locates each service wherever it currently sits, so `metrics` is reported from `dist/services/metrics/index.js` and the other six from `dist/commands/`. All seven must pass — a `MISSING` line means the build did not emit that entrypoint.
 
-```bash
-node --input-type=module -e "
-  const t = setTimeout(() => process.exit(2), 20000);
-  await import('./dist/services/metrics/index.js');
-  clearTimeout(t);
-  process.exit(0);
-"
-```
-
-Expected: exit 0.
-
-- [ ] **Step 5: Commit via git-master**
+- [ ] **Step 6: Commit via git-master**
 
 Stage `src/services/metrics/index.ts`, `src/commands/metrics.ts` (the deletion), `src/index.ts`. Suggested subject: `refactor(metrics): move the service under its own directory`.
 
@@ -825,13 +895,15 @@ git mv src/commands/scheduler.ts src/services/scheduler/index.ts
 
 In `src/index.ts`, change `"./commands/scheduler.js"` to `"./services/scheduler/index.js"`.
 
-- [ ] **Step 4: Run the standard checks**
+- [ ] **Step 4: Run the standard checks and the smoke check**
 
 ```bash
+grep -rn --include='*.ts' -E 'from "\.\.[^"]*/(models|modules|utils|constants|interfaces)' src/services/scheduler
 npm run build && npm run lint && npm test
+npm run clean && npm run build && ./scripts/smoke-entrypoints.sh
 ```
 
-Expected: all pass.
+Expected: the grep prints nothing, the standard checks pass, and the smoke check prints seven `ok` lines — `metrics` and `scheduler` now from `dist/services/`, the remaining five from `dist/commands/`.
 
 - [ ] **Step 5: Commit via git-master**
 
@@ -888,50 +960,74 @@ In `src/services/crawler/index.ts`:
 | `../components/youtube-discovery/members-poll.js`    | `./discovery/members-poll.js`    |
 | `../modules/youtube-pubsub/youtube-pubsub.js`        | `./pubsub/youtube-pubsub.js`     |
 
-- [ ] **Step 3: Convert imports in the moved sub-files**
+- [ ] **Step 3: Convert imports and mock keys in the moved sub-files**
 
-Apply the same rule everywhere under `src/services/crawler/`: anything reaching `constants`, `interfaces`, `models`, `modules` or `utils` becomes an alias; anything reaching another crawler file stays relative and is re-anchored to the new depth.
+This list is exhaustive — it was generated from the files themselves, and covers ordinary imports, dynamic imports and `jest.unstable_mockModule` keys alike, because all three are matched as literal specifier strings. Replace only the specifier; the imported bindings on each line are unchanged.
 
-The relative edges that must be re-anchored:
+| File                                | Old                                    | New                       |
+| ----------------------------------- | -------------------------------------- | ------------------------- |
+| `index.candidates.spec.ts`          | `../models/Video.js`                   | `#models/Video.js`        |
+| `index.candidates.spec.ts`          | `./crawler.js`                         | `./index.js`              |
+| `holodex.ts`                        | `../constants.js`                      | `#constants.js`           |
+| `discovery/existence-probe.ts`      | `../../constants.js`                   | `#constants.js`           |
+| `discovery/existence-probe.ts`      | `../../models/Video.js`                | `#models/Video.js`        |
+| `discovery/existence-probe.spec.ts` | `../../constants.js`                   | `#constants.js`           |
+| `discovery/existence-probe.spec.ts` | `../../models/Video.js`                | `#models/Video.js`        |
+| `discovery/feed-poll.ts`            | `../../constants.js`                   | `#constants.js`           |
+| `discovery/feed-poll.ts`            | `../../models/Channel.js`              | `#models/Channel.js`      |
+| `discovery/feed-poll.ts`            | `../../models/Video.js`                | `#models/Video.js`        |
+| `discovery/feed-poll.ts`            | `../../modules/youtube-pubsub/atom.js` | `../atom.js`              |
+| `discovery/feed-poll.spec.ts`       | `../../constants.js`                   | `#constants.js`           |
+| `discovery/feed-poll.spec.ts`       | `../../models/Channel.js`              | `#models/Channel.js`      |
+| `discovery/feed-poll.spec.ts`       | `../../models/Video.js`                | `#models/Video.js`        |
+| `discovery/members-poll.ts`         | `../../constants.js`                   | `#constants.js`           |
+| `discovery/members-poll.ts`         | `../../models/Channel.js`              | `#models/Channel.js`      |
+| `discovery/members-poll.ts`         | `../../modules/youtube.js`             | `#modules/youtube.js`     |
+| `discovery/members-poll.spec.ts`    | `../../constants.js`                   | `#constants.js`           |
+| `discovery/members-poll.spec.ts`    | `../../models/Channel.js`              | `#models/Channel.js`      |
+| `discovery/members-poll.spec.ts`    | `../../modules/youtube.js`             | `#modules/youtube.js`     |
+| `discovery/oembed.ts`               | `../../constants.js`                   | `#constants.js`           |
+| `discovery/oembed.spec.ts`          | `../../constants.js`                   | `#constants.js`           |
+| `pubsub/hub-client.ts`              | `../../constants.js`                   | `#constants.js`           |
+| `pubsub/hub-client.spec.ts`         | `../../constants.js`                   | `#constants.js`           |
+| `pubsub/renewal.ts`                 | `../../constants.js`                   | `#constants.js`           |
+| `pubsub/renewal.ts`                 | `../../models/Channel.js`              | `#models/Channel.js`      |
+| `pubsub/renewal.spec.ts`            | `../../constants.js`                   | `#constants.js`           |
+| `pubsub/renewal.spec.ts`            | `../../models/Channel.js`              | `#models/Channel.js`      |
+| `pubsub/renewal-timeout.spec.ts`    | `../../constants.js`                   | `#constants.js`           |
+| `pubsub/renewal-timeout.spec.ts`    | `../../models/Channel.js`              | `#models/Channel.js`      |
+| `pubsub/routes.ts`                  | `../../constants.js`                   | `#constants.js`           |
+| `pubsub/routes.ts`                  | `../../models/Channel.js`              | `#models/Channel.js`      |
+| `pubsub/routes.ts`                  | `../../models/Video.js`                | `#models/Video.js`        |
+| `pubsub/routes.ts`                  | `../youtube.js`                        | `#modules/youtube.js`     |
+| `pubsub/routes.ts`                  | `./atom.js`                            | `../atom.js`              |
+| `pubsub/routes.spec.ts`             | `../../constants.js`                   | `#constants.js`           |
+| `pubsub/routes.spec.ts`             | `../../models/Channel.js`              | `#models/Channel.js`      |
+| `pubsub/youtube-pubsub.ts`          | `../../constants.js`                   | `#constants.js`           |
+| `pubsub/youtube-pubsub.ts`          | `../application.js`                    | `#modules/application.js` |
+| `pubsub/youtube-pubsub.ts`          | `../module.js`                         | `#modules/module.js`      |
+| `pubsub/youtube-pubsub.ts`          | `../schedule.js`                       | `#modules/schedule.js`    |
 
-| File                           | Old                                    | New                       |
-| ------------------------------ | -------------------------------------- | ------------------------- |
-| `discovery/feed-poll.ts`       | `../../modules/youtube-pubsub/atom.js` | `../atom.js`              |
-| `discovery/existence-probe.ts` | `./oembed.js`                          | unchanged                 |
-| `discovery/members-poll.ts`    | `./oembed.js`                          | unchanged                 |
-| `pubsub/routes.ts`             | `./atom.js`                            | `../atom.js`              |
-| `pubsub/routes.ts`             | `../youtube.js`                        | `#modules/youtube.js`     |
-| `pubsub/renewal.ts`            | `./hub-client.js`                      | unchanged                 |
-| `pubsub/youtube-pubsub.ts`     | `../application.js`                    | `#modules/application.js` |
-| `pubsub/youtube-pubsub.ts`     | `../module.js`                         | `#modules/module.js`      |
-| `pubsub/youtube-pubsub.ts`     | `../schedule.js`                       | `#modules/schedule.js`    |
-| `pubsub/youtube-pubsub.ts`     | `./renewal.js`, `./routes.js`          | unchanged                 |
+`pubsub/routes.spec.ts`'s `../../models/Video.js` was already converted to `#models/Video.js` by Task 6, so it does not appear here.
 
-- [ ] **Step 4: Update the mock specifiers in the moved tests**
+Everything not listed stays exactly as it is. In particular `./oembed.js`, `./hub-client.js`, `./renewal.js`, `./routes.js` and `./build-video-summary.js`-style sibling paths survive the move untouched, because the whole subtree moved together and their relationship did not change.
 
-| File                                | Old key                                            | New key                                  |
-| ----------------------------------- | -------------------------------------------------- | ---------------------------------------- |
-| `discovery/members-poll.spec.ts`    | `../../modules/youtube.js`                         | `#modules/youtube.js`                    |
-| `discovery/members-poll.spec.ts`    | `./oembed.js`                                      | unchanged                                |
-| `discovery/existence-probe.spec.ts` | `./oembed.js`                                      | unchanged                                |
-| `discovery/*.spec.ts`               | `../../models/Video.js`, `../../models/Channel.js` | `#models/Video.js`, `#models/Channel.js` |
-| `pubsub/routes.spec.ts`             | `./hub-client.js`, `./renewal.js`                  | unchanged                                |
-| `pubsub/youtube-pubsub.spec.ts`     | `./renewal.js`                                     | unchanged                                |
-
-- [ ] **Step 5: Repoint the dispatcher**
+- [ ] **Step 4: Repoint the dispatcher**
 
 In `src/index.ts`, change `"./commands/crawler.js"` to `"./services/crawler/index.js"`.
 
-- [ ] **Step 6: Run the crawler tests first, then everything**
+- [ ] **Step 5: Run the crawler tests first, then everything**
 
 ```bash
 npm run test -- src/services/crawler
+grep -rn --include='*.ts' -E 'from "\.\.[^"]*/(models|modules|utils|constants|interfaces)' src/services/crawler
 npm run build && npm run lint && npm test
+npm run clean && npm run build && ./scripts/smoke-entrypoints.sh
 ```
 
-Expected: the crawler suite passes with the same test count as before the move, then all standard checks pass. Running the narrow suite first makes a mock-key mistake readable instead of buried in full-suite output.
+Expected: the crawler suite passes with the same test count as before the move; the grep prints nothing; the standard checks pass; the smoke check prints seven `ok` lines, with `crawler` now under `dist/services/`. Running the narrow suite first makes a mock-key mistake readable instead of buried in full-suite output.
 
-- [ ] **Step 7: Commit via git-master**
+- [ ] **Step 6: Commit via git-master**
 
 Stage every moved and modified path explicitly. Suggested subject: `refactor(crawler): gather discovery and pubsub under the service`.
 
@@ -979,24 +1075,26 @@ In `src/services/discord-bot/index.ts`:
 
 - [ ] **Step 3: Convert imports in the moved command files**
 
-Under `src/services/discord-bot/commands/`, the depth is unchanged (it was `src/discord/commands/`, now `src/services/discord-bot/commands/` — both three levels below `src/`), so sibling paths such as `../command.js` and `./fns.js` stay as they are. Only the cross-tier reaches change:
+The subtree gained a level: `src/discord/commands/track/` sat three directories below `src/`, and `src/services/discord-bot/commands/track/` sits four. That does **not** affect sibling paths such as `../command.js` and `./fns.js` — those stay correct because the whole subtree moved together and the files' relationship to each other is unchanged. It does affect every specifier that used to climb _out_ of the subtree, and each of those becomes an alias below.
 
-| File                                | Old                                     | New                                                                                                |
-| ----------------------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `commands/mod/crawl.ts`             | `../../../models/Video.js`              | `#models/Video.js`                                                                                 |
-| `commands/mod/crawl.ts`             | `../../../modules/youtube.js`           | `#modules/youtube.js`                                                                              |
-| `commands/mod/set-channel.ts`       | `../../../models/Channel.js`            | `#models/Channel.js`                                                                               |
-| `commands/mod/set-channel.ts`       | `../../../modules/youtube.js`           | `#modules/youtube.js`                                                                              |
-| `commands/mod/set-video.ts`         | `../../../models/Video.js`              | `#models/Video.js`                                                                                 |
-| `commands/track/fns.ts`             | `../../../models/Track.js`              | `#models/Track.js`                                                                                 |
-| `commands/track/track.ts`           | `../../../models/Channel.js`            | `#models/Channel.js`                                                                               |
-| `commands/track/track.ts`           | `../../../models/Track.js`              | `#models/Track.js`                                                                                 |
-| `commands/track/track.ts`           | `../../../modules/youtube.js`           | `#modules/youtube.js`                                                                              |
-| `commands/track/track.ts`           | `../../../data/track.js`                | `#modules/track/features.js` (Task 13 creates this path; until then keep `../../../data/track.js`) |
-| `commands/youtube-dm/youtube-dm.ts` | `../../../constants.js`                 | `#constants.js`                                                                                    |
-| `commands/youtube-dm/youtube-dm.ts` | `../../../models/Channel.js`            | `#models/Channel.js`                                                                               |
-| `commands/youtube-dm/youtube-dm.ts` | `../../../models/YoutubeDmBinding.js`   | `#models/YoutubeDmBinding.js`                                                                      |
-| `commands/youtube-dm/youtube-dm.ts` | `../../../modules/oauth/state-store.js` | `../../oauth/state-store.js`                                                                       |
+The `../../../data/track.js` that used to appear here is already gone: Task 6 relocated that module and repointed this file to `../../../modules/track/features.js`. That specifier still climbs out of the subtree, so it converts like the rest.
+
+| File                                | Old                                     | New                           |
+| ----------------------------------- | --------------------------------------- | ----------------------------- |
+| `commands/mod/crawl.ts`             | `../../../models/Video.js`              | `#models/Video.js`            |
+| `commands/mod/crawl.ts`             | `../../../modules/youtube.js`           | `#modules/youtube.js`         |
+| `commands/mod/set-channel.ts`       | `../../../models/Channel.js`            | `#models/Channel.js`          |
+| `commands/mod/set-channel.ts`       | `../../../modules/youtube.js`           | `#modules/youtube.js`         |
+| `commands/mod/set-video.ts`         | `../../../models/Video.js`              | `#models/Video.js`            |
+| `commands/track/fns.ts`             | `../../../models/Track.js`              | `#models/Track.js`            |
+| `commands/track/track.ts`           | `../../../models/Channel.js`            | `#models/Channel.js`          |
+| `commands/track/track.ts`           | `../../../models/Track.js`              | `#models/Track.js`            |
+| `commands/track/track.ts`           | `../../../modules/youtube.js`           | `#modules/youtube.js`         |
+| `commands/track/track.ts`           | `../../../modules/track/features.js`    | `#modules/track/features.js`  |
+| `commands/youtube-dm/youtube-dm.ts` | `../../../constants.js`                 | `#constants.js`               |
+| `commands/youtube-dm/youtube-dm.ts` | `../../../models/Channel.js`            | `#models/Channel.js`          |
+| `commands/youtube-dm/youtube-dm.ts` | `../../../models/YoutubeDmBinding.js`   | `#models/YoutubeDmBinding.js` |
+| `commands/youtube-dm/youtube-dm.ts` | `../../../modules/oauth/state-store.js` | `../../oauth/state-store.js`  |
 
 - [ ] **Step 4: Convert imports in the moved oauth files**
 
@@ -1031,10 +1129,14 @@ In `src/index.ts`, change `"./commands/discord-bot.js"` to `"./services/discord-
 
 ```bash
 npm run test -- src/services/discord-bot
+grep -rn --include='*.ts' -E 'from "\.\.[^"]*/(models|modules|utils|constants|interfaces)' src/services/discord-bot
 npm run build && npm run lint && npm test
+npm run clean && npm run build && ./scripts/smoke-entrypoints.sh
 ```
 
-Expected: `registration.spec.ts` in particular must still pass — it imports all six command modules and asserts on their registration shape, so it is the file that catches a wrong relative path here.
+Expected: the discord-bot suite passes, the grep prints nothing, the standard checks pass, and the smoke check prints seven `ok` lines with `discord-bot` now under `dist/services/`.
+
+`registration.spec.ts` matters most here — it imports all six command modules and asserts on their registration shape, so it is the file that catches a wrong sibling path inside the moved subtree, which the grep above cannot see.
 
 - [ ] **Step 8: Commit via git-master**
 
@@ -1078,27 +1180,27 @@ rmdir src/modules/webhook
 
 In `src/services/webhook/index.ts`:
 
-| Old                                  | New                                                                                              |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------ |
-| `../constants.js`                    | `#constants.js`                                                                                  |
-| `../interfaces.js`                   | `#interfaces.js`                                                                                 |
-| `../models/Channel.js`               | `#models/Channel.js`                                                                             |
-| `../models/Video.js`                 | `#models/Video.js`                                                                               |
-| `../models/Webhook.js`               | `#models/Webhook.js`                                                                             |
-| `../models/WebhookResult.js`         | `#models/WebhookResult.js`                                                                       |
-| `../models/YoutubeDmBinding.js`      | `#models/YoutubeDmBinding.js`                                                                    |
-| `../modules/application.js`          | `#modules/application.js`                                                                        |
-| `../modules/cache.js`                | `#modules/cache.js`                                                                              |
-| `../modules/collection-watcher.js`   | `#modules/collection-watcher.js`                                                                 |
-| `../modules/db.js`                   | `#modules/db.js`                                                                                 |
-| `../utils/common.js`                 | `#utils/common.js`                                                                               |
-| `../modules/redis.js`                | `#modules/redis.js`                                                                              |
-| `../modules/matching.js`             | `./matching.js`                                                                                  |
-| `../modules/webhook/changestream.js` | `./changestream.js`                                                                              |
-| `../modules/webhook/claim.js`        | `./claim.js`                                                                                     |
-| `../modules/webhook/partition.js`    | `./partition.js`                                                                                 |
-| `../modules/webhook/queue.js`        | `./queue.js`                                                                                     |
-| `../data/webhook.js`                 | `#modules/webhook-template.js` (Task 13 creates this path; until then keep `../data/webhook.js`) |
+| Old                                  | New                              |
+| ------------------------------------ | -------------------------------- |
+| `../constants.js`                    | `#constants.js`                  |
+| `../interfaces.js`                   | `#interfaces.js`                 |
+| `../models/Channel.js`               | `#models/Channel.js`             |
+| `../models/Video.js`                 | `#models/Video.js`               |
+| `../models/Webhook.js`               | `#models/Webhook.js`             |
+| `../models/WebhookResult.js`         | `#models/WebhookResult.js`       |
+| `../models/YoutubeDmBinding.js`      | `#models/YoutubeDmBinding.js`    |
+| `../modules/application.js`          | `#modules/application.js`        |
+| `../modules/cache.js`                | `#modules/cache.js`              |
+| `../modules/collection-watcher.js`   | `#modules/collection-watcher.js` |
+| `../modules/db.js`                   | `#modules/db.js`                 |
+| `../utils/common.js`                 | `#utils/common.js`               |
+| `../modules/redis.js`                | `#modules/redis.js`              |
+| `../modules/matching.js`             | `./matching.js`                  |
+| `../modules/webhook/changestream.js` | `./changestream.js`              |
+| `../modules/webhook/claim.js`        | `./claim.js`                     |
+| `../modules/webhook/partition.js`    | `./partition.js`                 |
+| `../modules/webhook/queue.js`        | `./queue.js`                     |
+| `../modules/webhook-template.js`     | `#modules/webhook-template.js`   |
 
 - [ ] **Step 3: Convert imports in the moved sub-files**
 
@@ -1133,16 +1235,26 @@ In `src/services/webhook/index.ts`:
 
 - [ ] **Step 4: Update the mock specifiers in the moved tests**
 
-| File                                 | Old key                         | New key                    |
-| ------------------------------------ | ------------------------------- | -------------------------- |
-| `changestream.spec.ts`               | `../application.js`             | `#modules/application.js`  |
-| `changestream.spec.ts`               | `../db.js`                      | `#modules/db.js`           |
-| `changestream.spec.ts`               | `../redis.js`                   | `#modules/redis.js`        |
-| `changestream.spec.ts`               | `../../models/Webhook.js`       | `#models/Webhook.js`       |
-| `changestream.spec.ts`               | `./simplifyMatch.js`            | `./simplify-match.js`      |
-| `partition.spec.ts`, `queue.spec.ts` | `../application.js`             | `#modules/application.js`  |
-| `claim.spec.ts`                      | `../../models/WebhookResult.js` | `#models/WebhookResult.js` |
-| `simplify-match.spec.ts`             | `./simplifyMatch.js`            | `./simplify-match.js`      |
+| File                     | Old key                         | New key                       |
+| ------------------------ | ------------------------------- | ----------------------------- |
+| `changestream.spec.ts`   | `../application.js`             | `#modules/application.js`     |
+| `changestream.spec.ts`   | `../db.js`                      | `#modules/db.js`              |
+| `changestream.spec.ts`   | `../redis.js`                   | `#modules/redis.js`           |
+| `changestream.spec.ts`   | `../../models/Webhook.js`       | `#models/Webhook.js`          |
+| `changestream.spec.ts`   | `./simplifyMatch.js`            | `./simplify-match.js`         |
+| `partition.spec.ts`      | `../application.js`             | `#modules/application.js`     |
+| `queue.spec.ts`          | `../application.js`             | `#modules/application.js`     |
+| `queue.spec.ts`          | `../../interfaces.js`           | `#interfaces.js`              |
+| `claim.spec.ts`          | `../../constants.js`            | `#constants.js`               |
+| `claim.spec.ts`          | `../../models/Webhook.js`       | `#models/Webhook.js`          |
+| `claim.spec.ts`          | `../../models/WebhookResult.js` | `#models/WebhookResult.js`    |
+| `simplify-match.spec.ts` | `./simplifyMatch.js`            | `./simplify-match.js`         |
+| `simplify-match.spec.ts` | `../matching.js`                | `./matching.js`               |
+| `index.dm.spec.ts`       | `./webhook.js`                  | `./index.js`                  |
+| `index.dm.spec.ts`       | `../models/WebhookResult.js`    | `#models/WebhookResult.js`    |
+| `index.dm.spec.ts`       | `../models/YoutubeDmBinding.js` | `#models/YoutubeDmBinding.js` |
+
+`index.dm.spec.ts` is the file most easily missed: it was `src/commands/webhook-dm.spec.ts`, so both its subject import and its model imports change, and none of them are mock keys.
 
 - [ ] **Step 5: Repoint the dispatcher and the dev script**
 
@@ -1157,35 +1269,46 @@ In `src/scripts/inspect-simplified-match.ts`:
 | `../utils/common.js`                  | `#utils/common.js`                      |
 | `../modules/webhook/simplifyMatch.js` | `../services/webhook/simplify-match.js` |
 
-That last one is the one sanctioned import that reaches into a service. `scripts/` is not a service, so the boundary rule added in Task 16 does not cover it, and no alias exists for `services/`.
+That last one is the one sanctioned import that reaches into a service. `scripts/` is not a service, so the boundary rule added in Task 14 does not cover it, and no alias exists for `services/`.
 
 - [ ] **Step 6: Run the webhook tests first, then everything**
 
 ```bash
 npm run test -- src/services/webhook
+grep -rn --include='*.ts' -E 'from "\.\.[^"]*/(models|modules|utils|constants|interfaces)' src/services/webhook
 npm run build && npm run lint && npm test
+npm run clean && npm run build && ./scripts/smoke-entrypoints.sh
 ```
 
-Expected: all pass.
+Expected: the webhook suite passes, the grep prints nothing, the standard checks pass, and the smoke check prints seven `ok` lines.
 
-- [ ] **Step 7: Verify model registration still works**
+- [ ] **Step 7: Verify every model still registers**
 
 ```bash
-npm run build
+npm run clean && npm run build
+EXPECTED=$(ls src/models/*.ts | grep -v '\.spec\.ts' | wc -l | tr -d ' ')
 node --input-type=module -e "
   const t = setTimeout(() => { console.error('TIMEOUT'); process.exit(2); }, 20000);
   const { importAllModels } = await import('./dist/modules/db.js');
   await importAllModels();
   const { mongoose } = await import('@typegoose/typegoose');
   const names = Object.keys(mongoose.models).sort();
-  console.log(names.length, 'models registered');
-  if (names.length < 20) { console.error('too few models:', names); process.exit(1); }
+  const expected = Number(process.env.EXPECTED);
+  console.log(names.length, 'of', expected, 'registered:', names.join(', '));
+  if (names.length !== expected) {
+    console.error('model registration mismatch');
+    process.exit(1);
+  }
   clearTimeout(t);
   process.exit(0);
-"
+" EXPECTED="$EXPECTED"
 ```
 
-Expected: at least 20 model names printed, exit 0. This is the check that `npm run build`, `npm run lint` and `npm test` all pass through silently — the webhook service resolves models by collection name at runtime, and a model that failed to register only fails when an event for that collection arrives.
+Expected: `26 of 26 registered: ...` and exit 0.
+
+Both sides are derived, so no stored baseline is needed and the check stays correct if a model is legitimately added later. An exact match is required rather than a floor: the failure this guards against is one model silently dropping out, and any floor low enough to be safe against future additions is too low to catch that.
+
+This is the check that `npm run build`, `npm run lint` and `npm test` all pass through silently. The webhook service resolves models by collection name from a runtime string, so a model that failed to register only fails when an event for that collection arrives — in production, not in CI. The `npm run clean` matters here too: without it, a model file deleted from `src/` still has its compiled copy in `dist/`, and `readdir` finds it.
 
 - [ ] **Step 8: Commit via git-master**
 
@@ -1219,7 +1342,10 @@ git mv src/modules/youtube-watch-gate.ts src/services/worker/youtube-watch-gate.
 git mv src/modules/youtube-watch-gate.spec.ts src/services/worker/youtube-watch-gate.spec.ts
 git mv src/modules/currency-convert.ts src/services/worker/currency/convert.ts
 git mv src/data/currency.ts src/services/worker/currency/currency-map.ts
+rmdir src/data
 ```
+
+`src/data/` is empty at this point and this removes it: Task 6 already took `track.ts` and `webhook.ts` into `src/modules/`, and `currency.ts` was its last occupant. If `rmdir` refuses because the directory is not empty, stop — a file was missed and the plan's accounting is wrong.
 
 - [ ] **Step 2: Convert imports in the service entrypoint**
 
@@ -1241,28 +1367,33 @@ In `src/services/worker/index.ts`, all eighteen `../models/*.js` specifiers beco
 
 - [ ] **Step 3: Convert imports in the moved sub-files**
 
-| File                    | Old                                | New                           |
-| ----------------------- | ---------------------------------- | ----------------------------- |
-| `gift.ts`               | `../interfaces.js`                 | `#interfaces.js`              |
-| `gift.ts`               | `../models/Gift.js`                | `#models/Gift.js`             |
-| `gift.ts`               | `../models/GiftPrice.js`           | `#models/GiftPrice.js`        |
-| `gift.ts`               | `../modules/cache.js`              | `#modules/cache.js`           |
-| `youtube-watch-gate.ts` | `../constants.js`                  | `#constants.js`               |
-| `youtube-watch-gate.ts` | `./module.js`                      | `#modules/module.js`          |
-| `currency/convert.ts`   | `../../models/CurrencyExchange.js` | `#models/CurrencyExchange.js` |
-| `currency/convert.ts`   | `../cache.js`                      | `#modules/cache.js`           |
-| `currency/convert.ts`   | `../../data/currency.js`           | `./currency-map.js`           |
+| File                    | Old                      | New                    |
+| ----------------------- | ------------------------ | ---------------------- |
+| `gift.ts`               | `../interfaces.js`       | `#interfaces.js`       |
+| `gift.ts`               | `../models/Gift.js`      | `#models/Gift.js`      |
+| `gift.ts`               | `../models/GiftPrice.js` | `#models/GiftPrice.js` |
+| `gift.ts`               | `../modules/cache.js`    | `#modules/cache.js`    |
+| `youtube-watch-gate.ts` | `../constants.js`        | `#constants.js`        |
+| `youtube-watch-gate.ts` | `./module.js`            | `#modules/module.js`   |
+| `currency/convert.ts`   | `./cache.js`             | `#modules/cache.js`    |
+| `currency/convert.ts`   | `../data/currency.js`    | `./currency-map.js`    |
+
+These two are written as they appear in the file **after Task 6**, not as they appear today. Task 6 converted this file's `../models/CurrencyExchange.js` to `#models/CurrencyExchange.js` — already correct, so it is not listed — but left `./cache.js` relative, because at that point both files were in `src/modules/`, and left `../data/currency.js` alone, because `src/data/` is not an alias tier. Moving the file is what breaks both.
 
 `currency/currency-map.ts` has no imports.
 
-- [ ] **Step 4: Update the mock specifiers in the moved tests**
+- [ ] **Step 4: Update the specifiers in the moved tests**
 
-| File            | Old key                            | New key                   |
-| --------------- | ---------------------------------- | ------------------------- |
-| `gift.spec.ts`  | `../models/GiftPrice.js`           | `#models/GiftPrice.js`    |
-| `gift.spec.ts`  | `../models/Gift.js`                | `#models/Gift.js`         |
-| `index.spec.ts` | `../modules/youtube-watch-gate.js` | `./youtube-watch-gate.js` |
-| `index.spec.ts` | `./worker.js`                      | `./index.js`              |
+| File                         | Old                                | New                       |
+| ---------------------------- | ---------------------------------- | ------------------------- |
+| `gift.spec.ts`               | `../interfaces.js`                 | `#interfaces.js`          |
+| `gift.spec.ts`               | `../models/GiftPrice.js`           | `#models/GiftPrice.js`    |
+| `gift.spec.ts`               | `../models/Gift.js`                | `#models/Gift.js`         |
+| `youtube-watch-gate.spec.ts` | `../constants.js`                  | `#constants.js`           |
+| `index.spec.ts`              | `../modules/youtube-watch-gate.js` | `./youtube-watch-gate.js` |
+| `index.spec.ts`              | `./worker.js`                      | `./index.js`              |
+
+Only the `gift.spec.ts` model rows are `jest.unstable_mockModule` keys; the rest are ordinary imports. Both kinds are literal strings, so both break the same way if missed — the mock key fails at test time, the ordinary import at build time.
 
 - [ ] **Step 5: Repoint the dispatcher**
 
@@ -1272,10 +1403,14 @@ In `src/index.ts`, change `"./commands/worker.js"` to `"./services/worker/index.
 
 ```bash
 npm run test -- src/services/worker
+grep -rn --include='*.ts' -E 'from "\.\.[^"]*/(models|modules|utils|constants|interfaces)' src/services/worker
 npm run build && npm run lint && npm test
+npm run clean && npm run build && ./scripts/smoke-entrypoints.sh
 ```
 
-Expected: all pass. `gift.spec.ts` is 711 lines and mocks the gift price model — if its mock key is wrong the failures are loud and immediate.
+Expected: the worker suite passes, the grep prints nothing, the standard checks pass, and the smoke check prints seven `ok` lines with only `manager` still under `dist/commands/`.
+
+`gift.spec.ts` is 711 lines and mocks the gift price model — if its mock key is wrong the failures are loud and immediate.
 
 - [ ] **Step 7: Commit via git-master**
 
@@ -1283,9 +1418,9 @@ Stage every moved and modified path explicitly. Suggested subject: `refactor(wor
 
 ---
 
-## Task 13: Move the manager service and dissolve the data directory
+## Task 13: Move the manager service
 
-The last service, and the largest. `data/track.ts` and `data/webhook.ts` are shared, so they go to `modules/` rather than into manager; that empties `src/data/` and `src/components/` completely.
+The last service, and the largest. `src/data/` is already gone by this point — Task 6 moved its two shared modules into `src/modules/`, and Task 12 took `currency.ts` into the worker — so this task finishes by emptying `src/components/` and `src/commands/`.
 
 **Files:**
 
@@ -1295,49 +1430,9 @@ The last service, and the largest. `data/track.ts` and `data/webhook.ts` are sha
 - Move: `src/components/youtube-dm-operator.ts` → `src/services/manager/youtube-dm-operator.ts`
 - Move: `src/components/chats-archive.ts` → `src/services/manager/chats-archive/index.ts`
 - Move: `src/components/chats-archive/*` → `src/services/manager/chats-archive/`
-- Move: `src/data/track.ts` (+ spec) → `src/modules/track/features.ts`
-- Move: `src/data/webhook.ts` (+ spec) → `src/modules/webhook-template.ts`
 - Modify: `src/index.ts:42`
 
-- [ ] **Step 1: Move the shared data files into modules**
-
-```bash
-git mv src/data/track.ts src/modules/track/features.ts
-git mv src/data/track.spec.ts src/modules/track/features.spec.ts
-git mv src/data/webhook.ts src/modules/webhook-template.ts
-git mv src/data/webhook.spec.ts src/modules/webhook-template.spec.ts
-rmdir src/data
-```
-
-`webhook-template` is a single file, not a directory with an `index.ts` — a one-file directory adds a level of nesting and no information.
-
-- [ ] **Step 2: Convert imports in the two relocated shared files**
-
-| File                               | Old                    | New                     |
-| ---------------------------------- | ---------------------- | ----------------------- |
-| `modules/track/features.ts`        | `../models/Track.js`   | `#models/Track.js`      |
-| `modules/track/features.ts`        | `../models/Video.js`   | `#models/Video.js`      |
-| `modules/track/features.ts`        | `../models/Webhook.js` | `#models/Webhook.js`    |
-| `modules/webhook-template.ts`      | `../models/Channel.js` | `#models/Channel.js`    |
-| `modules/webhook-template.ts`      | `../models/Video.js`   | `#models/Video.js`      |
-| `modules/webhook-template.ts`      | `../models/Webhook.js` | `#models/Webhook.js`    |
-| `modules/webhook-template.ts`      | `../utils/common.js`   | `#utils/common.js`      |
-| `modules/track/features.spec.ts`   | `./track.js`           | `./features.js`         |
-| `modules/webhook-template.spec.ts` | `./webhook.js`         | `./webhook-template.js` |
-
-- [ ] **Step 3: Repoint the three files that already referenced the data directory**
-
-| File                                               | Old                      | New                            |
-| -------------------------------------------------- | ------------------------ | ------------------------------ |
-| `src/modules/track/transform.ts`                   | `../../data/track.js`    | `./features.js`                |
-| `src/modules/youtube-dm/transform.ts`              | `../../data/track.js`    | `../track/features.js`         |
-| `src/models/Track.ts`                              | `../data/track.js`       | `#modules/track/features.js`   |
-| `src/services/discord-bot/commands/track/track.ts` | `../../../data/track.js` | `#modules/track/features.js`   |
-| `src/services/webhook/index.ts`                    | `../data/webhook.js`     | `#modules/webhook-template.js` |
-
-The last two are the deferred edits noted in Tasks 10 and 11.
-
-- [ ] **Step 4: Move the manager files**
+- [ ] **Step 1: Move the manager files**
 
 ```bash
 mkdir -p src/services/manager/chats-archive
@@ -1360,7 +1455,7 @@ rmdir src/commands
 
 Note the ordering: `chats-archive.ts` becomes `chats-archive/index.ts` before the directory's own contents move in, so the two never collide.
 
-- [ ] **Step 5: Convert imports in the manager entrypoint**
+- [ ] **Step 2: Convert imports in the manager entrypoint**
 
 In `src/services/manager/index.ts`:
 
@@ -1378,37 +1473,51 @@ In `src/services/manager/index.ts`:
 | `../components/webhook-prepare.js`     | `./webhook-prepare.js`     |
 | `../components/youtube-dm-operator.js` | `./youtube-dm-operator.js` |
 
-- [ ] **Step 6: Convert imports in the moved manager files**
+- [ ] **Step 3: Convert imports in the moved manager files**
 
 Every `../constants.js`, `../interfaces.js`, `../models/*.js`, `../modules/*.js` and `../utils/*.js` becomes its alias. The relative edges to re-anchor:
 
-| File                                      | Old                                                        | New                                                  |
-| ----------------------------------------- | ---------------------------------------------------------- | ---------------------------------------------------- |
-| `track-operator.ts`                       | `../modules/track/transform.js`                            | `#modules/track/transform.js`                        |
-| `track-operator.ts`                       | `../modules/application.js`, `../modules/schedule.js`      | `#modules/application.js`, `#modules/schedule.js`    |
-| `youtube-dm-operator.ts`                  | `../modules/youtube-dm/transform.js`                       | `#modules/youtube-dm/transform.js`                   |
-| `youtube-dm-operator.ts`                  | `../modules/application.js`, `../modules/schedule.js`      | `#modules/application.js`, `#modules/schedule.js`    |
-| `cleanup.ts`                              | `./video-stats.js`                                         | unchanged                                            |
-| `webhook-prepare.ts`                      | `../data/webhook.js`                                       | `#modules/webhook-template.js`                       |
-| `chats-archive/index.ts`                  | `./chats-archive/archive-video.js` and siblings            | `./archive-video.js` and siblings                    |
-| `chats-archive/index.ts`                  | `../utils/esm.js`                                          | `#utils/esm.js`                                      |
-| `chats-archive/gen-channel-index-file.ts` | `../video-stats.js`                                        | `../video-stats.js` (unchanged — still one level up) |
-| `chats-archive/gen-index-file.ts`         | `../video-stats.js`                                        | unchanged                                            |
-| `chats-archive/*.ts`                      | `../../models/*.js`, `../../constants.js`, `../../util.js` | `#models/*.js`, `#constants.js`, `#utils/common.js`  |
+| File                                      | Old                                                       | New                                               |
+| ----------------------------------------- | --------------------------------------------------------- | ------------------------------------------------- |
+| `track-operator.ts`                       | `../modules/track/transform.js`                           | `#modules/track/transform.js`                     |
+| `track-operator.ts`                       | `../modules/application.js`, `../modules/schedule.js`     | `#modules/application.js`, `#modules/schedule.js` |
+| `youtube-dm-operator.ts`                  | `../modules/youtube-dm/transform.js`                      | `#modules/youtube-dm/transform.js`                |
+| `youtube-dm-operator.ts`                  | `../modules/application.js`, `../modules/schedule.js`     | `#modules/application.js`, `#modules/schedule.js` |
+| `cleanup.ts`                              | `../interfaces.js`                                        | `#interfaces.js`                                  |
+| `cleanup.ts`                              | `../constants.js`                                         | `#constants.js`                                   |
+| `cleanup.ts`                              | `../models/*.js` (15 of them)                             | `#models/*.js`                                    |
+| `cleanup.ts`                              | `../modules/application.js`, `../modules/schedule.js`     | `#modules/application.js`, `#modules/schedule.js` |
+| `cleanup.ts`                              | `./video-stats.js`                                        | unchanged                                         |
+| `webhook-prepare.ts`                      | `../modules/webhook-template.js`                          | `#modules/webhook-template.js`                    |
+| `chats-archive/index.ts`                  | `./chats-archive/archive-video.js` and its three siblings | `./archive-video.js` and its three siblings       |
+| `chats-archive/index.ts`                  | `../utils/esm.js`                                         | `#utils/esm.js`                                   |
+| `chats-archive/gen-channel-index-file.ts` | `../video-stats.js`                                       | unchanged                                         |
+| `chats-archive/gen-index-file.ts`         | `../video-stats.js`                                       | unchanged                                         |
+| `chats-archive/archive-video.ts`          | `../../interfaces.js`                                     | `#interfaces.js`                                  |
+| `chats-archive/archive-video.ts`          | `../../utils/common.js`                                   | `#utils/common.js`                                |
+| `chats-archive/*.ts`                      | `../../models/*.js`, `../../constants.js`                 | `#models/*.js`, `#constants.js`                   |
 
-- [ ] **Step 7: Update the mock specifiers in the moved tests**
+`archive-video.ts` imports the shared helper as `../../utils/common.js`, not `../../util.js` — Task 4 already renamed it. `../video-stats.js` in the two index generators stays as it is: `video-stats.ts` and the `chats-archive/` directory both moved into `src/services/manager/`, so they are still exactly one level apart.
 
-| File                                          | Old key                 | New key            |
-| --------------------------------------------- | ----------------------- | ------------------ |
-| `chats-archive/gen-daily-videos-file.spec.ts` | `./write-data-file.js`  | unchanged          |
-| `chats-archive/gen-realtime-file.spec.ts`     | `./write-data-file.js`  | unchanged          |
-| `chats-archive/*.spec.ts`                     | `../../models/Video.js` | `#models/Video.js` |
+- [ ] **Step 4: Update the specifiers in the moved tests**
 
-- [ ] **Step 8: Repoint the dispatcher**
+| File                                          | Old                      | New                    |
+| --------------------------------------------- | ------------------------ | ---------------------- |
+| `chats-archive/gen-daily-videos-file.spec.ts` | `./write-data-file.js`   | unchanged              |
+| `chats-archive/gen-realtime-file.spec.ts`     | `./write-data-file.js`   | unchanged              |
+| `chats-archive/*.spec.ts`                     | `../../models/Video.js`  | `#models/Video.js`     |
+| `gift-price.spec.ts`                          | `../models/Gift.js`      | `#models/Gift.js`      |
+| `gift-price.spec.ts`                          | `../models/GiftPrice.js` | `#models/GiftPrice.js` |
+| `video-stats.spec.ts`                         | `../models/*.js`         | `#models/*.js`         |
+| `webhook-prepare.spec.ts`                     | `../models/Webhook.js`   | `#models/Webhook.js`   |
+
+The `gift-price.spec.ts` rows are `jest.unstable_mockModule` keys and are the ones most easily missed, because that file mocks two models by literal path and nothing in the build catches a stale key.
+
+- [ ] **Step 5: Repoint the dispatcher**
 
 In `src/index.ts`, change `"./commands/manager.js"` to `"./services/manager/index.js"`.
 
-- [ ] **Step 9: Confirm the old directories are gone**
+- [ ] **Step 6: Confirm the old directories are gone**
 
 ```bash
 ls src
@@ -1416,20 +1525,30 @@ ls src
 
 Expected exactly: `constants.ts  index.ts  interfaces.ts  models  modules  scripts  services  types  utils`. If `commands`, `components`, `data` or `discord` still appears, a file was missed.
 
-- [ ] **Step 10: Run the standard checks and both runtime checks**
+- [ ] **Step 7: Run the standard checks and both runtime checks**
 
 ```bash
+npm run test -- src/services/manager
+grep -rn --include='*.ts' -E 'from "\.\.[^"]*/(models|modules|utils|constants|interfaces)' src/services/manager
 npm run build && npm run lint && npm test
-./scripts/smoke-entrypoints.sh services
+npm run clean && npm run build && ./scripts/smoke-entrypoints.sh
 ```
 
-Expected: standard checks pass, then seven `ok` lines from the smoke check — this is the first run where all seven live under `dist/services/`, and it is the only evidence that Node's imports map resolves the moved code.
+Expected: the manager suite passes, the grep prints nothing, the standard checks pass, then seven `ok` lines from the smoke check — this is the first run where all seven load from `dist/services/`.
 
-Then repeat the model-registration check from Task 11 Step 7. Expected: the same model count as before the move. A lower count means a model file left `src/models/`.
+Then repeat the model-registration check from Task 11 Step 7 verbatim. Expected: `26 of 26 registered`. Anything less means a model file left `src/models/` or landed in a subdirectory, which nothing else in this plan detects.
 
-- [ ] **Step 11: Commit via git-master**
+- [ ] **Step 8: Commit via git-master**
 
-This task touches roughly 40 files across three concerns — the shared data files, the manager service, and the dispatcher. Ask git-master to split it into at least three commits: one moving `data/` into `modules/`, one moving the manager service, one repointing the dispatcher and the deferred references from Tasks 10 and 11.
+This task touches roughly 35 files. Ask git-master to split it, but with one hard rule: **every commit must build, lint and test on its own.** That means a move and the repointing of everything that referenced the moved file belong in the same commit — splitting "move the files" from "fix the imports" produces a broken intermediate that defeats the point of committing in steps.
+
+A split that satisfies that rule:
+
+1. `chats-archive.ts` → `chats-archive/index.ts` plus the directory's contents, with all of their imports converted.
+2. The remaining manager files (`cleanup`, `gift-price`, `video-scaler`, `video-stats`, `webhook-prepare`, the two operator shells) with their imports converted.
+3. `manager.ts` → `services/manager/index.ts` together with the `src/index.ts` dispatcher line, since the entrypoint and the dispatcher that loads it cannot be separated.
+
+Run the standard checks after each of the three, not only at the end.
 
 ---
 
@@ -1531,8 +1650,10 @@ Expected: pass. If it reports violations, the codebase has a real cross-service 
 Add this line temporarily at the top of `src/services/worker/gift.ts`:
 
 ```ts
-import { simplifyMatch } from "../webhook/simplify-match.js";
+import "../webhook/simplify-match.js";
 ```
+
+A side-effect import is used deliberately. A named import would also trip `@typescript-eslint/no-unused-vars`, and a second error on the same line makes it harder to tell whether the boundary rule fired at all.
 
 Run:
 
@@ -1545,10 +1666,10 @@ Expected: an error on that line reading `Cross-service import into "webhook" is 
 Then add a second temporary line to the same file:
 
 ```ts
-import { simplifyMatch as s2 } from "../../services/webhook/simplify-match.js";
+import "../../services/webhook/simplify-match.js";
 ```
 
-Run `npm run lint` again. Expected: errors on **both** lines. If only the first is reported, the second pattern is wrong.
+Run `npm run lint` again. Expected: errors on **both** lines. If only the first is reported, the second pattern is wrong — and that is the exact hole this pattern exists to close, since both specifiers reach the same file.
 
 Remove both temporary lines and re-run `npm run lint`. Expected: clean.
 
@@ -1557,7 +1678,7 @@ Remove both temporary lines and re-run `npm run lint`. Expected: clean.
 Add this line temporarily at the top of `src/modules/cache.ts`:
 
 ```ts
-import { computeGiftPrice } from "../services/worker/gift.js";
+import "../services/worker/gift.js";
 ```
 
 Run:
@@ -1570,13 +1691,14 @@ Expected: an error reading `Shared code must not import service-private modules`
 
 This direction matters more than it looks: without it, shared code could import one service's private module and transitively re-expose it to every other service, which is exactly the dependency inversion the whole restructure exists to prevent.
 
-- [ ] **Step 5: Run the standard checks**
+- [ ] **Step 5: Run the standard checks and the smoke check**
 
 ```bash
 npm run build && npm run lint && npm test
+npm run clean && npm run build && ./scripts/smoke-entrypoints.sh
 ```
 
-Expected: all pass, with no temporary import lines remaining. Confirm with `git diff --stat` that only `eslint.config.js` is modified.
+Expected: all pass, seven `ok` lines, and no temporary import lines remaining. Confirm with `git diff --stat` that only `eslint.config.js` is modified — if `gift.ts` or `cache.ts` still appears, a negative-test line was left behind.
 
 - [ ] **Step 6: Commit via git-master**
 
@@ -1630,11 +1752,34 @@ The rules only take effect if they are where people and agents read them. `AGENT
 
 - Modify: `AGENTS.md`
 - Modify: seven file-type documents under `docs/data-contract/` — `channel-index.md`, `daily-videos.md`, `realtime.md`, `root-index.md`, `upcoming.md`, `video-chats.md`, `video-meta.md`
+- Modify: `src/constants.ts` (two comments), `src/services/webhook/claim.ts` (one comment)
 - Leave alone: `docs/data-contract/README.md` — its one `src/` mention is a generic reviewer-checklist phrase, not a path
 
-- [ ] **Step 1: Rewrite the Architecture section of AGENTS.md**
+- [ ] **Step 1: Repoint every stale path in AGENTS.md**
 
-Replace the "Composition (modules vs components)" subsection with a description of the three tiers, and add these two rules under "Project conventions":
+Twelve lines name a directory this restructure removes or moves. Each needs its new location:
+
+| Line | Current text mentions           | Replace with                                       |
+| ---- | ------------------------------- | -------------------------------------------------- |
+| 37   | `src/commands/`                 | `src/services/`                                    |
+| 49   | `src/modules/youtube-pubsub/`   | `src/services/crawler/pubsub/`                     |
+| 53   | `src/components/`               | `src/services/manager/`                            |
+| 60   | `src/modules/webhook/`          | `src/services/webhook/`                            |
+| 74   | `src/components/` bullet        | delete the bullet; the tier list below replaces it |
+| 79   | `src/data/` bullet              | delete the bullet; the directory no longer exists  |
+| 81   | `src/discord/` bullet           | `src/services/discord-bot/commands/`               |
+| 82   | `src/modules/webhook/` bullet   | `src/services/webhook/`                            |
+| 124  | `src/commands/`                 | `src/services/<service>/index.ts`                  |
+| 130  | `src/components/`               | `src/services/manager/`                            |
+| 131  | `src/commands/manager.ts`       | `src/services/manager/index.ts`                    |
+| 280  | `src/util.ts` and `src/utils/`  | `src/utils/`                                       |
+| 288  | `src/components/chats-archive/` | `src/services/manager/chats-archive/`              |
+
+Line numbers are from the pre-restructure file and will drift as earlier lines change; treat them as a checklist of thirteen sites, not as offsets.
+
+- [ ] **Step 2: Replace the composition subsection and add the placement rules**
+
+Replace the "Composition (modules vs components)" subsection with the three-tier description, and add these rules under "Project conventions":
 
 ```markdown
 ### Where a new file goes
@@ -1651,16 +1796,44 @@ only then is it promoted to `src/modules/`. Do not pre-emptively place code in
 Cross-service imports are rejected by ESLint. If you find yourself wanting one,
 the file you are reaching for needs promoting.
 
+`src/models/` must stay one flat directory, and `src/modules/db.ts` must stay
+at that path: model registration reads the emitted `dist/models/` with a
+non-recursive `readdir`, so a model in a subdirectory is skipped silently and
+only fails when the webhook service dispatches that collection.
+
 ### Cross-service verticals
 
-`track` and `youtube-dm` each span three services and are therefore not in one
-directory. The distribution table in
-[docs/superpowers/specs/2026-09-19-source-layout-restructure-design.md](docs/superpowers/specs/2026-09-19-source-layout-restructure-design.md)
-lists where each part lives; when you add or move a part of either vertical,
-update that table in the same commit.
+Some features span several services and therefore do not live in one directory.
+Where each part of the current two sits:
+
+| Vertical     | Shared slice                            | Discord surface                             | Dispatch side               | Manager reconcile shell                   | Model                        |
+| ------------ | --------------------------------------- | ------------------------------------------- | --------------------------- | ----------------------------------------- | ---------------------------- |
+| `track`      | `modules/track/{features,transform}.ts` | `services/discord-bot/commands/track/`      | —                           | `services/manager/track-operator.ts`      | `models/Track.ts`            |
+| `youtube-dm` | `modules/youtube-dm/transform.ts`       | `services/discord-bot/commands/youtube-dm/` | `services/webhook/index.ts` | `services/manager/youtube-dm-operator.ts` | `models/YoutubeDmBinding.ts` |
+
+Both project onto `models/Webhook.ts`: a user configures something in Discord,
+it becomes a Webhook row, the webhook service dispatches it, and manager
+reconciles and removes orphans on a schedule.
+
+Add a row whenever a new feature ends up spanning more than one service, and
+update the existing rows in the same commit that moves any part of a vertical.
 ```
 
-- [ ] **Step 2: Update the writer paths in the data contract documents**
+The table is written out here rather than referenced, so that someone reading `AGENTS.md` does not have to open another file to find out where a vertical lives.
+
+- [ ] **Step 3: Repoint the stale paths in source comments**
+
+Three comments name directories that no longer exist. These are comments only — no code changes:
+
+| File                            | Comment mentions                    | Replace with                      |
+| ------------------------------- | ----------------------------------- | --------------------------------- |
+| `src/constants.ts:100`          | `src/components/cleanup.ts`         | `src/services/manager/cleanup.ts` |
+| `src/constants.ts:197`          | `src/components/youtube-discovery/` | `src/services/crawler/discovery/` |
+| `src/services/webhook/claim.ts` | `src/components/cleanup.ts`         | `src/services/manager/cleanup.ts` |
+
+`claim.ts` is listed at its post-Task-11 path; the comment travels with the file.
+
+- [ ] **Step 4: Update the writer paths in the data contract documents**
 
 Seven documents each carry one `**Writer:**` line pointing into `src/components/chats-archive/`. Rewrite the directory prefix to `src/services/manager/chats-archive/`, leaving the filename untouched:
 
@@ -1684,7 +1857,7 @@ grep -rn "src/components" docs/data-contract
 
 Expected after editing: no output.
 
-- [ ] **Step 3: Check for stale references across the whole repository**
+- [ ] **Step 5: Check for stale references across the whole repository**
 
 ```bash
 grep -rn "src/components\|src/commands\|src/data/\|src/discord" \
@@ -1694,17 +1867,17 @@ grep -rn "src/components\|src/commands\|src/data/\|src/discord" \
 
 Expected: no output. The two excluded directories hold the design and planning documents, which describe the before state on purpose and must not be rewritten. Any hit outside them is a stale reference.
 
-- [ ] **Step 4: Run the standard checks**
+- [ ] **Step 6: Run the standard checks**
 
 ```bash
 npm run build && npm run lint && npm test
 ```
 
-Expected: all pass. Documentation changes cannot break these, but running them confirms the tree is still clean before the final commit.
+Expected: all pass. The comment edits in Step 3 touch source files, so this is not a formality.
 
-- [ ] **Step 5: Commit via git-master**
+- [ ] **Step 7: Commit via git-master**
 
-Stage `AGENTS.md` and the `docs/data-contract/` files. Ask git-master to split the rules change and the path-reference sweep into separate commits. Suggested subjects: `docs: state where a new source file belongs` and `docs(data-contract): follow the archive writer to its new path`.
+Stage `AGENTS.md`, the seven `docs/data-contract/` files, `src/constants.ts` and `src/services/webhook/claim.ts`. Ask git-master for three commits: the placement rules and vertical table, the `AGENTS.md` path sweep, and the data-contract plus source-comment path sweep. Suggested subjects: `docs: state where a new source file belongs`, `docs: follow the services to their new paths`, and `docs(data-contract): follow the archive writer to its new path`.
 
 ---
 
@@ -1713,11 +1886,19 @@ Stage `AGENTS.md` and the `docs/data-contract/` files. Ask git-master to split t
 After Task 16, all of the following must hold:
 
 ```bash
-npm run build                          # passes
+npm run clean && npm run build         # passes
 npm run lint                           # passes
 npm test                               # passes
-./scripts/smoke-entrypoints.sh services # seven ok lines, exit 0
+./scripts/smoke-entrypoints.sh         # seven ok lines, all under dist/services/, exit 0
 ls src                                 # no commands/ components/ data/ discord/
 ```
 
-Plus the model-registration check from Task 11 Step 7, reporting the same model count as the pre-restructure baseline.
+Plus the model-registration check from Task 11 Step 7, reporting `26 of 26 registered`.
+
+Plus one final sweep for imports that should have become aliases:
+
+```bash
+grep -rn --include='*.ts' -E 'from "\.\.[^"]*/(models|modules|utils|constants|interfaces)' src/services
+```
+
+Expected: no output.
