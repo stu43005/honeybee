@@ -1,9 +1,9 @@
 import axios from "axios";
 import { Decimal } from "decimal.js";
 import moment from "moment-timezone";
-import { currencyMap } from "../data/currency.js";
+import { currencyMap } from "./currency-map.js";
 import CurrencyExchange from "#models/CurrencyExchange.js";
-import { getCacheInstance } from "./cache.js";
+import { getCacheInstance } from "#modules/cache.js";
 
 // Created on first conversion instead of at module load, so merely importing
 // this module (e.g. transitively via the worker) does not eagerly build the

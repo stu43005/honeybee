@@ -18,58 +18,51 @@ import { setInterval, setTimeout } from "node:timers/promises";
 import {
   JOB_CONCURRENCY,
   YOUTUBE_WATCH_ACQUIRE_MAX_WAIT_MS,
-} from "../constants.js";
+} from "#constants.js";
 import {
   ErrorCode,
   HoneybeeResult,
   HoneybeeStats,
   MessageAuthorType,
   type HoneybeeJob,
-} from "../interfaces.js";
+} from "#interfaces.js";
 import {
   buildGiftUpsertOps,
   getGiftPriceTable,
   mergeGiftActions,
-} from "../components/gift.js";
-import BanActionModel, { type BanAction } from "../models/BanAction.js";
-import BannerActionModel, {
-  type BannerAction,
-} from "../models/BannerAction.js";
-import ChatModel, { type Chat } from "../models/Chat.js";
-import ErrorLogModel, { type ErrorLog } from "../models/ErrorLog.js";
-import GiftModel from "../models/Gift.js";
-import MembershipModel, { type Membership } from "../models/Membership.js";
+} from "./gift.js";
+import BanActionModel, { type BanAction } from "#models/BanAction.js";
+import BannerActionModel, { type BannerAction } from "#models/BannerAction.js";
+import ChatModel, { type Chat } from "#models/Chat.js";
+import ErrorLogModel, { type ErrorLog } from "#models/ErrorLog.js";
+import GiftModel from "#models/Gift.js";
+import MembershipModel, { type Membership } from "#models/Membership.js";
 import MembershipGiftModel, {
   type MembershipGift,
-} from "../models/MembershipGift.js";
+} from "#models/MembershipGift.js";
 import MembershipGiftPurchaseModel, {
   type MembershipGiftPurchase,
-} from "../models/MembershipGiftPurchase.js";
-import MilestoneModel, { type Milestone } from "../models/Milestone.js";
-import ModeChangeModel, { type ModeChange } from "../models/ModeChange.js";
-import PlaceholderModel, { type Placeholder } from "../models/Placeholder.js";
-import PollModel, { type Poll } from "../models/Poll.js";
-import RaidModel, { type Raid } from "../models/Raid.js";
+} from "#models/MembershipGiftPurchase.js";
+import MilestoneModel, { type Milestone } from "#models/Milestone.js";
+import ModeChangeModel, { type ModeChange } from "#models/ModeChange.js";
+import PlaceholderModel, { type Placeholder } from "#models/Placeholder.js";
+import PollModel, { type Poll } from "#models/Poll.js";
+import RaidModel, { type Raid } from "#models/Raid.js";
 import RemoveChatActionModel, {
   type RemoveChatAction,
-} from "../models/RemoveChatAction.js";
-import SuperChatModel, { type SuperChat } from "../models/SuperChat.js";
-import SuperStickerModel, {
-  type SuperSticker,
-} from "../models/SuperSticker.js";
-import VideoModel from "../models/Video.js";
-import { Application } from "../modules/application.js";
-import {
-  currencyToJpyAmount,
-  getCurrencymapItem,
-} from "../modules/currency-convert.js";
-import { MongodbModule } from "../modules/db.js";
-import { QueueModule } from "../modules/queue.js";
-import { YoutubeWatchGate } from "../modules/youtube-watch-gate.js";
-import { RedisModule } from "../modules/redis.js";
-import ChannelModel from "../models/Channel.js";
-import { updateChannelByHandle } from "../modules/youtube.js";
-import { groupBy, pipeSignal, setIfDefine } from "../utils/common.js";
+} from "#models/RemoveChatAction.js";
+import SuperChatModel, { type SuperChat } from "#models/SuperChat.js";
+import SuperStickerModel, { type SuperSticker } from "#models/SuperSticker.js";
+import VideoModel from "#models/Video.js";
+import { Application } from "#modules/application.js";
+import { currencyToJpyAmount, getCurrencymapItem } from "./currency/convert.js";
+import { MongodbModule } from "#modules/db.js";
+import { QueueModule } from "#modules/queue.js";
+import { YoutubeWatchGate } from "./youtube-watch-gate.js";
+import { RedisModule } from "#modules/redis.js";
+import ChannelModel from "#models/Channel.js";
+import { updateChannelByHandle } from "#modules/youtube.js";
+import { groupBy, pipeSignal, setIfDefine } from "#utils/common.js";
 
 const { MongoError, MongoBulkWriteError } = mongoose.mongo;
 

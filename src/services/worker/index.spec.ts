@@ -1,8 +1,8 @@
 import { describe, expect, it, jest } from "@jest/globals";
 import { AxiosError } from "axios";
 import { AbortError, AccessDeniedError } from "@stu43005/masterchat";
-import type { YoutubeWatchGate } from "../modules/youtube-watch-gate.js";
-import { is429, reportStatsUpdateError } from "./worker.js";
+import type { YoutubeWatchGate } from "./youtube-watch-gate.js";
+import { is429, reportStatsUpdateError } from "./index.js";
 
 function make429(): AxiosError {
   return new AxiosError(

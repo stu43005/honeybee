@@ -6,7 +6,7 @@ import {
   YOUTUBE_WATCH_GATE_KEY_TTL_MS,
   YOUTUBE_WATCH_INTERVAL_MS,
 } from "#constants.js";
-import type { Module } from "./module.js";
+import type { Module } from "#modules/module.js";
 
 const GATE_KEY = "hb:yt:watch:gate";
 const COOLDOWN_LOG_KEY = "hb:yt:watch:cooldown-log";

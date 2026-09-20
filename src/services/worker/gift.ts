@@ -3,10 +3,10 @@ import type {
   AddGiftTickerAction,
 } from "@stu43005/masterchat";
 import type { mongo } from "mongoose";
-import { MessageAuthorType } from "../interfaces.js";
-import type { Gift } from "../models/Gift.js";
-import GiftPriceModel from "../models/GiftPrice.js";
-import { getCacheInstance } from "../modules/cache.js";
+import { MessageAuthorType } from "#interfaces.js";
+import type { Gift } from "#models/Gift.js";
+import GiftPriceModel from "#models/GiftPrice.js";
+import { getCacheInstance } from "#modules/cache.js";
 
 /**
  * Gift images are served as

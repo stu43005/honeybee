@@ -4,7 +4,7 @@ import type {
   AddGiftItemAction,
   AddGiftTickerAction,
 } from "@stu43005/masterchat";
-import { MessageAuthorType } from "../interfaces.js";
+import { MessageAuthorType } from "#interfaces.js";
 
 // Read at module load by src/constants.ts, so it has to be set before anything
 // pulls the cache module in. Empty keeps getCacheInstance memory-only.
@@ -12,7 +12,7 @@ process.env.REDIS_URI = "";
 
 const find = jest.fn<() => Promise<{ assetName: string; price: number }[]>>();
 
-jest.unstable_mockModule("../models/GiftPrice.js", () => ({
+jest.unstable_mockModule("#models/GiftPrice.js", () => ({
   default: { find },
 }));
 

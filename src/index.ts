@@ -24,7 +24,7 @@ void yargs(process.argv.slice(2))
     await runScheduler();
   })
   .command("worker", "start worker", {}, async () => {
-    const { runWorker } = await import("./commands/worker.js");
+    const { runWorker } = await import("./services/worker/index.js");
     await runWorker();
   })
   .command("discord-bot", "start discord bot", {}, async () => {
