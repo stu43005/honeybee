@@ -1,12 +1,12 @@
 /// <reference types="jest" />
 import { afterEach, describe, expect, it, jest } from "@jest/globals";
 import { mongo } from "mongoose";
-import WebhookModel from "../models/Webhook.js";
-import YoutubeDmBindingModel from "../models/YoutubeDmBinding.js";
+import WebhookModel from "../../models/Webhook.js";
+import YoutubeDmBindingModel from "../../models/YoutubeDmBinding.js";
 import {
   transformYoutubeDmBinding,
   transformYoutubeDmBindings,
-} from "./youtube-dm-operator.js";
+} from "./transform.js";
 
 describe("transformYoutubeDmBinding", () => {
   afterEach(() => jest.restoreAllMocks());
