@@ -647,7 +647,15 @@ ls src/models/*.ts | grep -v '\.spec\.ts' | wc -l
 
 Expected: `26`. This number is the assertion used by Task 12 and by final acceptance — the count of models Mongoose registers at runtime must equal the count of non-test files in `src/models/`. Because both sides are derived, no baseline file needs to be stored, and the check stays correct if a model is legitimately added later.
 
-- [ ] **Step 6: Commit via git-master**
+- [ ] **Step 6: Run the standard checks**
+
+```bash
+npm run build && npm run lint && npm test
+```
+
+Expected: all pass. This task adds a shell script and touches no TypeScript, but every commit in this plan runs the standard checks, and a task that skips them is the one that lets an unrelated breakage in from the previous task.
+
+- [ ] **Step 7: Commit via git-master**
 
 Stage `scripts/smoke-entrypoints.sh`. Suggested subject: `build: add a smoke check that loads each compiled entrypoint`.
 
@@ -1422,7 +1430,7 @@ These two are written as they appear in the file **after Task 6**, not as they a
 | `index.spec.ts`              | `../modules/youtube-watch-gate.js` | `./youtube-watch-gate.js` |
 | `index.spec.ts`              | `./worker.js`                      | `./index.js`              |
 
-Only `gift.spec.ts`'s `../models/GiftPrice.js` is a `jest.unstable_mockModule` key; the rest are ordinary imports. Both kinds are literal strings, so both break the same way if missed — the mock key fails at test time, the ordinary import at build time.
+Only `gift.spec.ts`'s `../models/GiftPrice.js` is a `jest.unstable_mockModule` key; the rest are ordinary imports. Both kinds are literal strings, and in a test file both surface the same way — at test time, not build time, because `tsconfig.json` excludes `**/*.spec.ts` from the build. Running the worker suite is what catches either one.
 
 - [ ] **Step 5: Repoint the dispatcher**
 
@@ -1572,11 +1580,11 @@ Then repeat the model-registration check from Task 11 Step 7 verbatim. Expected:
 
 This task touches roughly 35 files. Ask git-master to split it, but with one hard rule: **every commit must build, lint and test on its own.** That means a move and the repointing of everything that referenced the moved file belong in the same commit — splitting "move the files" from "fix the imports" produces a broken intermediate that defeats the point of committing in steps.
 
-**Commit this task as a single commit.** A split was considered and does not work here. The obvious one — archive first, then the rest — breaks immediately: `chats-archive/gen-index-file.ts` and `gen-channel-index-file.ts` import `../video-stats.js`, and `video-stats.ts` would not have moved yet, so the first commit would not build. Reversing the order does not help either, because `manager.ts` imports every one of these files and would be pointing at `../components/` for whichever group moved first.
+**This task is one commit.** Tell git-master that explicitly, with the reasoning below, so it is not split to satisfy a file-count heuristic. A split was considered and does not work here. The obvious one — archive first, then the rest — breaks immediately: `chats-archive/gen-index-file.ts` and `gen-channel-index-file.ts` import `../video-stats.js`, and `video-stats.ts` would not have moved yet, so the first commit would not build. Reversing the order does not help either, because `manager.ts` imports every one of these files and would be pointing at `../components/` for whichever group moved first.
 
 The dependency graph here is a star centred on the entrypoint: nothing in this group can move without the entrypoint's import list moving with it. Splitting would require writing temporary import paths into the intermediate commits, which is the same defect this rule exists to prevent, traded for a cosmetic improvement in commit granularity.
 
-Tell git-master that this is a deliberate single commit with that justification, so it is not split to satisfy a file-count heuristic. Suggested subject: `refactor(manager): gather the scheduled jobs under the service`.
+Suggested subject: `refactor(manager): gather the scheduled jobs under the service`.
 
 ---
 
@@ -1758,13 +1766,14 @@ npm run test -- src/modules/youtube
 
 Expected: both `youtube.spec.ts` and `youtube.transport.spec.ts` execute, with the same total test count as before the rename.
 
-- [ ] **Step 3: Run the standard checks**
+- [ ] **Step 3: Run the standard checks and the smoke check**
 
 ```bash
 npm run build && npm run lint && npm test
+npm run clean && npm run build && ./scripts/smoke-entrypoints.sh
 ```
 
-Expected: all pass.
+Expected: all pass, then seven `ok` lines. Renaming a test file cannot affect compiled runtime code, but the smoke check runs before every commit from Task 6 onward, and skipping it here would mean a breakage introduced by Task 14 is not caught until final acceptance.
 
 - [ ] **Step 4: Commit via git-master**
 
@@ -1915,22 +1924,25 @@ Expected after editing: no output.
 - [ ] **Step 5: Check for stale references across the whole repository**
 
 ```bash
-grep -rn -E 'src/(components|commands|data|discord)/|src/util\.ts|src/modules/(youtube-pubsub|webhook|oauth|holodex|matching|currency-convert|youtube-watch-gate)' \
+grep -rn -E 'src/(components|commands|data|discord)/|src/util\.ts|src/modules/(youtube-pubsub|webhook|oauth)/|src/modules/(holodex|matching|currency-convert|youtube-watch-gate)\.ts' \
   --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=.git \
   --exclude-dir=specs --exclude-dir=plans .
 ```
 
 Expected: no output. The pattern covers the four removed top-level directories, the renamed root utility, **and** the paths that moved out of `src/modules/` — those last ones are the trap, because they name a directory that still exists and so survive a search for the removed names alone.
 
+The trailing `/` and `\.ts` anchors are load-bearing. Without them, `src/modules/webhook` also matches `src/modules/webhook-template.ts`, which Task 6 creates and which is correct — a false positive that would send someone editing a path that is already right.
+
 The two excluded directories hold the design and planning documents, which describe the before state on purpose and must not be rewritten. Any hit outside them is a stale reference.
 
-- [ ] **Step 6: Run the standard checks**
+- [ ] **Step 6: Run the standard checks and the smoke check**
 
 ```bash
 npm run build && npm run lint && npm test
+npm run clean && npm run build && ./scripts/smoke-entrypoints.sh
 ```
 
-Expected: all pass. The comment edits in Step 3 touch source files, so this is not a formality.
+Expected: all pass, then seven `ok` lines. The comment edits in Step 3 touch source files, so neither check is a formality here — and this is the last commit before final acceptance, so it is the last chance to catch a regression while the task that caused it is still obvious.
 
 - [ ] **Step 7: Commit via git-master**
 
