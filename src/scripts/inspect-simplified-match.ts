@@ -18,11 +18,11 @@
 import { createPatch } from "diff";
 import { groupBy } from "lodash-es";
 import { mongoose } from "@typegoose/typegoose";
-import { flatObjectKey, setIfDefine } from "../utils/common.js";
-import WebhookModel from "../models/Webhook.js";
-import { importAllModels, MONGO_URI } from "../modules/db.js";
-import { simplifyOrBranches } from "../modules/webhook/simplifyMatch.js";
-import type { Webhook } from "../models/Webhook.js";
+import { flatObjectKey, setIfDefine } from "#utils/common.js";
+import WebhookModel from "#models/Webhook.js";
+import { importAllModels, MONGO_URI } from "#modules/db.js";
+import { simplifyOrBranches } from "../services/webhook/simplify-match.js";
+import type { Webhook } from "#models/Webhook.js";
 import type { DocumentType } from "@typegoose/typegoose";
 
 function colorizePatch(patch: string): string {

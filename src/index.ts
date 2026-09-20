@@ -32,7 +32,7 @@ void yargs(process.argv.slice(2))
     await runDiscordBot();
   })
   .command("webhook", "start webhook service", {}, async () => {
-    const { runWebhook } = await import("./commands/webhook.js");
+    const { runWebhook } = await import("./services/webhook/index.js");
     await runWebhook();
   })
   .command("crawler", "start crawler", {}, async () => {

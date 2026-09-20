@@ -7,9 +7,9 @@ import {
   it,
   jest,
 } from "@jest/globals";
-import YoutubeDmBindingModel from "../models/YoutubeDmBinding.js";
-import WebhookResultModel from "../models/WebhookResult.js";
-import { dmChannelCache, dmRest, sendDiscordDm } from "./webhook.js";
+import YoutubeDmBindingModel from "#models/YoutubeDmBinding.js";
+import WebhookResultModel from "#models/WebhookResult.js";
+import { dmChannelCache, dmRest, sendDiscordDm } from "./index.js";
 
 const resultId = { webhookId: "w1", coll: "superchats", docId: "d1" };
 const webhook = { followUpdate: false } as any;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@jest/globals";
-import { isMatching } from "../matching.js";
-import { simplifyOrBranches } from "./simplifyMatch.js";
+import { isMatching } from "./matching.js";
+import { simplifyOrBranches } from "./simplify-match.js";
 
 describe("simplifyOrBranches — Rule 1 (dedupe)", () => {
   it("returns a single branch unchanged", () => {

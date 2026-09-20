@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@jest/globals";
-import type { Application } from "../application.js";
+import type { Application } from "#modules/application.js";
 import {
   WebhookPartitionModule,
   assignInstance,

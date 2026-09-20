@@ -8,8 +8,8 @@ import {
 } from "@jest/globals";
 import { EventEmitter } from "node:events";
 import { Types } from "mongoose";
-import type { Application } from "../application.js";
-import type { RedisModule } from "../redis.js";
+import type { Application } from "#modules/application.js";
+import type { RedisModule } from "#modules/redis.js";
 import type { WebhookPartitionModule } from "./partition.js";
 import type { WebhookQueueProducerModule } from "./queue.js";
 
@@ -18,14 +18,14 @@ jest.unstable_mockModule("#models/Webhook.js", () => ({
   default: { findEnabled: jest.fn(), watch: jest.fn() },
 }));
 
-jest.unstable_mockModule("../db.js", () => ({
+jest.unstable_mockModule("#modules/db.js", () => ({
   __esModule: true,
   documentLog: jest.fn(),
   getModelByCollectionName: jest.fn(),
 }));
 
 const WebhookModelMod = await import("#models/Webhook.js");
-const dbMod = await import("../db.js");
+const dbMod = await import("#modules/db.js");
 const { WebhookChangeStreamModule } = await import("./changestream.js");
 
 const WebhookModel: any = (WebhookModelMod as any).default;

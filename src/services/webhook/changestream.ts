@@ -9,14 +9,14 @@ import {
 import type { WebhookJob } from "#interfaces.js";
 import WebhookModel, { type Webhook } from "#models/Webhook.js";
 import { flatObjectKey, setIfDefine } from "#utils/common.js";
-import type { Application } from "../application.js";
-import { documentLog, getModelByCollectionName } from "../db.js";
-import { isMatching } from "../matching.js";
-import type { Module } from "../module.js";
-import { RedisModule } from "../redis.js";
+import type { Application } from "#modules/application.js";
+import { documentLog, getModelByCollectionName } from "#modules/db.js";
+import { isMatching } from "./matching.js";
+import type { Module } from "#modules/module.js";
+import { RedisModule } from "#modules/redis.js";
 import { WebhookPartitionModule } from "./partition.js";
 import { WebhookQueueProducerModule } from "./queue.js";
-import { simplifyOrBranches } from "./simplifyMatch.js";
+import { simplifyOrBranches } from "./simplify-match.js";
 
 const RESUME_TOKEN_KEY_PREFIX = "webhook:resumetoken:";
 

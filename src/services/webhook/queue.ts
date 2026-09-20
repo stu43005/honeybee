@@ -8,10 +8,10 @@ import {
   WEBHOOK_WORKER_CONCURRENCY,
 } from "#constants.js";
 import type { WebhookJob } from "#interfaces.js";
-import type { Application } from "../application.js";
-import type { Module } from "../module.js";
-import { RedisModule } from "../redis.js";
-import { documentLog } from "../db.js";
+import type { Application } from "#modules/application.js";
+import type { Module } from "#modules/module.js";
+import { RedisModule } from "#modules/redis.js";
+import { documentLog } from "#modules/db.js";
 
 const QUEUE_NAME = "webhook";
 

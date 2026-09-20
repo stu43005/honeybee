@@ -18,7 +18,7 @@ import pProps from "p-props";
 import {
   WEBHOOK_RESULT_FOLLOW_TTL_MS,
   WEBHOOK_RESULT_NON_FOLLOW_TTL_MS,
-} from "../constants.js";
+} from "#constants.js";
 import {
   checkIsDiscordDmUrl,
   checkIsDiscordWebhookUrl,
@@ -27,35 +27,32 @@ import {
   defaultUpdateUrl,
   fixLongText,
   templatePreset,
-} from "../modules/webhook-template.js";
-import type { WebhookJob } from "../interfaces.js";
-import ChannelModel from "../models/Channel.js";
-import VideoModel, { Video } from "../models/Video.js";
-import WebhookModel, { type Webhook } from "../models/Webhook.js";
-import WebhookResultModel from "../models/WebhookResult.js";
-import YoutubeDmBindingModel from "../models/YoutubeDmBinding.js";
-import { Application } from "../modules/application.js";
-import { getCacheInstance } from "../modules/cache.js";
-import { type WatcherResultDocument } from "../modules/collection-watcher.js";
+} from "#modules/webhook-template.js";
+import type { WebhookJob } from "#interfaces.js";
+import ChannelModel from "#models/Channel.js";
+import VideoModel, { Video } from "#models/Video.js";
+import WebhookModel, { type Webhook } from "#models/Webhook.js";
+import WebhookResultModel from "#models/WebhookResult.js";
+import YoutubeDmBindingModel from "#models/YoutubeDmBinding.js";
+import { Application } from "#modules/application.js";
+import { getCacheInstance } from "#modules/cache.js";
+import { type WatcherResultDocument } from "#modules/collection-watcher.js";
 import {
   documentLog,
   getModelByCollectionName,
   importAllModels,
   MongodbModule,
-} from "../modules/db.js";
-import { RedisModule } from "../modules/redis.js";
-import { isMatching } from "../modules/matching.js";
-import {
-  claimWebhookResult,
-  type WebhookResultIdentifier,
-} from "../modules/webhook/claim.js";
-import { WebhookChangeStreamModule } from "../modules/webhook/changestream.js";
-import { WebhookPartitionModule } from "../modules/webhook/partition.js";
+} from "#modules/db.js";
+import { RedisModule } from "#modules/redis.js";
+import { isMatching } from "./matching.js";
+import { claimWebhookResult, type WebhookResultIdentifier } from "./claim.js";
+import { WebhookChangeStreamModule } from "./changestream.js";
+import { WebhookPartitionModule } from "./partition.js";
 import {
   WebhookQueueConsumerModule,
   WebhookQueueProducerModule,
-} from "../modules/webhook/queue.js";
-import { secondsToHms } from "../utils/common.js";
+} from "./queue.js";
+import { secondsToHms } from "#utils/common.js";
 
 const axiosInstance = axios.create({
   timeout: 4000,

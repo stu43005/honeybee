@@ -8,9 +8,9 @@ import {
   WEBHOOK_PARTITION_TTL_MS,
   WEBHOOK_REBALANCE_DEBOUNCE_MS,
 } from "#constants.js";
-import type { Application } from "../application.js";
-import type { Module } from "../module.js";
-import { RedisModule } from "../redis.js";
+import type { Application } from "#modules/application.js";
+import type { Module } from "#modules/module.js";
+import { RedisModule } from "#modules/redis.js";
 
 /**
  * Deterministic uint32 hash of a collection name.
