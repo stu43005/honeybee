@@ -23,13 +23,10 @@ import {
   allTrackFeatures,
   defaultTrackFeatures,
   trackFeatures,
-} from "../../../modules/track/features.js";
-import ChannelModel from "../../../models/Channel.js";
-import TrackModel, {
-  type Track,
-  type TrackKey,
-} from "../../../models/Track.js";
-import { validateChannelId } from "../../../modules/youtube.js";
+} from "#modules/track/features.js";
+import ChannelModel from "#models/Channel.js";
+import TrackModel, { type Track, type TrackKey } from "#models/Track.js";
+import { validateChannelId } from "#modules/youtube.js";
 import type { Command } from "../command.js";
 import { getTrackKey } from "./fns.js";
 

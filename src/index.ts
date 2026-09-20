@@ -28,7 +28,7 @@ void yargs(process.argv.slice(2))
     await runWorker();
   })
   .command("discord-bot", "start discord bot", {}, async () => {
-    const { runDiscordBot } = await import("./commands/discord-bot.js");
+    const { runDiscordBot } = await import("./services/discord-bot/index.js");
     await runDiscordBot();
   })
   .command("webhook", "start webhook service", {}, async () => {

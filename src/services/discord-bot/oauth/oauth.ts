@@ -5,9 +5,9 @@ import YoutubeDmBindingModel, {
   BindingLimitError,
   BindingTransformPendingError,
 } from "#models/YoutubeDmBinding.js";
-import type { Application } from "../application.js";
-import type { Module } from "../module.js";
-import { RedisModule } from "../redis.js";
+import type { Application } from "#modules/application.js";
+import type { Module } from "#modules/module.js";
+import { RedisModule } from "#modules/redis.js";
 import { DiscordProvider } from "./discord.js";
 import { GoogleProvider } from "./google.js";
 import {

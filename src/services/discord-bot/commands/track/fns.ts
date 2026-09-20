@@ -3,7 +3,7 @@ import type {
   CategoryChildChannel,
   ChatInputCommandInteraction,
 } from "discord.js";
-import type { TrackKey } from "../../../models/Track.js";
+import type { TrackKey } from "#models/Track.js";
 
 export function getTrackKey(
   intr: ChatInputCommandInteraction | AutocompleteInteraction

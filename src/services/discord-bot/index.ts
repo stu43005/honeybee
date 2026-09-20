@@ -10,21 +10,21 @@ import {
   Routes,
   type Interaction,
 } from "discord.js";
-import type { AppCommand } from "../discord/commands/command.js";
-import { CrawlCommand } from "../discord/commands/mod/crawl.js";
-import { SetChannelCommand } from "../discord/commands/mod/set-channel.js";
-import { SetVideoCommand } from "../discord/commands/mod/set-video.js";
-import { TrackCommand } from "../discord/commands/track/track.js";
-import { YoutubeDmCommand } from "../discord/commands/youtube-dm/youtube-dm.js";
+import type { AppCommand } from "./commands/command.js";
+import { CrawlCommand } from "./commands/mod/crawl.js";
+import { SetChannelCommand } from "./commands/mod/set-channel.js";
+import { SetVideoCommand } from "./commands/mod/set-video.js";
+import { TrackCommand } from "./commands/track/track.js";
+import { YoutubeDmCommand } from "./commands/youtube-dm/youtube-dm.js";
 import {
   isDevGuildCommandAllowed,
   partitionCommandsByScope,
-} from "../discord/commands/registration.js";
-import { OAuthModule } from "../modules/oauth/oauth.js";
-import { DISCORD_DEV_GUILD_ID } from "../constants.js";
-import { Application } from "../modules/application.js";
-import { MongodbModule } from "../modules/db.js";
-import { RedisModule } from "../modules/redis.js";
+} from "./commands/registration.js";
+import { OAuthModule } from "./oauth/oauth.js";
+import { DISCORD_DEV_GUILD_ID } from "#constants.js";
+import { Application } from "#modules/application.js";
+import { MongodbModule } from "#modules/db.js";
+import { RedisModule } from "#modules/redis.js";
 
 const DISCORD_ID = process.env.DISCORD_ID!;
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN!;

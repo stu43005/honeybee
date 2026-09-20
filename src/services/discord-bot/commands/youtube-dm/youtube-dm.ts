@@ -6,10 +6,10 @@ import {
   type AutocompleteInteraction,
   type ChatInputCommandInteraction,
 } from "discord.js";
-import { YOUTUBE_DM_MAX_CHANNELS_PER_USER } from "../../../constants.js";
-import ChannelModel from "../../../models/Channel.js";
-import YoutubeDmBindingModel from "../../../models/YoutubeDmBinding.js";
-import type { OAuthMethod } from "../../../modules/oauth/state-store.js";
+import { YOUTUBE_DM_MAX_CHANNELS_PER_USER } from "#constants.js";
+import ChannelModel from "#models/Channel.js";
+import YoutubeDmBindingModel from "#models/YoutubeDmBinding.js";
+import type { OAuthMethod } from "../../oauth/state-store.js";
 import type { Command } from "../command.js";
 import { buildUserInstallHint } from "./install-hint.js";
 

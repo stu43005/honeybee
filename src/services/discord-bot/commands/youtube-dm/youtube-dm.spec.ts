@@ -1,8 +1,8 @@
 /// <reference types="jest" />
 import { afterEach, describe, expect, it, jest } from "@jest/globals";
 import { ApplicationIntegrationType, MessageFlags } from "discord.js";
-import ChannelModel from "../../../models/Channel.js";
-import YoutubeDmBindingModel from "../../../models/YoutubeDmBinding.js";
+import ChannelModel from "#models/Channel.js";
+import YoutubeDmBindingModel from "#models/YoutubeDmBinding.js";
 import { YoutubeDmCommand } from "./youtube-dm.js";
 
 function fakeOAuth() {
