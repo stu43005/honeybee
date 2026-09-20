@@ -69,7 +69,7 @@ import { YoutubeWatchGate } from "../modules/youtube-watch-gate.js";
 import { RedisModule } from "../modules/redis.js";
 import ChannelModel from "../models/Channel.js";
 import { updateChannelByHandle } from "../modules/youtube.js";
-import { groupBy, pipeSignal, setIfDefine } from "../util.js";
+import { groupBy, pipeSignal, setIfDefine } from "../utils/common.js";
 
 const { MongoError, MongoBulkWriteError } = mongoose.mongo;
 

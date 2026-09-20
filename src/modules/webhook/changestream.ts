@@ -8,7 +8,7 @@ import {
 } from "../../constants.js";
 import type { WebhookJob } from "../../interfaces.js";
 import WebhookModel, { type Webhook } from "../../models/Webhook.js";
-import { flatObjectKey, setIfDefine } from "../../util.js";
+import { flatObjectKey, setIfDefine } from "../../utils/common.js";
 import type { Application } from "../application.js";
 import { documentLog, getModelByCollectionName } from "../db.js";
 import { isMatching } from "../matching.js";

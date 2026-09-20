@@ -14,7 +14,7 @@ import VideoStatsModel, {
 import { Application } from "../modules/application.js";
 import { MongodbModule } from "../modules/db.js";
 import { QueueModule } from "../modules/queue.js";
-import { throttleWithReturnValue } from "../util.js";
+import { throttleWithReturnValue } from "../utils/common.js";
 
 export async function metrics() {
   const app = new Application();

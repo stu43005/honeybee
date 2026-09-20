@@ -21,7 +21,7 @@ import {
   UploadStatus,
   type HoneybeeResult,
 } from "../interfaces.js";
-import { setIfDefine } from "../util.js";
+import { setIfDefine } from "../utils/common.js";
 import ChannelModel, { Channel } from "./Channel.js";
 import type { Raid } from "./Raid.js";
 

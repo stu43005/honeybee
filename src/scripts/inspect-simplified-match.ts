@@ -18,7 +18,7 @@
 import { createPatch } from "diff";
 import { groupBy } from "lodash-es";
 import { mongoose } from "@typegoose/typegoose";
-import { flatObjectKey, setIfDefine } from "../util.js";
+import { flatObjectKey, setIfDefine } from "../utils/common.js";
 import WebhookModel from "../models/Webhook.js";
 import { importAllModels, MONGO_URI } from "../modules/db.js";
 import { simplifyOrBranches } from "../modules/webhook/simplifyMatch.js";

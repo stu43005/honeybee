@@ -6,7 +6,7 @@ import path from "node:path";
 import ChannelModel, { Channel } from "../models/Channel.js";
 import { Video } from "../models/Video.js";
 import type { Webhook } from "../models/Webhook.js";
-import { abbreviate, secondsToHms, setIfDefine } from "../util.js";
+import { abbreviate, secondsToHms, setIfDefine } from "../utils/common.js";
 
 export function checkIsDiscordWebhookUrl(url: string): boolean {
   return url.startsWith(DefaultRestOptions.api + "/webhooks/");

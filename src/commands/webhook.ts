@@ -55,7 +55,7 @@ import {
   WebhookQueueConsumerModule,
   WebhookQueueProducerModule,
 } from "../modules/webhook/queue.js";
-import { secondsToHms } from "../util.js";
+import { secondsToHms } from "../utils/common.js";
 
 const axiosInstance = axios.create({
   timeout: 4000,

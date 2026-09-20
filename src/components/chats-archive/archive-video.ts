@@ -25,7 +25,7 @@ import SuperStickerModel, {
 } from "../../models/SuperSticker.js";
 import VideoModel, { type Video } from "../../models/Video.js";
 import VideoStatsModel from "../../models/VideoStats.js";
-import { setIfDefine } from "../../util.js";
+import { setIfDefine } from "../../utils/common.js";
 import { buildVideoSummary } from "./build-video-summary.js";
 
 export type ChatRowDoc = DocumentType<
