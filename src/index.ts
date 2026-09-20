@@ -44,7 +44,7 @@ void yargs(process.argv.slice(2))
     await runManager();
   })
   .command("metrics", "Prometheus metrics endpoint", {}, async () => {
-    const { metrics } = await import("./commands/metrics.js");
+    const { metrics } = await import("./services/metrics/index.js");
     await metrics();
   })
   .demandCommand(1).argv;
