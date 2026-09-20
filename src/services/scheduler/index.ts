@@ -1,18 +1,18 @@
 import type { DocumentType } from "@typegoose/typegoose";
 import type { Job } from "agenda";
-import { CRAWL_REPLAY_MAX_HOURS, IGNORE_FREE_CHAT } from "../constants.js";
+import { CRAWL_REPLAY_MAX_HOURS, IGNORE_FREE_CHAT } from "#constants.js";
 import {
   ErrorCode,
   HoneybeeResult,
   HoneybeeStats,
   HoneybeeStatus,
-} from "../interfaces.js";
-import VideoModel, { type Video } from "../models/Video.js";
-import { Application } from "../modules/application.js";
-import { CollectionWatcher } from "../modules/collection-watcher.js";
-import { MongodbModule } from "../modules/db.js";
-import { QueueModule } from "../modules/queue.js";
-import { AgendaModule } from "../modules/schedule.js";
+} from "#interfaces.js";
+import VideoModel, { type Video } from "#models/Video.js";
+import { Application } from "#modules/application.js";
+import { CollectionWatcher } from "#modules/collection-watcher.js";
+import { MongodbModule } from "#modules/db.js";
+import { QueueModule } from "#modules/queue.js";
+import { AgendaModule } from "#modules/schedule.js";
 
 function schedulerLog(...obj: any) {
   console.log(...obj);

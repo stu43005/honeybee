@@ -20,7 +20,7 @@ process.on("SIGINT", () => {
 void yargs(process.argv.slice(2))
   .scriptName("honeybee")
   .command("scheduler", "start scheduler", {}, async () => {
-    const { runScheduler } = await import("./commands/scheduler.js");
+    const { runScheduler } = await import("./services/scheduler/index.js");
     await runScheduler();
   })
   .command("worker", "start worker", {}, async () => {
