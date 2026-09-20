@@ -7,11 +7,7 @@ import {
 } from "@typegoose/typegoose";
 import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses.js";
 import { mongo, type FilterQuery } from "mongoose";
-import {
-  MessageAuthorType,
-  MessageType,
-  VideoStatsType,
-} from "../interfaces.js";
+import { MessageAuthorType, MessageType, VideoStatsType } from "#interfaces.js";
 
 export const SCRAPE_DURATION_VIDEOID = "scrape_duration";
 

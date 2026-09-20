@@ -3,9 +3,9 @@ import { isEqual } from "lodash-es";
 import {
   WEBHOOK_RESULT_FOLLOW_TTL_MS,
   WEBHOOK_RESULT_NON_FOLLOW_TTL_MS,
-} from "../../constants.js";
-import type { Webhook } from "../../models/Webhook.js";
-import WebhookResultModel from "../../models/WebhookResult.js";
+} from "#constants.js";
+import type { Webhook } from "#models/Webhook.js";
+import WebhookResultModel from "#models/WebhookResult.js";
 
 export type WebhookResultIdentifier = {
   webhookId: string;

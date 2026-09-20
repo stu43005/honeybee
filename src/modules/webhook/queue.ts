@@ -6,8 +6,8 @@ import {
   WEBHOOK_FOLLOW_UPDATE_COOLDOWN_KEY_TTL_MS,
   WEBHOOK_FOLLOW_UPDATE_COOLDOWN_MS,
   WEBHOOK_WORKER_CONCURRENCY,
-} from "../../constants.js";
-import type { WebhookJob } from "../../interfaces.js";
+} from "#constants.js";
+import type { WebhookJob } from "#interfaces.js";
 import type { Application } from "../application.js";
 import type { Module } from "../module.js";
 import { RedisModule } from "../redis.js";

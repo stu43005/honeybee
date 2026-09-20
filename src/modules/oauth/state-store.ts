@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { RedisClientType } from "redis";
-import { OAUTH_STATE_TTL_MS } from "../../constants.js";
+import { OAUTH_STATE_TTL_MS } from "#constants.js";
 
 export type OAuthMethod = "google" | "discord";
 export interface OAuthState {

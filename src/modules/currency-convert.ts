@@ -2,7 +2,7 @@ import axios from "axios";
 import { Decimal } from "decimal.js";
 import moment from "moment-timezone";
 import { currencyMap } from "../data/currency.js";
-import CurrencyExchange from "../models/CurrencyExchange.js";
+import CurrencyExchange from "#models/CurrencyExchange.js";
 import { getCacheInstance } from "./cache.js";
 
 // Created on first conversion instead of at module load, so merely importing

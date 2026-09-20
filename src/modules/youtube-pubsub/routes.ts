@@ -8,9 +8,9 @@ import {
   PUBSUB_DEFAULT_LEASE_MS,
   PUBSUB_MAX_LEASE_MS,
   YOUTUBE_PUBSUB_SECRET,
-} from "../../constants.js";
-import ChannelModel from "../../models/Channel.js";
-import VideoModel from "../../models/Video.js";
+} from "#constants.js";
+import ChannelModel from "#models/Channel.js";
+import VideoModel from "#models/Video.js";
 import { updateVideoFromYoutube } from "../youtube.js";
 import { parseNotification } from "./atom.js";
 import { channelIdFromTopic, getCallbackToken } from "./hub-client.js";

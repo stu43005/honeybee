@@ -14,14 +14,14 @@ import { Video as HolodexVideo, VideoStatus } from "holodex.js";
 import moment from "moment-timezone";
 import type { FlattenMaps } from "mongoose";
 import assert from "node:assert";
-import { YOUTUBE_EXISTENCE_PROBE_RECENT_MS } from "../constants.js";
+import { YOUTUBE_EXISTENCE_PROBE_RECENT_MS } from "#constants.js";
 import {
   HoneybeeStatus,
   PrivacyStatus,
   UploadStatus,
   type HoneybeeResult,
-} from "../interfaces.js";
-import { setIfDefine } from "../utils/common.js";
+} from "#interfaces.js";
+import { setIfDefine } from "#utils/common.js";
 import ChannelModel, { Channel } from "./Channel.js";
 import type { Raid } from "./Raid.js";
 

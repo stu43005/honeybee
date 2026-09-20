@@ -1,5 +1,5 @@
 import type { Job } from "agenda";
-import { PUBLIC_BASE_URL, YOUTUBE_PUBSUB_SECRET } from "../../constants.js";
+import { PUBLIC_BASE_URL, YOUTUBE_PUBSUB_SECRET } from "#constants.js";
 import type { Application } from "../application.js";
 import type { Module } from "../module.js";
 import { AgendaModule } from "../schedule.js";

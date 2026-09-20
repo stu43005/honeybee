@@ -25,15 +25,15 @@ jest.unstable_mockModule("googleapis", () => ({
   google: { youtube: mockYoutube },
 }));
 
-const { default: VideoModel } = await import("../models/Video.js");
-const { default: ChannelModel } = await import("../models/Channel.js");
+const { default: VideoModel } = await import("#models/Video.js");
+const { default: ChannelModel } = await import("#models/Channel.js");
 const {
   getYoutubeApi,
   updateVideoFromYoutube,
   updateChannelFromYoutube,
   updateVideoFromPlaylist,
 } = await import("./youtube.js");
-const { YOUTUBE_API_TIMEOUT_MS } = await import("../constants.js");
+const { YOUTUBE_API_TIMEOUT_MS } = await import("#constants.js");
 
 // A minimal mutable stand-in for a Video document.
 function fakeVideo(overrides: Record<string, unknown>) {

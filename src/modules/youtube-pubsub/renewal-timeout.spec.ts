@@ -26,13 +26,13 @@ jest.unstable_mockModule("node:timers/promises", () => ({
   setTimeout: mockSleep,
 }));
 
-const { default: ChannelModel } = await import("../../models/Channel.js");
+const { default: ChannelModel } = await import("#models/Channel.js");
 const { renewPubsubSubscriptions } = await import("./renewal.js");
 const {
   PUBSUB_RENEW_BATCH_SIZE,
   PUBSUB_REQUEST_SPACING_MS,
   PUBSUB_REQUEST_TIMEOUT_MS,
-} = await import("../../constants.js");
+} = await import("#constants.js");
 
 describe("renewPubsubSubscriptions against a hub that stops answering", () => {
   afterEach(() => {

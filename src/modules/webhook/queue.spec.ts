@@ -7,7 +7,7 @@ import {
   buildPendingKey,
   WebhookQueueConsumerModule,
 } from "./queue.js";
-import type { WebhookJob } from "../../interfaces.js";
+import type { WebhookJob } from "#interfaces.js";
 import type { Application } from "../application.js";
 
 // Each exec step is either "ok" (resolves) or "watch-abort" (throws WatchError).

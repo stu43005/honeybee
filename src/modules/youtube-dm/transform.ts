@@ -1,9 +1,9 @@
 import type { DocumentType } from "@typegoose/typegoose";
 import { getChannelIdFilter } from "../track/features.js";
-import WebhookModel from "../../models/Webhook.js";
+import WebhookModel from "#models/Webhook.js";
 import YoutubeDmBindingModel, {
   type YoutubeDmBinding,
-} from "../../models/YoutubeDmBinding.js";
+} from "#models/YoutubeDmBinding.js";
 
 const DM_COLLS = [
   "superchats",

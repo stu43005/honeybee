@@ -29,10 +29,10 @@ jest.unstable_mockModule("node:timers/promises", () => ({
   setTimeout: mockSleep,
 }));
 
-const { default: ChannelModel } = await import("../../models/Channel.js");
+const { default: ChannelModel } = await import("#models/Channel.js");
 const { renewPubsubSubscriptions } = await import("./renewal.js");
 const { PUBSUB_RENEW_BATCH_SIZE, PUBSUB_REQUEST_SPACING_MS } =
-  await import("../../constants.js");
+  await import("#constants.js");
 
 // A stateful fake channel collection that records the order of writes.
 function fakeChannels(ids: string[]) {

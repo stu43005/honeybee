@@ -12,7 +12,7 @@ import {
   YOUTUBE_WATCH_COOLDOWN_MS,
   YOUTUBE_WATCH_ACQUIRE_MAX_WAIT_MS,
   YOUTUBE_WATCH_DEGRADED_LOG_INTERVAL_MS,
-} from "../constants.js";
+} from "#constants.js";
 
 const GATE_KEY = "hb:yt:watch:gate";
 const COOLDOWN_LOG_KEY = "hb:yt:watch:cooldown-log";

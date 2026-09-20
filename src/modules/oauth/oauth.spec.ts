@@ -1,10 +1,10 @@
 /// <reference types="jest" />
 import { afterEach, describe, expect, it, jest } from "@jest/globals";
-import ChannelModel from "../../models/Channel.js";
+import ChannelModel from "#models/Channel.js";
 import YoutubeDmBindingModel, {
   BindingLimitError,
   BindingTransformPendingError,
-} from "../../models/YoutubeDmBinding.js";
+} from "#models/YoutubeDmBinding.js";
 import { OAuthModule } from "./oauth.js";
 import { IdentityMismatchError } from "./provider.js";
 

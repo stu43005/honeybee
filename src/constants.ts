@@ -1,4 +1,4 @@
-import { castBool } from "./utils/common.js";
+import { castBool } from "#utils/common.js";
 
 // Shutdown budget for graceful module close (Agenda drain, Bee-Queue drain, etc).
 // Must be strictly less than k8s `terminationGracePeriodSeconds` (60s) so that

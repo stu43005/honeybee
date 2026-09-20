@@ -20,7 +20,7 @@ const mockNoticeFromNotification =
 const mockUpdateVideoFromYoutube =
   jest.fn<(videoIds: string[]) => Promise<unknown>>();
 
-jest.unstable_mockModule("../../models/Video.js", () => ({
+jest.unstable_mockModule("#models/Video.js", () => ({
   default: { noticeFromNotification: mockNoticeFromNotification },
 }));
 
@@ -28,11 +28,11 @@ jest.unstable_mockModule("../youtube.js", () => ({
   updateVideoFromYoutube: mockUpdateVideoFromYoutube,
 }));
 
-const { default: ChannelModel } = await import("../../models/Channel.js");
+const { default: ChannelModel } = await import("#models/Channel.js");
 const { pubsubRoutes } = await import("./routes.js");
 const { getCallbackToken, topicForChannel } = await import("./hub-client.js");
 const { PUBSUB_DEFAULT_LEASE_MS, PUBSUB_MAX_LEASE_MS } =
-  await import("../../constants.js");
+  await import("#constants.js");
 
 async function buildServer() {
   const app = fastify();

@@ -4,7 +4,7 @@ import {
   modelOptions,
   prop,
 } from "@typegoose/typegoose";
-import type { MessageAuthorType, MessageType } from "../interfaces.js";
+import type { MessageAuthorType, MessageType } from "#interfaces.js";
 
 @modelOptions({ schemaOptions: { collection: "videouserstats" } })
 @index({ videoId: 1, messageType: 1, authorChannelId: 1 }, { unique: true })

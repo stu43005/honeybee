@@ -1,6 +1,6 @@
 import assert from "assert";
 import { createClient, RedisClientType } from "redis";
-import { REDIS_URI } from "../constants.js";
+import { REDIS_URI } from "#constants.js";
 import type { Module } from "./module.js";
 
 export interface RedisModuleOptions {

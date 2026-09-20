@@ -3,7 +3,7 @@ import {
   DISCORD_OAUTH_CLIENT_ID,
   DISCORD_OAUTH_CLIENT_SECRET,
   PUBLIC_BASE_URL,
-} from "../../constants.js";
+} from "#constants.js";
 import {
   IdentityMismatchError,
   type OAuthChannel,

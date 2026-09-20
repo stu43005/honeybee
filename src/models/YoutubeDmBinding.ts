@@ -6,8 +6,8 @@ import {
   type ReturnModelType,
 } from "@typegoose/typegoose";
 import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses.js";
-import { transformYoutubeDmBinding } from "../modules/youtube-dm/transform.js";
-import { YOUTUBE_DM_MAX_CHANNELS_PER_USER } from "../constants.js";
+import { transformYoutubeDmBinding } from "#modules/youtube-dm/transform.js";
+import { YOUTUBE_DM_MAX_CHANNELS_PER_USER } from "#constants.js";
 
 // Thrown when the requested bind would exceed the soft per-user cap; nothing is written.
 export class BindingLimitError extends Error {}

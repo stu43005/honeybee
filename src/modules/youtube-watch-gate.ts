@@ -5,7 +5,7 @@ import {
   YOUTUBE_WATCH_DEGRADED_LOG_INTERVAL_MS,
   YOUTUBE_WATCH_GATE_KEY_TTL_MS,
   YOUTUBE_WATCH_INTERVAL_MS,
-} from "../constants.js";
+} from "#constants.js";
 import type { Module } from "./module.js";
 
 const GATE_KEY = "hb:yt:watch:gate";

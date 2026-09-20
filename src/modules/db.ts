@@ -5,7 +5,7 @@ import assert from "node:assert";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { __dirname } from "../utils/esm.js";
+import { __dirname } from "#utils/esm.js";
 import type { Module } from "./module.js";
 
 export const MONGO_URI = process.env.MONGO_URI;

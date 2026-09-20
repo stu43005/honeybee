@@ -1,7 +1,7 @@
 import assert from "assert";
 import Queue from "bee-queue";
-import { REDIS_URI, SHUTDOWN_TIMEOUT } from "../constants.js";
-import type { HoneybeeJob, WebhookJob } from "../interfaces.js";
+import { REDIS_URI, SHUTDOWN_TIMEOUT } from "#constants.js";
+import type { HoneybeeJob, WebhookJob } from "#interfaces.js";
 import type { Module } from "./module.js";
 
 export type QueueTypes = {

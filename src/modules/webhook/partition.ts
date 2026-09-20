@@ -7,7 +7,7 @@ import {
   WEBHOOK_PARTITION_HEARTBEAT_MS,
   WEBHOOK_PARTITION_TTL_MS,
   WEBHOOK_REBALANCE_DEBOUNCE_MS,
-} from "../../constants.js";
+} from "#constants.js";
 import type { Application } from "../application.js";
 import type { Module } from "../module.js";
 import { RedisModule } from "../redis.js";

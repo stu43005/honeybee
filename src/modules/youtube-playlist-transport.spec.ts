@@ -4,7 +4,7 @@ import nock from "nock";
 
 process.env.GOOGLE_API_KEY = "test-key";
 
-const { default: VideoModel } = await import("../models/Video.js");
+const { default: VideoModel } = await import("#models/Video.js");
 const { updateVideoFromPlaylist } = await import("./youtube.js");
 
 const API_HOST = "https://youtube.googleapis.com";

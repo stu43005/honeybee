@@ -3,7 +3,7 @@ import {
   GOOGLE_OAUTH_CLIENT_ID,
   GOOGLE_OAUTH_CLIENT_SECRET,
   PUBLIC_BASE_URL,
-} from "../../constants.js";
+} from "#constants.js";
 import type { OAuthChannel, OAuthProvider } from "./provider.js";
 import type { OAuthState } from "./state-store.js";
 

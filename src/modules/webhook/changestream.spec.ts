@@ -13,7 +13,7 @@ import type { RedisModule } from "../redis.js";
 import type { WebhookPartitionModule } from "./partition.js";
 import type { WebhookQueueProducerModule } from "./queue.js";
 
-jest.unstable_mockModule("../../models/Webhook.js", () => ({
+jest.unstable_mockModule("#models/Webhook.js", () => ({
   __esModule: true,
   default: { findEnabled: jest.fn(), watch: jest.fn() },
 }));
@@ -24,7 +24,7 @@ jest.unstable_mockModule("../db.js", () => ({
   getModelByCollectionName: jest.fn(),
 }));
 
-const WebhookModelMod = await import("../../models/Webhook.js");
+const WebhookModelMod = await import("#models/Webhook.js");
 const dbMod = await import("../db.js");
 const { WebhookChangeStreamModule } = await import("./changestream.js");
 

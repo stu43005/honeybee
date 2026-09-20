@@ -11,6 +11,8 @@ const config = {
   extensionsToTreatAsEsm: [".ts"],
   moduleNameMapper: {
     "^(\\.{1,2}/.*)\\.js$": "$1",
+    "^#(models|modules|utils)/(.*)\\.js$": "<rootDir>/src/$1/$2",
+    "^#(constants|interfaces)\\.js$": "<rootDir>/src/$1",
   },
   transformIgnorePatterns: ["/node_modules/(?!lodash-es/)"],
   transform: {

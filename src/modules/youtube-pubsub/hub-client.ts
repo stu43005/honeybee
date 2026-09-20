@@ -5,7 +5,7 @@ import {
   PUBLIC_BASE_URL,
   PUBSUB_REQUEST_TIMEOUT_MS,
   YOUTUBE_PUBSUB_SECRET,
-} from "../../constants.js";
+} from "#constants.js";
 
 const HUB_URL = "https://pubsubhubbub.appspot.com/subscribe";
 const TOPIC_PREFIX = "https://www.youtube.com/xml/feeds/videos.xml?channel_id=";

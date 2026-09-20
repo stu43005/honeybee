@@ -2,8 +2,8 @@ import type { DocumentType } from "@typegoose/typegoose";
 import { DefaultRestOptions, Routes } from "discord.js";
 import type { FlattenMaps } from "mongoose";
 import { configredWebhookFields, trackFeatures } from "./features.js";
-import TrackModel, { type Track } from "../../models/Track.js";
-import WebhookModel, { type Webhook } from "../../models/Webhook.js";
+import TrackModel, { type Track } from "#models/Track.js";
+import WebhookModel, { type Webhook } from "#models/Webhook.js";
 
 export async function transformTracks() {
   for await (const track of TrackModel.find()) {

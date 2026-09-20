@@ -2,8 +2,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import {
   PUBSUB_RENEW_BATCH_SIZE,
   PUBSUB_REQUEST_SPACING_MS,
-} from "../../constants.js";
-import ChannelModel from "../../models/Channel.js";
+} from "#constants.js";
+import ChannelModel from "#models/Channel.js";
 import { requestSubscription } from "./hub-client.js";
 
 /**

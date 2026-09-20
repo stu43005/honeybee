@@ -3,13 +3,10 @@ import { google, type youtube_v3 } from "googleapis";
 import { VideoStatus } from "holodex.js";
 import moment from "moment-timezone";
 import assert from "node:assert";
-import { GOOGLE_API_KEY, YOUTUBE_API_TIMEOUT_MS } from "../constants.js";
-import { HoneybeeStatus } from "../interfaces.js";
-import ChannelModel, { type Channel } from "../models/Channel.js";
-import VideoModel, {
-  type DiscoveredVideo,
-  type Video,
-} from "../models/Video.js";
+import { GOOGLE_API_KEY, YOUTUBE_API_TIMEOUT_MS } from "#constants.js";
+import { HoneybeeStatus } from "#interfaces.js";
+import ChannelModel, { type Channel } from "#models/Channel.js";
+import VideoModel, { type DiscoveredVideo, type Video } from "#models/Video.js";
 
 let youtubeApi: youtube_v3.Youtube | undefined;
 

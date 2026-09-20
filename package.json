@@ -14,6 +14,13 @@
     "format": "prettier --write src/",
     "format:check": "prettier --check src/"
   },
+  "imports": {
+    "#constants.js": "./dist/constants.js",
+    "#interfaces.js": "./dist/interfaces.js",
+    "#models/*": "./dist/models/*",
+    "#modules/*": "./dist/modules/*",
+    "#utils/*": "./dist/utils/*"
+  },
   "main": "dist/index.js",
   "bin": {
     "honeybee": "dist/index.js",

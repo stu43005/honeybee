@@ -1,7 +1,7 @@
 import { Agenda } from "agenda";
 import { MongoBackend } from "@agendajs/mongo-backend";
 import assert from "node:assert";
-import { SHUTDOWN_TIMEOUT } from "../constants.js";
+import { SHUTDOWN_TIMEOUT } from "#constants.js";
 import { MONGO_URI } from "./db.js";
 import type { Module } from "./module.js";
 

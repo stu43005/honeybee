@@ -16,8 +16,8 @@ import {
   HOLODEX_FETCH_ORG,
   PUBSUB_RENEW_BEFORE_MS,
   PUBSUB_REQUEST_COOLDOWN_MS,
-} from "../constants.js";
-import { setIfDefine } from "../utils/common.js";
+} from "#constants.js";
+import { setIfDefine } from "#utils/common.js";
 
 @modelOptions({ schemaOptions: { collection: "channels" } })
 @index({ organization: 1, isInactive: 1, hbIgnore: 1, deleted: 1 })

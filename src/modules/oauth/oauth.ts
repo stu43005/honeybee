@@ -1,10 +1,10 @@
 import { DiscordAPIError, RESTJSONErrorCodes, type Client } from "discord.js";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import ChannelModel from "../../models/Channel.js";
+import ChannelModel from "#models/Channel.js";
 import YoutubeDmBindingModel, {
   BindingLimitError,
   BindingTransformPendingError,
-} from "../../models/YoutubeDmBinding.js";
+} from "#models/YoutubeDmBinding.js";
 import type { Application } from "../application.js";
 import type { Module } from "../module.js";
 import { RedisModule } from "../redis.js";

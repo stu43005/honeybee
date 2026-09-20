@@ -32,7 +32,7 @@ const {
   requestSubscription,
   topicForChannel,
 } = await import("./hub-client.js");
-const { PUBSUB_REQUEST_TIMEOUT_MS } = await import("../../constants.js");
+const { PUBSUB_REQUEST_TIMEOUT_MS } = await import("#constants.js");
 
 function httpError(status: number): AxiosError {
   return new AxiosError(
