@@ -3,8 +3,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import {
   YOUTUBE_DISCOVERY_REQUEST_SPACING_MS,
   YOUTUBE_EXISTENCE_PROBE_BUCKET_SIZE,
-} from "../../constants.js";
-import VideoModel from "../../models/Video.js";
+} from "#constants.js";
+import VideoModel from "#models/Video.js";
 import { probeVideo } from "./oembed.js";
 
 /**

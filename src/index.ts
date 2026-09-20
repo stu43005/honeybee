@@ -36,7 +36,7 @@ void yargs(process.argv.slice(2))
     await runWebhook();
   })
   .command("crawler", "start crawler", {}, async () => {
-    const { runCrawler } = await import("./commands/crawler.js");
+    const { runCrawler } = await import("./services/crawler/index.js");
     await runCrawler();
   })
   .command("manager", "start manager", {}, async () => {

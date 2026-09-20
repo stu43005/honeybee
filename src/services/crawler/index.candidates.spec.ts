@@ -4,8 +4,8 @@ import { VideoStatus } from "holodex.js";
 
 process.env.GOOGLE_API_KEY = "test-key";
 
-const { default: VideoModel } = await import("../models/Video.js");
-const { collectVideoUpdateCandidates } = await import("./crawler.js");
+const { default: VideoModel } = await import("#models/Video.js");
+const { collectVideoUpdateCandidates } = await import("./index.js");
 
 function idList(ids: string[]) {
   return ids.map((id) => ({ id }));

@@ -4,10 +4,10 @@ import {
   YOUTUBE_DISCOVERY_REQUEST_SPACING_MS,
   YOUTUBE_FEED_POLL_BATCH_SIZE,
   YOUTUBE_FEED_TIMEOUT_MS,
-} from "../../constants.js";
-import ChannelModel from "../../models/Channel.js";
-import VideoModel, { type DiscoveredVideo } from "../../models/Video.js";
-import { parseNotification } from "../../modules/youtube-pubsub/atom.js";
+} from "#constants.js";
+import ChannelModel from "#models/Channel.js";
+import VideoModel, { type DiscoveredVideo } from "#models/Video.js";
+import { parseNotification } from "../atom.js";
 
 // Note the missing "/xml" compared with the pubsub topic url: that one is a
 // static document describing the hub and carries no entries at all. This is the

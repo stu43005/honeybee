@@ -12,7 +12,7 @@ type OembedResult = Awaited<
   ReturnType<typeof import("./oembed.js").probePlaylist>
 >;
 type PlaylistScanResult = Awaited<
-  ReturnType<typeof import("../../modules/youtube.js").updateVideoFromPlaylist>
+  ReturnType<typeof import("#modules/youtube.js").updateVideoFromPlaylist>
 >;
 
 const mockProbePlaylist =
@@ -25,21 +25,21 @@ jest.unstable_mockModule("./oembed.js", () => ({
   probePlaylist: mockProbePlaylist,
   probeVideo: jest.fn(),
 }));
-jest.unstable_mockModule("../../modules/youtube.js", () => ({
+jest.unstable_mockModule("#modules/youtube.js", () => ({
   updateVideoFromPlaylist: mockUpdateVideoFromPlaylist,
 }));
 jest.unstable_mockModule("node:timers/promises", () => ({
   setTimeout: mockSleep,
 }));
 
-const { default: ChannelModel } = await import("../../models/Channel.js");
+const { default: ChannelModel } = await import("#models/Channel.js");
 const { pollMembersPlaylists } = await import("./members-poll.js");
 const {
   YOUTUBE_MEMBERS_POLL_BATCH_SIZE,
   YOUTUBE_MEMBERS_PROBE_BATCH_SIZE,
   YOUTUBE_MEMBERS_PROBE_TTL_MS,
   YOUTUBE_MEMBERS_PROBE_RETRY_MS,
-} = await import("../../constants.js");
+} = await import("#constants.js");
 
 type ChannelRow = {
   id: string;

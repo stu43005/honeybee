@@ -8,7 +8,7 @@ jest.unstable_mockModule("axios", () => ({
 }));
 
 const { probeVideo, probePlaylist } = await import("./oembed.js");
-const { YOUTUBE_OEMBED_TIMEOUT_MS } = await import("../../constants.js");
+const { YOUTUBE_OEMBED_TIMEOUT_MS } = await import("#constants.js");
 
 describe("oEmbed probing", () => {
   afterEach(() => {

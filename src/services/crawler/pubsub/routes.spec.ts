@@ -24,7 +24,7 @@ jest.unstable_mockModule("#models/Video.js", () => ({
   default: { noticeFromNotification: mockNoticeFromNotification },
 }));
 
-jest.unstable_mockModule("../youtube.js", () => ({
+jest.unstable_mockModule("#modules/youtube.js", () => ({
   updateVideoFromYoutube: mockUpdateVideoFromYoutube,
 }));
 

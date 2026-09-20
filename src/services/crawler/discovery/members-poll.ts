@@ -5,9 +5,9 @@ import {
   YOUTUBE_MEMBERS_PROBE_BATCH_SIZE,
   YOUTUBE_MEMBERS_PROBE_RETRY_MS,
   YOUTUBE_MEMBERS_PROBE_TTL_MS,
-} from "../../constants.js";
-import ChannelModel from "../../models/Channel.js";
-import { updateVideoFromPlaylist } from "../../modules/youtube.js";
+} from "#constants.js";
+import ChannelModel from "#models/Channel.js";
+import { updateVideoFromPlaylist } from "#modules/youtube.js";
 import { probePlaylist, type OembedResult } from "./oembed.js";
 
 /**

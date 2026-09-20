@@ -24,10 +24,9 @@ jest.unstable_mockModule("node:timers/promises", () => ({
   setTimeout: mockSleep,
 }));
 
-const { default: VideoModel } = await import("../../models/Video.js");
+const { default: VideoModel } = await import("#models/Video.js");
 const { probeMissingVideos } = await import("./existence-probe.js");
-const { YOUTUBE_EXISTENCE_PROBE_BUCKET_SIZE } =
-  await import("../../constants.js");
+const { YOUTUBE_EXISTENCE_PROBE_BUCKET_SIZE } = await import("#constants.js");
 
 const STAMP = new Date("2026-09-01T00:00:00.000Z");
 const RECENT_AVAILABLE = new Date("2026-09-17T00:00:00.000Z");

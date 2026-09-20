@@ -11,8 +11,8 @@ import {
 } from "#constants.js";
 import ChannelModel from "#models/Channel.js";
 import VideoModel from "#models/Video.js";
-import { updateVideoFromYoutube } from "../youtube.js";
-import { parseNotification } from "./atom.js";
+import { updateVideoFromYoutube } from "#modules/youtube.js";
+import { parseNotification } from "../atom.js";
 import { channelIdFromTopic, getCallbackToken } from "./hub-client.js";
 
 type TokenParams = { token: string };

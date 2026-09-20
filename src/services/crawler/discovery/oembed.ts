@@ -1,5 +1,5 @@
 import axios from "axios";
-import { YOUTUBE_OEMBED_TIMEOUT_MS } from "../../constants.js";
+import { YOUTUBE_OEMBED_TIMEOUT_MS } from "#constants.js";
 
 const OEMBED_URL = "https://www.youtube.com/oembed";
 

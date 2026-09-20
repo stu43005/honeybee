@@ -32,14 +32,14 @@ jest.unstable_mockModule("googleapis", () => ({
   google: { youtube: mockYoutube },
 }));
 
-const { default: ChannelModel } = await import("../../models/Channel.js");
-const { default: VideoModel } = await import("../../models/Video.js");
+const { default: ChannelModel } = await import("#models/Channel.js");
+const { default: VideoModel } = await import("#models/Video.js");
 const { pollChannelFeeds } = await import("./feed-poll.js");
 const {
   YOUTUBE_FEED_POLL_BATCH_SIZE,
   YOUTUBE_DISCOVERY_REQUEST_SPACING_MS,
   YOUTUBE_FEED_TIMEOUT_MS,
-} = await import("../../constants.js");
+} = await import("#constants.js");
 
 function feedXml(channelId: string, videoIds: string[]): string {
   const entries = videoIds

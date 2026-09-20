@@ -1,8 +1,8 @@
 import type { Job } from "agenda";
 import { PUBLIC_BASE_URL, YOUTUBE_PUBSUB_SECRET } from "#constants.js";
-import type { Application } from "../application.js";
-import type { Module } from "../module.js";
-import { AgendaModule } from "../schedule.js";
+import type { Application } from "#modules/application.js";
+import type { Module } from "#modules/module.js";
+import { AgendaModule } from "#modules/schedule.js";
 import { renewPubsubSubscriptions } from "./renewal.js";
 import { pubsubRoutes } from "./routes.js";
 

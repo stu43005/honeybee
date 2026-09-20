@@ -12,21 +12,21 @@ import {
   HOLODEX_ALL_VTUBERS,
   HOLODEX_FETCH_ORG,
   HOLODEX_MAX_UPCOMING_HOURS,
-} from "../constants.js";
-import ChannelModel from "../models/Channel.js";
-import VideoModel from "../models/Video.js";
-import { Application } from "../modules/application.js";
-import { MongodbModule } from "../modules/db.js";
-import { getHolodex } from "../modules/holodex.js";
-import { AgendaModule } from "../modules/schedule.js";
+} from "#constants.js";
+import ChannelModel from "#models/Channel.js";
+import VideoModel from "#models/Video.js";
+import { Application } from "#modules/application.js";
+import { MongodbModule } from "#modules/db.js";
+import { getHolodex } from "./holodex.js";
+import { AgendaModule } from "#modules/schedule.js";
 import {
   updateChannelFromYoutube,
   updateVideoFromYoutube,
-} from "../modules/youtube.js";
-import { YoutubePubsubModule } from "../modules/youtube-pubsub/youtube-pubsub.js";
-import { pollChannelFeeds } from "../components/youtube-discovery/feed-poll.js";
-import { pollMembersPlaylists } from "../components/youtube-discovery/members-poll.js";
-import { probeMissingVideos } from "../components/youtube-discovery/existence-probe.js";
+} from "#modules/youtube.js";
+import { YoutubePubsubModule } from "./pubsub/youtube-pubsub.js";
+import { pollChannelFeeds } from "./discovery/feed-poll.js";
+import { pollMembersPlaylists } from "./discovery/members-poll.js";
+import { probeMissingVideos } from "./discovery/existence-probe.js";
 
 function mapToId(list: { id: string }[]): string[] {
   return list.map((item) => item.id);
