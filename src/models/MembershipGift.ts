@@ -3,10 +3,14 @@ import {
   index,
   modelOptions,
   prop,
+  Severity,
 } from "@typegoose/typegoose";
 import type { MessageAuthorType } from "#interfaces.js";
 
-@modelOptions({ schemaOptions: { collection: "membershipgifts" } })
+@modelOptions({
+  schemaOptions: { collection: "membershipgifts" },
+  options: { allowMixed: Severity.ALLOW },
+})
 @index({ originVideoId: 1, timestamp: 1 })
 export class MembershipGift {
   @prop({ required: true, unique: true })

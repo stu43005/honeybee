@@ -3,11 +3,13 @@ import {
   index,
   modelOptions,
   prop,
+  Severity,
 } from "@typegoose/typegoose";
 import type { MessageAuthorType } from "#interfaces.js";
 
 @modelOptions({
   schemaOptions: { collection: "gifts" },
+  options: { allowMixed: Severity.ALLOW },
 })
 @index({ originVideoId: 1, timestamp: 1 })
 // Narrows the price rebuild's sweep to the documents it can actually learn a
