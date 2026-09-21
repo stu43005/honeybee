@@ -1,7 +1,7 @@
 /// <reference types="jest" />
 import { afterEach, describe, expect, it, jest } from "@jest/globals";
 import { VideoStatus } from "holodex.js";
-import VideoModel from "../../models/Video.js";
+import VideoModel from "#models/Video.js";
 import {
   buildRealtimeIndex,
   buildUpcomingIndex,

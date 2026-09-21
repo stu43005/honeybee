@@ -2,7 +2,7 @@ import assert from "node:assert";
 import { randomUUID } from "node:crypto";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { CHAT_ARCHIVE_DIR } from "../../constants.js";
+import { CHAT_ARCHIVE_DIR } from "#constants.js";
 
 /**
  * Resolve a path under `${CHAT_ARCHIVE_DIR}/data/…`. Asserts the archive

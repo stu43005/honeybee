@@ -1,10 +1,10 @@
 import assert from "node:assert";
 import type { mongo } from "mongoose";
-import GiftModel from "../models/Gift.js";
-import GiftPriceModel from "../models/GiftPrice.js";
-import { setIfDefine } from "../utils/common.js";
-import type { Application } from "../modules/application.js";
-import type { AgendaModule } from "../modules/schedule.js";
+import GiftModel from "#models/Gift.js";
+import GiftPriceModel from "#models/GiftPrice.js";
+import { setIfDefine } from "#utils/common.js";
+import type { Application } from "#modules/application.js";
+import type { AgendaModule } from "#modules/schedule.js";
 
 export interface GiftPriceObservation {
   assetName: string;

@@ -35,10 +35,10 @@ const bulkWrite = jest.fn((ops: any[]) => {
 
 const find = jest.fn(() => Array.from(store.values()));
 
-jest.unstable_mockModule("../models/Gift.js", () => ({
+jest.unstable_mockModule("#models/Gift.js", () => ({
   default: { aggregate },
 }));
-jest.unstable_mockModule("../models/GiftPrice.js", () => ({
+jest.unstable_mockModule("#models/GiftPrice.js", () => ({
   default: { find, bulkWrite },
 }));
 

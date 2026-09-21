@@ -1,6 +1,6 @@
 /// <reference types="jest" />
 import { describe, expect, it, jest } from "@jest/globals";
-import { MessageType, VideoStatsType } from "../interfaces.js";
+import { MessageType, VideoStatsType } from "#interfaces.js";
 import videoStats from "./video-stats.js";
 
 // video-stats.ts only reads `app.get("agenda").agenda` and never touches

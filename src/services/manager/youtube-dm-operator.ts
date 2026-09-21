@@ -1,7 +1,7 @@
 import assert from "node:assert";
-import type { Application } from "../modules/application.js";
-import type { AgendaModule } from "../modules/schedule.js";
-import { transformYoutubeDmBindings } from "../modules/youtube-dm/transform.js";
+import type { Application } from "#modules/application.js";
+import type { AgendaModule } from "#modules/schedule.js";
+import { transformYoutubeDmBindings } from "#modules/youtube-dm/transform.js";
 
 export default function youtubeDmOperator(app: Application) {
   const { agenda } = app.get<AgendaModule>("agenda") ?? {};

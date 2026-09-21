@@ -8,12 +8,12 @@ import { setTimeout } from "node:timers/promises";
 import {
   checkIsDiscordDmUrl,
   matchPresets,
-} from "../modules/webhook-template.js";
-import { type Webhook } from "../models/Webhook.js";
-import WebhookModel from "../models/Webhook.js";
-import type { Application } from "../modules/application.js";
-import { documentLog } from "../modules/db.js";
-import type { AgendaModule } from "../modules/schedule.js";
+} from "#modules/webhook-template.js";
+import { type Webhook } from "#models/Webhook.js";
+import WebhookModel from "#models/Webhook.js";
+import type { Application } from "#modules/application.js";
+import { documentLog } from "#modules/db.js";
+import type { AgendaModule } from "#modules/schedule.js";
 
 export async function prepareWebhook(
   webhook: DocumentType<Webhook>,

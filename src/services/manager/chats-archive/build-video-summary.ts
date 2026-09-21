@@ -1,5 +1,5 @@
 import type { DocumentType } from "@typegoose/typegoose";
-import type { Video } from "../../models/Video.js";
+import type { Video } from "#models/Video.js";
 
 export async function buildVideoSummary(
   video: DocumentType<Video>,

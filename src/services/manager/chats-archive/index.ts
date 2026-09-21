@@ -2,24 +2,20 @@ import { mongoose } from "@typegoose/typegoose";
 import type { Job } from "agenda";
 import moment from "moment";
 import assert from "node:assert";
-import { CHAT_ARCHIVE_DIR, MAX_HOURS_BEFORE_CLEANUP } from "../constants.js";
-import {
-  MessageAuthorType,
-  MessageType,
-  VideoStatsType,
-} from "../interfaces.js";
-import VideoStatsModel, { VideoStatsFlags } from "../models/VideoStats.js";
-import type { Application } from "../modules/application.js";
-import { MONGO_URI } from "../modules/db.js";
-import type { AgendaModule } from "../modules/schedule.js";
-import { isMain } from "../utils/esm.js";
-import { archiveVideo } from "./chats-archive/archive-video.js";
-import { genIndexFile } from "./chats-archive/gen-index-file.js";
-import { genRealtimeAndUpcomingFiles } from "./chats-archive/gen-realtime-file.js";
+import { CHAT_ARCHIVE_DIR, MAX_HOURS_BEFORE_CLEANUP } from "#constants.js";
+import { MessageAuthorType, MessageType, VideoStatsType } from "#interfaces.js";
+import VideoStatsModel, { VideoStatsFlags } from "#models/VideoStats.js";
+import type { Application } from "#modules/application.js";
+import { MONGO_URI } from "#modules/db.js";
+import type { AgendaModule } from "#modules/schedule.js";
+import { isMain } from "#utils/esm.js";
+import { archiveVideo } from "./archive-video.js";
+import { genIndexFile } from "./gen-index-file.js";
+import { genRealtimeAndUpcomingFiles } from "./gen-realtime-file.js";
 import {
   genDailyVideos,
   genDailyVideosFinalize,
-} from "./chats-archive/gen-daily-videos-file.js";
+} from "./gen-daily-videos-file.js";
 
 export default function chatsArchive(app: Application) {
   const { agenda } = app.get<AgendaModule>("agenda") ?? {};

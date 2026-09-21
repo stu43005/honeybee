@@ -1,7 +1,7 @@
 import assert from "node:assert";
-import type { Application } from "../modules/application.js";
-import type { AgendaModule } from "../modules/schedule.js";
-import { transformTracks } from "../modules/track/transform.js";
+import type { Application } from "#modules/application.js";
+import type { AgendaModule } from "#modules/schedule.js";
+import { transformTracks } from "#modules/track/transform.js";
 
 export default function trackOperator(app: Application) {
   const { agenda } = app.get<AgendaModule>("agenda") ?? {};

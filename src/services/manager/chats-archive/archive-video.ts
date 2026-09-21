@@ -5,27 +5,25 @@ import path from "node:path";
 import { finished } from "node:stream/promises";
 import type { Cursor, mongo } from "mongoose";
 import assert from "node:assert";
-import { CHAT_ARCHIVE_DIR } from "../../constants.js";
-import { MessageType, VideoStatsType } from "../../interfaces.js";
-import ChatModel, { type Chat } from "../../models/Chat.js";
-import GiftModel, { type Gift } from "../../models/Gift.js";
-import MembershipModel, { type Membership } from "../../models/Membership.js";
+import { CHAT_ARCHIVE_DIR } from "#constants.js";
+import { MessageType, VideoStatsType } from "#interfaces.js";
+import ChatModel, { type Chat } from "#models/Chat.js";
+import GiftModel, { type Gift } from "#models/Gift.js";
+import MembershipModel, { type Membership } from "#models/Membership.js";
 import MembershipGiftModel, {
   type MembershipGift,
-} from "../../models/MembershipGift.js";
+} from "#models/MembershipGift.js";
 import MembershipGiftPurchaseModel, {
   type MembershipGiftPurchase,
-} from "../../models/MembershipGiftPurchase.js";
-import MilestoneModel, { type Milestone } from "../../models/Milestone.js";
-import PollModel, { type Poll } from "../../models/Poll.js";
-import RaidModel, { type Raid } from "../../models/Raid.js";
-import SuperChatModel, { type SuperChat } from "../../models/SuperChat.js";
-import SuperStickerModel, {
-  type SuperSticker,
-} from "../../models/SuperSticker.js";
-import VideoModel, { type Video } from "../../models/Video.js";
-import VideoStatsModel from "../../models/VideoStats.js";
-import { setIfDefine } from "../../utils/common.js";
+} from "#models/MembershipGiftPurchase.js";
+import MilestoneModel, { type Milestone } from "#models/Milestone.js";
+import PollModel, { type Poll } from "#models/Poll.js";
+import RaidModel, { type Raid } from "#models/Raid.js";
+import SuperChatModel, { type SuperChat } from "#models/SuperChat.js";
+import SuperStickerModel, { type SuperSticker } from "#models/SuperSticker.js";
+import VideoModel, { type Video } from "#models/Video.js";
+import VideoStatsModel from "#models/VideoStats.js";
+import { setIfDefine } from "#utils/common.js";
 import { buildVideoSummary } from "./build-video-summary.js";
 
 export type ChatRowDoc = DocumentType<

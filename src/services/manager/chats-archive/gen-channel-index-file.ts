@@ -1,9 +1,9 @@
 import assert from "node:assert";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { CHAT_ARCHIVE_DIR } from "../../constants.js";
-import ChannelModel from "../../models/Channel.js";
-import VideoModel from "../../models/Video.js";
+import { CHAT_ARCHIVE_DIR } from "#constants.js";
+import ChannelModel from "#models/Channel.js";
+import VideoModel from "#models/Video.js";
 import { archiveVideo } from "./archive-video.js";
 import { recalcVideoHbStats } from "../video-stats.js";
 import { buildVideoSummary } from "./build-video-summary.js";

@@ -3,7 +3,7 @@ import type { DocumentType } from "@typegoose/typegoose";
 import { VideoStatus } from "holodex.js";
 import moment from "moment-timezone";
 import type { FilterQuery } from "mongoose";
-import VideoModel, { type Video } from "../../models/Video.js";
+import VideoModel, { type Video } from "#models/Video.js";
 import { buildVideoSummary } from "./build-video-summary.js";
 import { dataFilePath, writeDataFile } from "./write-data-file.js";
 

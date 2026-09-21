@@ -3,28 +3,28 @@ import type { AnyParamConstructor } from "@typegoose/typegoose/lib/types.js";
 import moment from "moment";
 import type { AccumulatorOperator, FilterQuery, PipelineStage } from "mongoose";
 import assert from "node:assert";
-import { MessageType, VideoStatsType } from "../interfaces.js";
-import VideoModel from "../models/Video.js";
-import BanActionModel from "../models/BanAction.js";
-import ChatModel from "../models/Chat.js";
-import GiftModel from "../models/Gift.js";
-import MembershipModel from "../models/Membership.js";
-import MembershipGiftModel from "../models/MembershipGift.js";
-import MembershipGiftPurchaseModel from "../models/MembershipGiftPurchase.js";
-import MilestoneModel from "../models/Milestone.js";
-import PollModel from "../models/Poll.js";
-import RaidModel from "../models/Raid.js";
-import RemoveChatActionModel from "../models/RemoveChatAction.js";
-import SuperChatModel from "../models/SuperChat.js";
-import SuperStickerModel from "../models/SuperSticker.js";
+import { MessageType, VideoStatsType } from "#interfaces.js";
+import VideoModel from "#models/Video.js";
+import BanActionModel from "#models/BanAction.js";
+import ChatModel from "#models/Chat.js";
+import GiftModel from "#models/Gift.js";
+import MembershipModel from "#models/Membership.js";
+import MembershipGiftModel from "#models/MembershipGift.js";
+import MembershipGiftPurchaseModel from "#models/MembershipGiftPurchase.js";
+import MilestoneModel from "#models/Milestone.js";
+import PollModel from "#models/Poll.js";
+import RaidModel from "#models/Raid.js";
+import RemoveChatActionModel from "#models/RemoveChatAction.js";
+import SuperChatModel from "#models/SuperChat.js";
+import SuperStickerModel from "#models/SuperSticker.js";
 import VideoStatsModel, {
   SCRAPE_DURATION_VIDEOID,
   VideoStatsFlags,
   type VideoStats,
-} from "../models/VideoStats.js";
-import VideoUserStatsModel from "../models/VideoUserStats.js";
-import type { Application } from "../modules/application.js";
-import type { AgendaModule } from "../modules/schedule.js";
+} from "#models/VideoStats.js";
+import VideoUserStatsModel from "#models/VideoUserStats.js";
+import type { Application } from "#modules/application.js";
+import type { AgendaModule } from "#modules/schedule.js";
 
 type MessageTypeModel = {
   messageType: MessageType;

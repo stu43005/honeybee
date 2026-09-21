@@ -1,7 +1,7 @@
 /// <reference types="jest" />
 import { afterEach, describe, expect, it, jest } from "@jest/globals";
 import { VideoStatus } from "holodex.js";
-import VideoModel from "../../models/Video.js";
+import VideoModel from "#models/Video.js";
 
 // True-ESM Jest: mock the first-party writer via unstable_mockModule + a dynamic
 // import so the driver tests can assert the exact date files they would write

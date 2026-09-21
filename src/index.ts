@@ -40,7 +40,7 @@ void yargs(process.argv.slice(2))
     await runCrawler();
   })
   .command("manager", "start manager", {}, async () => {
-    const { runManager } = await import("./commands/manager.js");
+    const { runManager } = await import("./services/manager/index.js");
     await runManager();
   })
   .command("metrics", "Prometheus metrics endpoint", {}, async () => {
