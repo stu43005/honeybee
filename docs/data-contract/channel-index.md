@@ -5,7 +5,7 @@
 identical to this file's version; readers determine the version of the
 file with no JSON version field by reading the companion's version
 field.)
-**Writer:** `src/components/chats-archive/gen-channel-index-file.ts`
+**Writer:** `src/services/manager/chats-archive/gen-channel-index-file.ts`
 **Version field in JSON:** none at version 1 — readers detect version
 defensively as `(json.version ?? 1)`. A future bump will introduce a
 `version: number` field at the root; until then the field's absence

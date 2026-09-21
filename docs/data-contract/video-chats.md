@@ -6,7 +6,7 @@
 always identical to this file's version; readers determine the version of
 this file (which has no JSON version field of its own) by reading the
 companion's `archiveVersion` field.
-**Writer:** `src/components/chats-archive/archive-video.ts`
+**Writer:** `src/services/manager/chats-archive/archive-video.ts`
 **Version field in JSON:** none — version comes from companion file.
 **Current writer emits:** version 2, revision r1
 

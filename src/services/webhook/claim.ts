@@ -46,7 +46,7 @@ export type ClaimDecision =
  * index rather than accumulating indefinitely. Follow-update records
  * deliberately skip `expireAt` on insert (WEBHOOK_RESULT_FOLLOW_TTL_MS === null)
  * and are instead pruned by the cleanWebhookResults cron in
- * src/components/cleanup.ts based on source-document state.
+ * src/services/manager/cleanup.ts based on source-document state.
  */
 export async function claimWebhookResult(
   webhook: DocumentType<Webhook>,

@@ -6,7 +6,7 @@
 is always identical to this file's version; readers determine the version
 of the file with no JSON version field by reading the companion's version
 field.
-**Writer:** `src/components/chats-archive/archive-video.ts`
+**Writer:** `src/services/manager/chats-archive/archive-video.ts`
 **Version field in JSON:** `archiveVersion`
 **Current writer emits:** version 2, revision r1
 

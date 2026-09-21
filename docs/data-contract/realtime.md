@@ -2,7 +2,7 @@
 
 **File path pattern:** `data/realtime.json`
 **Companion file:** none.
-**Writer:** `src/components/chats-archive/gen-realtime-file.ts`
+**Writer:** `src/services/manager/chats-archive/gen-realtime-file.ts`
 **Version field in JSON:** none at version 1 — readers detect version
 defensively as `(json.version ?? 1)`.
 **Current writer emits:** version 1, revision r0

@@ -2,7 +2,7 @@
 
 **File path pattern:** `data/daily-videos/{YYYY-MM-DD}.json` (JST calendar date)
 **Companion file:** none.
-**Writer:** `src/components/chats-archive/gen-daily-videos-file.ts`
+**Writer:** `src/services/manager/chats-archive/gen-daily-videos-file.ts`
 **Version field in JSON:** none at version 1 — readers detect version
 defensively as `(json.version ?? 1)`.
 **Current writer emits:** version 1, revision r0
