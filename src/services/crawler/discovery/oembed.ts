@@ -4,11 +4,20 @@ import { YOUTUBE_OEMBED_TIMEOUT_MS } from "#constants.js";
 const OEMBED_URL = "https://www.youtube.com/oembed";
 
 /**
- * What one probe learned. The four outcomes are kept apart because the two
- * callers need different things from them:
+ * What one probe learned. The outcomes are kept apart because the two callers
+ * need different things from them:
  *
  * - `present` — 200, and only 200. The target is really there.
- * - `absent`  — 404. A real answer: YouTube will not serve this.
+ * - `absent`  — 404. A real answer: YouTube has nothing at this address.
+ * - `private` — 403. Also a real answer, but a different one: the target
+ *   exists and its owner made it private, which the watch page reports as
+ *   LOGIN_REQUIRED / "Private video". The video probe wants this filed with
+ *   `absent`, since neither one is coming back on its own; the membership
+ *   probe must not, because a playlist that exists but is closed is not the
+ *   same as a channel having no members-only playlist at all.
+ * - `removed` — 409. Answered for a target the uploader took down, reported on
+ *   the watch page as "This video has been removed by the uploader". An id
+ *   that never existed answers 404 instead.
  * - `invalid` — 400. The id is malformed. Unreachable like `absent`, but it
  *   says nothing about whether a *well-formed* id would have existed, so the
  *   membership probe must not turn it into a lasting verdict.
@@ -18,6 +27,8 @@ const OEMBED_URL = "https://www.youtube.com/oembed";
 export type OembedResult =
   | { kind: "present" }
   | { kind: "absent" }
+  | { kind: "private" }
+  | { kind: "removed" }
   | { kind: "invalid" }
   | { kind: "unknown"; message: string };
 
@@ -41,6 +52,8 @@ async function probe(target: string): Promise<OembedResult> {
     // resurrect a video or grant a week-long positive verdict on no evidence.
     if (response.status === 200) return { kind: "present" };
     if (response.status === 404) return { kind: "absent" };
+    if (response.status === 403) return { kind: "private" };
+    if (response.status === 409) return { kind: "removed" };
     if (response.status === 400) return { kind: "invalid" };
     return {
       kind: "unknown",

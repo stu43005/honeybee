@@ -78,6 +78,24 @@ describe("oEmbed probing", () => {
     await expect(probeVideo("!!!")).resolves.toEqual({ kind: "invalid" });
   });
 
+  it("reads 403 as private rather than as an unanswered question", async () => {
+    mockGet.mockResolvedValue({ status: 403, data: "Forbidden" });
+
+    // 403 is what this endpoint answers for a video whose owner made it
+    // private: the watch page reports LOGIN_REQUIRED / "Private video". It is
+    // a real answer about a real video, so it must not be filed next to a 5xx.
+    await expect(probeVideo("abc")).resolves.toEqual({ kind: "private" });
+  });
+
+  it("reads 409 as removed rather than as an unanswered question", async () => {
+    mockGet.mockResolvedValue({ status: 409, data: "Conflict" });
+
+    // 409 is answered for a video the uploader took down, which the watch page
+    // reports as "This video has been removed by the uploader". An id that
+    // never existed answers 404 instead.
+    await expect(probeVideo("abc")).resolves.toEqual({ kind: "removed" });
+  });
+
   it("reads any other status as inconclusive rather than absent", async () => {
     mockGet.mockResolvedValue({ status: 503, data: "" });
 
@@ -94,7 +112,7 @@ describe("oEmbed probing", () => {
     expect(result).toEqual({ kind: "unknown", message: "socket hang up" });
   });
 
-  it("classifies playlist answers on the same four outcomes", async () => {
+  it("classifies playlist answers on the same outcomes", async () => {
     mockGet.mockResolvedValue({ status: 200, data: { title: "x" } });
     await expect(probePlaylist("UUMOabc")).resolves.toEqual({
       kind: "present",
