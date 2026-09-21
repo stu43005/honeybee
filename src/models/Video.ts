@@ -5,6 +5,7 @@ import {
   isDocument,
   modelOptions,
   prop,
+  Severity,
   type DocumentType,
   type Ref,
   type ReturnModelType,
@@ -74,7 +75,10 @@ export interface DiscoveredVideo {
   publishedAt?: Date;
 }
 
-@modelOptions({ schemaOptions: { collection: "videos" } })
+@modelOptions({
+  schemaOptions: { collection: "videos" },
+  options: { allowMixed: Severity.ALLOW },
+})
 @index(
   { availableAt: 1 },
   {

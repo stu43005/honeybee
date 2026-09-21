@@ -3,10 +3,14 @@ import {
   index,
   modelOptions,
   prop,
+  Severity,
 } from "@typegoose/typegoose";
 import type { MessageAuthorType, MessageType } from "#interfaces.js";
 
-@modelOptions({ schemaOptions: { collection: "videouserstats" } })
+@modelOptions({
+  schemaOptions: { collection: "videouserstats" },
+  options: { allowMixed: Severity.ALLOW },
+})
 @index({ videoId: 1, messageType: 1, authorChannelId: 1 }, { unique: true })
 @index({ videoId: 1, messageType: 1, authorType: 1 })
 export class VideoUserStats {

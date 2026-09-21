@@ -3,6 +3,7 @@ import {
   index,
   modelOptions,
   prop,
+  Severity,
   type ReturnModelType,
 } from "@typegoose/typegoose";
 import { TimeStamps } from "@typegoose/typegoose/lib/defaultClasses.js";
@@ -17,7 +18,10 @@ export const VideoStatsFlags = Object.freeze({
   ChatsArchiveProcessed: 2,
 });
 
-@modelOptions({ schemaOptions: { collection: "videostats" } })
+@modelOptions({
+  schemaOptions: { collection: "videostats" },
+  options: { allowMixed: Severity.ALLOW },
+})
 @index(
   { videoId: 1, type: 1, messageType: 1, authorType: 1, currency: 1 },
   { unique: true }
