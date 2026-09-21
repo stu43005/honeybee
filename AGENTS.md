@@ -62,25 +62,30 @@ process/deployment in k8s:
 - **discord-bot** — discord.js bot.
 - **metrics** — Prometheus `/metrics` HTTP endpoint via `prom-client`.
 
-### Composition (modules vs components)
+### Composition (three tiers)
 
-- `src/modules/` — long-lived infrastructure singletons composed via the
-  `Application` container in
-  [src/modules/application.ts](src/modules/application.ts). Each `Module`
-  exposes `init()` / `close()`; `Application.use()` registers them and
-  `SHUTDOWN_TIMEOUT` (45s, < k8s 60s grace) bounds graceful drain. Examples:
-  `MongodbModule`, `QueueModule` (Bee-Queue), `AgendaModule`, `RedisModule`,
-  `HttpServerModule`, `CollectionWatcher`, `RateLimiter`, `Cache`.
-- `src/components/` — higher-level orchestration units that compose modules to
-  perform a domain task (e.g., `chats-archive/`, `track-operator.ts`,
-  `video-scaler.ts`, `webhook-prepare.ts`, `cleanup.ts`).
-- `src/models/` — Typegoose schemas. Each file exports both the class and a
-  default `Model`. Tests sit alongside (`*.spec.ts`).
-- `src/data/` — static reference data (currency table, track config, webhook
-  templates).
-- `src/discord/` — discord-bot command modules.
-- `src/modules/webhook/` — webhook subsystem internals (partitioning, dispatch,
-  templating via `json-templates`).
+- `src/services/<service>/` — everything reachable from exactly one entrypoint.
+  Each directory holds that service's runner (`index.ts`) and its private
+  modules. Services never import each other; ESLint enforces it.
+- `src/modules/` — everything reachable from two or more entrypoints. This is
+  both infrastructure composed via the `Application` container
+  ([src/modules/application.ts](src/modules/application.ts)) — `MongodbModule`,
+  `QueueModule`, `AgendaModule`, `RedisModule`, `HttpServerModule`,
+  `CollectionWatcher`, `Cache` — and shared domain logic that several services
+  need, such as `modules/track/` and `modules/youtube-dm/`. A domain-named
+  subdirectory here is grouping, not a second organising axis: what belongs in
+  it is still decided by counting entrypoints.
+- `src/models/`, `src/constants.ts`, `src/interfaces.ts`, `src/utils/` — shared
+  unconditionally, regardless of how many services read them.
+
+Dependencies run one way: `services/ → modules/ → models/`. The one exception
+is that a few model statics call a transform in `modules/`, which leaves a
+cycle between those two tiers; it predates this layout and is left alone.
+
+Module lifecycle is unchanged: each `Module` exposes `init()` / `close()`,
+`Application.use()` registers them, `Application.close()` runs them in reverse
+registration order, and `SHUTDOWN_TIMEOUT` (45s, under the k8s 60s grace
+period) bounds the drain.
 
 ### Cross-cutting
 
@@ -153,6 +158,42 @@ adding a new module, place its `app.use(...)` so that:
 
 If a new module breaks either property, fix the registration order, not the
 module's `close()` body.
+
+### Where a new file goes
+
+Count the entrypoints that can reach it. Reachable from exactly one service →
+`src/services/<service>/`. Reachable from two or more → `src/modules/`. Models,
+`constants.ts`, `interfaces.ts` and `utils/` are always shared regardless of
+who reads them.
+
+A file stays in its service directory until a **second** service consumes it;
+only then is it promoted to `src/modules/`. Do not pre-emptively place code in
+`src/modules/` on the guess that it will be shared later.
+
+Cross-service imports are rejected by ESLint. If you find yourself wanting one,
+the file you are reaching for needs promoting.
+
+`src/models/` must stay one flat directory, and `src/modules/db.ts` must stay
+at that path: model registration reads the emitted `dist/models/` with a
+non-recursive `readdir`, so a model in a subdirectory is skipped silently and
+only fails when the webhook service dispatches that collection.
+
+### Cross-service verticals
+
+Some features span several services and therefore do not live in one directory.
+Where each part of the current two sits:
+
+| Vertical     | Shared slice                            | Discord surface                             | Dispatch side               | Manager reconcile shell                   | Model                        |
+| ------------ | --------------------------------------- | ------------------------------------------- | --------------------------- | ----------------------------------------- | ---------------------------- |
+| `track`      | `modules/track/{features,transform}.ts` | `services/discord-bot/commands/track/`      | —                           | `services/manager/track-operator.ts`      | `models/Track.ts`            |
+| `youtube-dm` | `modules/youtube-dm/transform.ts`       | `services/discord-bot/commands/youtube-dm/` | `services/webhook/index.ts` | `services/manager/youtube-dm-operator.ts` | `models/YoutubeDmBinding.ts` |
+
+Both project onto `models/Webhook.ts`: a user configures something in Discord,
+it becomes a Webhook row, the webhook service dispatches it, and manager
+reconciles and removes orphans on a schedule.
+
+Add a row whenever a new feature ends up spanning more than one service, and
+update the existing rows in the same commit that moves any part of a vertical.
 
 ## Spec/plan authoring rules
 
