@@ -251,7 +251,7 @@ describe("probeMissingVideos", () => {
     expect(doc).not.toHaveProperty("detectedDeletionAt");
   });
 
-  it.each(["absent", "invalid", "unknown"] as const)(
+  it.each(["absent", "private", "removed", "invalid", "unknown"] as const)(
     "only advances the timestamp for a %s answer",
     async (kind) => {
       const store = fakeVideos([deletedMissing("v1", RECENT_AVAILABLE)]);
@@ -266,6 +266,26 @@ describe("probeMissingVideos", () => {
       expect(doc?.deleted).toBe(true);
       expect(doc?.crawledAt).toBeInstanceOf(Date);
       expect(doc?.crawledAt).not.toEqual(STAMP);
+    }
+  );
+
+  it.each(["absent", "private", "removed"] as const)(
+    "says nothing about a %s answer, which is what this population mostly is",
+    async (kind) => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const store = fakeVideos([deletedMissing("v1", RECENT_AVAILABLE)]);
+      mockProbeVideo.mockResolvedValue({ kind });
+
+      await probeMissingVideos();
+
+      // These three are answers, not failures: a video that is gone, one its
+      // owner made private, one the uploader took down. Videos.list drops all
+      // of them alike, so they are the bulk of what this round ever sees, and
+      // logging them would bury the non-answers the warning exists to surface.
+      expect(warn.mock.calls).toEqual([]);
+      // The round still did its work, so the silence above is about a probe
+      // that ran rather than one that never happened.
+      expect(store.get("v1")?.crawledAt).not.toEqual(STAMP);
     }
   );
 

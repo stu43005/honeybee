@@ -44,14 +44,22 @@ export async function probeMissingVideos(): Promise<void> {
     // Only a 200 is evidence the video came back. Everything else — still
     // missing, malformed id, unanswered question, or a probe that threw — means
     // the same thing here: nothing to restore, so just move it to the back of
-    // the rotation. A non-answer is still worth a log: it is how a sustained
-    // oEmbed outage (every candidate coming back inconclusive) is told apart
-    // from a quiet round where everything really is still missing.
+    // the rotation.
+    //
+    // Only a non-answer is logged, which is how a sustained oEmbed outage
+    // (every candidate coming back inconclusive) is told apart from a quiet
+    // round where everything really is still missing. A video that is gone, one
+    // its owner made private and one the uploader took down are all answers,
+    // and between them they are nearly the whole population: videos.list omits
+    // a private video exactly as it omits a deleted one, so both land here
+    // marked deleted and stay for good. Warning about those would put a line in
+    // every round for a state that is expected and will not change, burying the
+    // outage the warning exists to show.
     let restore = false;
     try {
       const result = await probeVideo(video.id);
       restore = result.kind === "present";
-      if (result.kind !== "present" && result.kind !== "absent") {
+      if (result.kind === "invalid" || result.kind === "unknown") {
         console.warn(
           `Existence probe for [${video.id}] was inconclusive (${result.kind})` +
             (result.kind === "unknown" ? `: ${result.message}` : "")

@@ -61,8 +61,10 @@ async function probeRound(now: Date): Promise<number> {
     // `absent` are answers, and they are good for a week because whether a
     // channel offers memberships almost never changes.
     //
-    // Everything else — a malformed-id 400, a 5xx, a timeout — taught us
-    // nothing, so it may only defer the question by an hour and must leave
+    // Everything else — a malformed-id 400, a 5xx, a timeout, or the 403 and
+    // 409 that answer for a private or withdrawn target and have never been
+    // seen on a playlist — taught us nothing about whether this channel offers
+    // memberships, so it may only defer the question by an hour and must leave
     // any existing verdict alone. Both halves matter: the scan phase ignores
     // channels without a `true` verdict, so a week-long deferral would hide a
     // channel's members-only videos for a week after one transient failure,
