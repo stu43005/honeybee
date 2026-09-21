@@ -34,7 +34,7 @@ Node ≥ 24 required. ESM-only project (`"type": "module"`); always import with
 ### Entrypoint and processes
 
 `src/index.ts` is a thin yargs dispatcher that lazy-imports one of seven
-long-running commands in `src/commands/`. Each command is a separate
+long-running commands in `src/services/`. Each command is a separate
 process/deployment in k8s:
 
 - **scheduler** — watches the `Video` collection via change streams and enqueues
@@ -46,18 +46,18 @@ process/deployment in k8s:
   ModeChange, Placeholder, Track stats, etc.), and reports `HoneybeeResult`
   back.
 - **crawler** — combined ingestion service for new-video discovery: Holodex
-  polling, YouTube PubSubHubbub subscriber (`src/modules/youtube-pubsub/`, owned
+  polling, YouTube PubSubHubbub subscriber (`src/services/crawler/pubsub/`, owned
   end to end by `YoutubePubsubModule`), and YouTube Data API lookups.
 - **manager** — runs the bulk of the project's scheduled / periodic work via
   Agenda. It is mostly a thin scheduling shell; the actual task logic lives in
-  `src/components/` (e.g. `track-operator.ts`, `video-scaler.ts`, `cleanup.ts`,
-  `chats-archive/`, `webhook-prepare.ts`, `video-stats.ts`).
+  `src/services/manager/` (e.g. `track-operator.ts`, `video-scaler.ts`,
+  `cleanup.ts`, `chats-archive/`, `webhook-prepare.ts`, `video-stats.ts`).
 - **webhook** — partition-sharded service that consumes Mongo change streams and
   dispatches matching events to user-defined webhooks via the `webhook`
   Bee-Queue. The architecture (partition assignment, heartbeat, rebalance,
   dispatch pipeline) is specified in
   [docs/superpowers/specs/2026-04-15-webhook-horizontal-scaling-design.md](docs/superpowers/specs/2026-04-15-webhook-horizontal-scaling-design.md);
-  read that before changing anything in this service. `src/modules/webhook/`
+  read that before changing anything in this service. `src/services/webhook/`
   contains only the supporting code for that design.
 - **discord-bot** — discord.js bot.
 - **metrics** — Prometheus `/metrics` HTTP endpoint via `prom-client`.
@@ -126,14 +126,14 @@ period) bounds the drain.
 ## When adding code
 
 - New long-running service → add a yargs subcommand in `src/index.ts` and a
-  runner in `src/commands/` that builds an `Application`, `app.use(...)`s the
-  modules it needs, and awaits `app.run()`/shutdown signals.
+  runner in `src/services/<service>/index.ts` that builds an `Application`,
+  `app.use(...)`s the modules it needs, and awaits `app.run()`/shutdown signals.
 - New Mongo collection → add a Typegoose model in `src/models/`, follow the
   pattern of existing files (named export of class + default-exported
   `getModelForClass(...)`).
 - New scheduled task → add it to `manager` via Agenda and put the actual
-  implementation in `src/components/` rather than inline in
-  `src/commands/manager.ts`.
+  implementation in `src/services/manager/` rather than inline in
+  `src/services/manager/index.ts`.
 
 ## Project conventions
 
@@ -318,15 +318,15 @@ model, discriminated union, any object with a known shape):
 ### Reuse existing util helpers; do not re-invent
 
 Before introducing a new local helper for any "common" operation, grep
-`src/util.ts` and `src/utils/` for an existing equivalent. Match on behavior,
-not on name — a helper with a different name but the same semantics still
-counts as a duplicate. The spec/plan review subagent must reject any new local
-helper whose behavior is already covered by an export from these files; fix
-the call site to use the existing helper instead.
+`src/utils/` for an existing equivalent. Match on behavior, not on name — a
+helper with a different name but the same semantics still counts as a
+duplicate. The spec/plan review subagent must reject any new local helper whose
+behavior is already covered by an export from these files; fix the call site to
+use the existing helper instead.
 
 ### Data contract checklist
 
-When the PR diff touches `src/components/chats-archive/` or
+When the PR diff touches `src/services/manager/chats-archive/` or
 `docs/data-contract/`, the spec / plan review subagent must additionally pass
 the checklist at
 [docs/data-contract/README.md](docs/data-contract/README.md) §8 before
