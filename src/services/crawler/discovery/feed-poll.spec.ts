@@ -23,7 +23,14 @@ const mockYoutube = jest.fn(() => ({
 }));
 
 jest.unstable_mockModule("axios", () => ({
-  default: { get: mockGet },
+  default: {
+    get: mockGet,
+    // Same test axios itself applies: an object carrying `isAxiosError: true`.
+    isAxiosError: (error: unknown): boolean =>
+      typeof error === "object" &&
+      error !== null &&
+      (error as { isAxiosError?: unknown }).isAxiosError === true,
+  },
 }));
 jest.unstable_mockModule("node:timers/promises", () => ({
   setTimeout: mockSleep,
@@ -206,6 +213,46 @@ describe("pollChannelFeeds", () => {
     mockGet.mockClear();
     await pollChannelFeeds();
     expect(mockGet).not.toHaveBeenCalled();
+  });
+
+  it("logs an http failure as one line, not as the whole error object", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    fakeChannels(["UC1"]);
+    // What axios actually rejects with. Handing the object itself to
+    // console.warn makes node print all of it: the config, the request, the
+    // socket, and the HTML error page YouTube served — around a hundred lines
+    // for one transient 404, of which this feed produces dozens a day.
+    mockGet.mockRejectedValue(
+      Object.assign(new Error("Request failed with status code 404"), {
+        isAxiosError: true,
+        config: { url: "https://www.youtube.com/feeds/videos.xml" },
+        request: { socket: { _hadError: false } },
+        response: {
+          status: 404,
+          data: "<html><title>Error 404 (Not Found)!!1</title></html>",
+        },
+      })
+    );
+
+    await pollChannelFeeds();
+
+    expect(warn.mock.calls).toEqual([
+      ["Feed poll failed for [UC1]:", "Request failed with status code 404"],
+    ]);
+  });
+
+  it("keeps the whole error when the failure is not an http one", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    fakeChannels(["UC1"]);
+    // Nothing above the transport knows what this is, so its stack is the only
+    // thing that can explain it and must survive.
+    const bug = new TypeError("entry.published is not a function");
+    mockGet.mockRejectedValue(bug);
+
+    await pollChannelFeeds();
+
+    expect(warn.mock.calls).toHaveLength(1);
+    expect(warn.mock.calls[0]?.[1]).toBe(bug);
   });
 
   it("skips a body that is not a feed but still stamps the channel", async () => {

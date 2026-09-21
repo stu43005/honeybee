@@ -60,7 +60,19 @@ export async function pollChannelFeeds(): Promise<void> {
       }
     } catch (error) {
       // One channel's failure must not cost the rest of the round theirs.
-      console.warn(`Feed poll failed for [${channel.id}]:`, error);
+      //
+      // An http failure is reduced to its message. This feed answers 404 or 500
+      // for a channel that is perfectly fine and serves it again minutes later,
+      // often enough to be a percent or so of every round, and the rejected
+      // error carries the config, the request, the socket and the HTML error
+      // page Google served — around a hundred lines each, which is how a day of
+      // transient failures comes to outweigh everything else in the log. The
+      // status line is all of it that says anything. Anything else is a bug
+      // rather than the network, and its stack is the only way to place it.
+      console.warn(
+        `Feed poll failed for [${channel.id}]:`,
+        axios.isAxiosError(error) ? error.message : error
+      );
     }
 
     // Its own try, for two reasons. It must run even when the block above threw
