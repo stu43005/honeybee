@@ -90,7 +90,7 @@
 
 740 次實際請求（30 並發突發、10 req/s 持續 10 秒、120 並發突發，各端點各 370 次）：
 
-- oEmbed 與 feed **全部 200，零 429，無任何速率限制 header**。
+- oEmbed 與 feed **全部 200，零 429，無任何速率限制 header**。這只驗證了瞬間速率；上線後才觀察到 feed 另有每個出口 IP 約 11000 次/太平洋時間日的上限，超過後回 404/500 直到 PT 午夜。
 - 連續打完 740 次後立刻請求 watch page → 200；反向順序（先 watch 後 oEmbed）亦全部 200。**未觀察到交叉污染**。
 - 三個端點回應的 `server` header 各不相同（oEmbed 是 `scaffolding on HTTPServer2`、feed 是 `YouTube RSS Feeds server`、watch page 是動態渲染），是三套不同的後端服務。
 
@@ -172,7 +172,7 @@ pubsub 的 `routes.ts` 維持原樣、不改用這個 static：它需要逐支�
 撈出「最久沒處理過」的 M 筆 → 逐一處理（每筆之間 spacing）→ 蓋上時間戳
 ```
 
-**批次大小是常數，不隨頻道數變化。** 這讓每日配額成為硬上限：頻道從 300 成長到 600，輪詢週期會從 30 分鐘變成 60 分鐘，但配額用量不變。相反的設計（批次大小隨頻道數調整）會讓頻道成長直接吃掉 `crawler youtube update` 的配額。
+**批次大小是常數，不隨頻道數變化。** 這讓每日配額成為硬上限：頻道從 300 成長到 600，輪詢週期會從約 43 分鐘變成約 86 分鐘，但配額用量與請求量都不變。相反的設計（批次大小隨頻道數調整）會讓頻道成長直接吃掉 `crawler youtube update` 的配額。
 
 ## 任務一：feed 輪詢
 
@@ -194,9 +194,9 @@ pubsub 的 `routes.ts` 維持原樣、不改用這個 static：它需要逐支�
          = (訂閱頻道數 ÷ 每小時處理量) + 15 分鐘
 ```
 
-300 個訂閱頻道時：20 筆 × 30 輪/小時 = 600 頻道/小時，週期約 30 分鐘，最壞延遲約 **45 分鐘**。
+186 個訂閱頻道時：14 筆 × 30 輪/小時 = 420 頻道/小時，週期約 27 分鐘，最壞延遲約 **42 分鐘**。
 
-一小時的目標要求週期 ≤ 45 分鐘，也就是訂閱頻道數 ≤ 600 × 0.75 = **450**。超過 450 之後延遲會線性成長（600 個頻道時約 75 分鐘），此時要維持目標只能提高 `YOUTUBE_FEED_POLL_BATCH_SIZE`——feed 是零配額的，唯一的代價是對外請求量，實測餘裕足以支撐。這個門檻記於「Non-goals / Accepted limitations」。
+一小時的目標要求週期 ≤ 45 分鐘，也就是訂閱頻道數 ≤ 420 × 0.75 = **315**。超過 315 之後延遲會線性成長。批次大小受 feed 後端對單一出口 IP 約 11000 次/天的上限約束（依太平洋時間午夜重置），不能靠提高 `YOUTUBE_FEED_POLL_BATCH_SIZE` 換延遲。這個門檻記於「Non-goals / Accepted limitations」。
 
 900 秒的 edge cache 同時也是輪詢週期的自然下限：週期壓到 15 分鐘以下只是重複取得同一份快取，沒有任何收益。
 
@@ -394,16 +394,31 @@ public membersCrawledAt?: Date;
 ```ts
 // --- YouTube official video discovery (src/components/youtube-discovery/) ---
 
-// Channels fetched in one feed-poll round. On the 2-minute schedule that is 600
-// channels/hour. Discovery latency is one rotation plus the feed's 15-minute
-// edge cache, so the one-hour target holds up to 450 subscribed channels; 300
-// channels land around 45 minutes. Raise this if the subscription list grows
-// past that — the feed costs no quota, only outbound requests.
-export const YOUTUBE_FEED_POLL_BATCH_SIZE = 20;
+// Channels fetched in one feed-poll round. On the 2-minute schedule that is 420
+// channels/hour and about 10080 requests/day, and the daily figure is the one
+// that binds: the feed backend stops serving an outbound address after roughly
+// 11000 requests in a Pacific-time day and answers 404 or 500 until midnight
+// PT. That ceiling was read off production logs rather than any documentation,
+// so this keeps about a tenth in hand instead of sitting on it. Discovery
+// latency is one rotation plus the feed's 15-minute edge cache, so the one-hour
+// target holds up to 315 subscribed channels. Do not raise this to cover more
+// channels: past 315 the latency grows, because a bigger batch would cross the
+// daily ceiling.
+export const YOUTUBE_FEED_POLL_BATCH_SIZE = 14;
+
+// Consecutive http failures that end a feed-poll round early. Outside the
+// daily-ceiling window the feed failed zero times across three days of logs, so
+// three in a row does not happen by chance, while one channel that genuinely
+// answers 404 never takes the count past one. Once the ceiling is hit nearly
+// every request fails, so a round then costs three requests instead of a whole
+// batch.
+export const YOUTUBE_FEED_POLL_ABORT_AFTER_FAILURES = 3;
 
 // Gap between two outbound requests inside any discovery round. Both endpoints
 // served 10 req/s for 10 seconds and 120-concurrent bursts without a single
-// 429, so 4 req/s keeps a 2.5x margin below what was actually verified.
+// 429, so 4 req/s keeps a 2.5x margin below what was actually verified. That
+// measurement covers the instantaneous rate only; the feed also has a daily
+// request ceiling, which YOUTUBE_FEED_POLL_BATCH_SIZE is budgeted against.
 export const YOUTUBE_DISCOVERY_REQUEST_SPACING_MS = 250;
 
 // Per-request timeout for the channel RSS feed. A healthy response takes about
@@ -484,12 +499,12 @@ export const YOUTUBE_EXISTENCE_PROBE_RECENT_MS = 14 * 24 * 60 * 60 * 1000;
 
 | 來源              | 配額/天  | 對外請求/天 |
 | ----------------- | -------- | ----------- |
-| feed 輪詢         | 0        | 14400       |
+| feed 輪詢         | 0        | 10080       |
 | UUMO 存在性探測   | 0        | 864         |
 | UUMO 播放清單掃描 | 4320     | —           |
 | 復活探測          | 0        | 2880        |
 | 非 deleted 重查   | 0        | —           |
-| **合計**          | **4320** | **18144**   |
+| **合計**          | **4320** | **13824**   |
 
 與既有消費者那張表不同，**這個 4320 同時是呼叫次數與請求次數**：`updateVideoFromPlaylist()` 明確傳 `retry: false`，所以一次呼叫就是一次請求，端點劣化也不會讓它翻成四倍。
 
@@ -509,9 +524,9 @@ YOUTUBE_MEMBERS_POLL_BATCH_SIZE × 每日輪數 = 15 × 288 = 4320
 
 本設計**不**新增跨 process 的配額計數器或預留機制。要讓「保留多少額度給 metadata 更新」成為可強制執行的約束，需要一個共享的每日計數器（Redis）、每個呼叫點都去扣減、以及超額後的降級策略——那等於為所有既有呼叫點補上它們現在沒有的節流，範圍遠超本設計。這裡採取的做法是把唯一由本設計引入的支出定死成常數，並把緩衝留給估不準的既有消費者；若日後真的觀察到配額耗盡，該處理的是那些無上限的既有呼叫點，不是本子系統。
 
-請求速率：每輪突發 4 req/s（spacing 250 ms），三個任務若同時觸發最壞 12 req/s，平均 0.244 req/s。實測安全值是 10 req/s 持續與 120 並發突發，平均速率遠低於此。
+請求速率：每輪突發 4 req/s（spacing 250 ms），三個任務若同時觸發最壞 12 req/s，平均約 0.194 req/s。實測安全值是 10 req/s 持續與 120 並發突發，平均速率遠低於此。
 
-**不接上 `YoutubeWatchGate`。** 證據顯示這些端點與 watch page 是不同後端、不共用限速器；硬接上去會讓 feed 輪詢排隊等 worker 的全域 1 req/s 預算，把一輪 20 個頻道從 5 秒拖到 20 秒，換來的是對一個未觀察到的耦合做防護。若日後實際觀察到 429，那是另一份設計要處理的事。
+**不接上 `YoutubeWatchGate`。** 證據顯示這些端點與 watch page 是不同後端、不共用限速器；硬接上去會讓 feed 輪詢排隊等 worker 的全域 1 req/s 預算，把一輪 14 個頻道從約 3.5 秒拖到 14 秒，換來的是對一個未觀察到的耦合做防護。若日後實際觀察到 429，那是另一份設計要處理的事。
 
 ## 錯誤處理
 
@@ -519,19 +534,21 @@ YOUTUBE_MEMBERS_POLL_BATCH_SIZE × 每日輪數 = 15 × 288 = 4320
 
 推進的**幅度**才隨結果而異，這一點對 `membersProbeNextAt` 尤其關鍵：得到結論推七天，沒得到結論只推一小時（見「存在性探測」）。`feedCrawledAt` 與 `membersCrawledAt` 沒有這個區分——它們記錄的是「上次處理時間」，失敗與成功一樣寫入 now。
 
-**單筆失敗不中斷整輪**，唯一例外是配額耗盡。`playlistItems.list` 回 403 `quotaExceeded` 是全域狀態，繼續只會繼續失敗——照 `renewPubsubSubscriptions()` 對 throttled 的處理，記一行 warn 後中止本輪，已處理頻道的時間戳保留，其餘留給下一輪。403 不在 gaxios 的重試範圍內，所以這個判斷不會被重試延後或掩蓋。
+**單筆失敗不中斷整輪**，例外有二，第一個是配額耗盡。`playlistItems.list` 回 403 `quotaExceeded` 是全域狀態，繼續只會繼續失敗——照 `renewPubsubSubscriptions()` 對 throttled 的處理，記一行 warn 後中止本輪，已處理頻道的時間戳保留，其餘留給下一輪。403 不在 gaxios 的重試範圍內，所以這個判斷不會被重試延後或掩蓋。
+
+第二個例外屬於 feed 輪詢：同一輪連續 3 次 HTTP 失敗（伺服器有回狀態碼；timeout 與連線錯誤不計也不歸零，任何 2xx 歸零）即視為撞上 feed 後端的每日上限，記一行 warn 後中止本輪。已嘗試的頻道照常推進時間戳，其餘不寫時間戳，留給下一輪優先處理。這個判斷不保存跨輪狀態，限流解除後的第一輪自然恢復。
 
 **逾時與 agenda lock。** 每輪最壞耗時（每筆一次請求，因為關掉了重試）：
 
 | 任務     | 每輪筆數 | 每筆最壞       | 最壞耗時 |
 | -------- | -------- | -------------- | -------- |
-| feed     | 20       | 10 秒 + 250 ms | 3.4 分   |
+| feed     | 14       | 10 秒 + 250 ms | 2.4 分   |
 | UUMO     | 15 + 3   | 15 秒 / 10 秒  | 4.3 分   |
 | 復活探測 | 10       | 10 秒 + 250 ms | 1.7 分   |
 
 這張表建立在 `retry: false` 之上。若沒關掉重試，UUMO 那一列的每筆最壞會是 4 × 15 秒逾時 + 2.1 秒退避 ≈ 62 秒，整輪變成約 16 分鐘——這正是關掉它的第二個理由。
 
-feed 的週期是 2 分鐘，最壞耗時會與下一輪重疊，由 agenda 的 job lock 保證不並發、重疊時順延。這是安全的降級——全部請求同時逾時是極端情況，正常一輪約 5 秒。agenda 的 `lockLifetime` 預設值與重疊時的實際行為屬第三方套件行為，實作計畫階段須以 research 確認後再決定是否需要顯式設定，本設計不對其做假設。
+feed 的週期是 2 分鐘，最壞耗時會與下一輪重疊，由 agenda 的 job lock 保證不並發、重疊時順延。這是安全的降級——全部請求同時逾時是極端情況，正常一輪約 3.5 秒。agenda 的 `lockLifetime` 預設值與重疊時的實際行為屬第三方套件行為，實作計畫階段須以 research 確認後再決定是否需要顯式設定，本設計不對其做假設。
 
 ## 測試策略
 
@@ -581,7 +598,7 @@ Jest ESM（`jest.unstable_mockModule` + 動態 import）。重點放在能抓到
 
 **決定**：不做快照重疊偵測，也不做翻頁式的 gap recovery。
 
-**理由**：溢出需要的條件在正常運作下不會出現。feed 窗口 15 筆、300 個訂閱頻道時週期約 30 分鐘，等於要「30 分鐘內發布 16 支影片」；UUMO 窗口 50 筆、週期約 80 分鐘，等於要「80 分鐘內發布 51 支會員影片」。而修法要儲存每個頻道前一次的 id 集合、每輪比對重疊是否斷裂、斷裂時走翻頁補抓——新增持久狀態、新增偵測邏輯，並讓配額多出一條無上限的路徑，全都是為了一個正常頻道到不了的速率。
+**理由**：溢出需要的條件在正常運作下不會出現。feed 窗口 15 筆、300 個訂閱頻道時週期約 43 分鐘，等於要「43 分鐘內發布 16 支影片」；UUMO 窗口 50 筆、週期約 80 分鐘，等於要「80 分鐘內發布 51 支會員影片」。而修法要儲存每個頻道前一次的 id 集合、每輪比對重疊是否斷裂、斷裂時走翻頁補抓——新增持久狀態、新增偵測邏輯，並讓配額多出一條無上限的路徑，全都是為了一個正常頻道到不了的速率。
 
 **因此覆蓋條件要明講**，這條管道是盡力而為，不是保證：
 
@@ -605,11 +622,11 @@ worker 沒有 cookie / credentials 設定，對會員限定影片會走到 `Erro
 
 若訂閱頻道中開了會員的超過 180 個，UUMO 的輪替週期會線性超過一小時（240 個時約 80 分鐘）。要壓回一小時內，唯一的辦法是提高 `YOUTUBE_MEMBERS_POLL_BATCH_SIZE`，而那必須從別處挪配額——削減 `crawler youtube update` 的頻率，或壓縮留給那些無上限既有呼叫點的緩衝。前者是拿公開影片的即時性換會員影片的即時性，後者是拿安全邊際換即時性。而這條管道的目標是**不漏**而非搶快——Holodex 仍在以它自己的節奏收錄會員直播，UUMO 是官方來源的保障；八十分鐘與六十分鐘的差別不值得用那兩種交換去換，因此接受這個限制。
 
-### 一小時的發現目標以 450 個訂閱頻道為界
+### 一小時的發現目標以 315 個訂閱頻道為界
 
-feed 輪詢的吞吐量是常數（600 頻道/小時），而延遲還要加上最多 15 分鐘的快取，所以一小時的目標只在訂閱頻道數 ≤ 450 時成立。超過之後延遲線性成長（600 個頻道約 75 分鐘）。
+feed 輪詢的吞吐量是常數（420 頻道/小時），而延遲還要加上最多 15 分鐘的快取，所以一小時的目標只在訂閱頻道數 ≤ 315 時成立。超過之後延遲線性成長。
 
-這不是設計缺陷而是刻意的優先序：批次大小固定正是讓配額與請求量可預測的手段，若改成隨頻道數自動放大，成長就會直接吃掉既有流量的餘裕。頻道真的成長到 450 以上時，調整方式很單純——提高 `YOUTUBE_FEED_POLL_BATCH_SIZE`。feed 是零配額的，唯一的代價是對外請求量，而實測餘裕（10 req/s 持續、120 並發無 429）遠大於調整所需。本設計不自動化這個調整，因為自動化需要的觸發條件與安全上限，會比一個常數複雜得多。
+這不是設計缺陷而是刻意的優先序：批次大小固定正是讓請求量可預測的手段。批次大小也不能再往上調——feed 雖然零配額，但後端對單一出口 IP 有約 11000 次/天的上限（依太平洋時間午夜重置，超過後回 404/500），目前的 10080 次/天已貼近它。頻道成長到 315 以上時只能接受延遲變長，或另行設計（例如第二個出口 IP 或其他發現管道）。
 
 ### feed 快取造成最多 15 分鐘的額外延遲
 
