@@ -69,7 +69,7 @@ Feed poll failed for [UC-hM6YJuNYVAmUWxeIr9FeA]: Request failed with status code
 
 各頻道自己的 `Feed poll failed for [...]` 那一行照舊記錄。
 
-中止只影響當輪，不在 process 或 DB 保存任何冷卻狀態，下一輪照常開始。萬一限流期間仍持續輪詢，每輪最多 3 次請求、4 行 log。限流解除後的第一輪自然恢復，不需要人為介入，也不需要把「PT 午夜重置」這個推論寫進程式。
+中止只影響當輪，不在 process 或 DB 保存任何冷卻狀態，下一輪照常開始。萬一限流期間仍持續輪詢，而且一輪的前 3 次請求都以 HTTP 失敗收場（全面限流時的常態），該輪只會發 3 次請求、記 4 行 log。若中間夾著成功或 timeout，計數會歸零或停在原值，那一輪可能發出更多請求，但每輪上限仍是批次大小。限流解除後的第一輪自然恢復，不需要人為介入，也不需要把「PT 午夜重置」這個推論寫進程式。
 
 **為什麼是 3**：限流視窗外 72 小時內失敗數為 0，所以正常情況下連續 3 次 HTTP 失敗幾乎不會發生。單一頻道真的回 404（例如頻道被刪除）只會讓計數到 1，下一個成功的頻道就歸零，不會誤觸中止。另外，限流開始時失敗是逐漸出現的，那段時間可能要到失敗比例夠高才會觸發中止，這是可接受的，因為那段期間仍有部分請求成功。
 
@@ -83,7 +83,7 @@ Feed poll failed for [UC-hM6YJuNYVAmUWxeIr9FeA]: Request failed with status code
 - `src/constants.ts` 的 `YOUTUBE_DISCOVERY_REQUEST_SPACING_MS` 註解：補上「驗證的只是瞬間速率，每日總量另有上限」。
 - `src/services/crawler/index.ts` 排程處的「Two minutes covers 600 channels an hour」註解，以及 lock 說明裡 feed 的最壞耗時：14 × (10 秒 + 250 ms) ≈ 2.4 分鐘，取代 3.4 分鐘。
 - `src/services/crawler/discovery/feed-poll.ts` catch 區塊裡「a percent or so of every round」「serves it again minutes later」的描述：改為如實說明，也就是 404/500 可能來自每日限流，而連續失敗由中止邏輯處理。「只記錄 message、不記錄整個 axios error」的理由仍然成立，保留。
-- `docs/superpowers/specs/2026-09-18-youtube-official-video-discovery-design.md`：「發現延遲」段落的數字與 450 門檻、「本子系統的支出」表中 feed 輪詢的 14400（改為 10080，合計從 18144 改為 13824）、逾時表中 feed 那一列（14 筆、2.4 分），以及「單筆失敗不中斷整輪」段落補上 feed 的限流中止例外。
+- `docs/superpowers/specs/2026-09-18-youtube-official-video-discovery-design.md`：「發現延遲」段落的數字與 450 門檻、常數區塊中 `YOUTUBE_FEED_POLL_BATCH_SIZE = 20` 與其註解、Non-goals「一小時的發現目標以 450 個訂閱頻道為界」一節（門檻改為 315，並刪除「提高批次大小即可」的調整建議，改為指向每 IP 每日上限）、「本子系統的支出」表中 feed 輪詢的 14400（改為 10080，合計從 18144 改為 13824）、逾時表中 feed 那一列（14 筆、2.4 分），以及「單筆失敗不中斷整輪」段落補上 feed 的限流中止例外。
 
 ## 測試
 
@@ -110,4 +110,4 @@ Feed poll failed for [UC-hM6YJuNYVAmUWxeIr9FeA]: Request failed with status code
   - Rationale：目前約 186 個頻道，有足夠餘裕。屆時若要維持目標，需要另一個出口 IP 或其他發現管道，屬於另一份設計。
 - **每日上限的數值是推算值**。
   - Decision：不做自動偵測或自適應調整。
-  - Rationale：10080 對推算的約 11100 留有約 9% 餘裕；若上限實際更低，中止邏輯會把損害限制在每輪 3 次請求，並且在 log 留下可觀察的訊號。
+  - Rationale：10080 對推算的約 11100 留有約 9% 餘裕；若上限實際更低，中止邏輯會在全面限流期間把損害限制在每輪約 3 次請求，並且在 log 留下可觀察的訊號。
