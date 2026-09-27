@@ -140,13 +140,13 @@ Counter rules this task implements:
 - **Reset:** any 2xx response. This includes a body that is not a feed, and a 2xx after which writing the videos fails.
 - **Untouched:** timeouts and connection errors (axios error with no `response`), and errors that are not from axios.
 
-When the count reaches `YOUTUBE_FEED_POLL_ABORT_AFTER_FAILURES` and channels remain in the batch:
+When the count reaches `YOUTUBE_FEED_POLL_ABORT_AFTER_FAILURES`:
 
 - The channel that tripped the count has already been stamped.
 - One line is logged: `Feed poll: stopping round after 3 consecutive HTTP failures, N channels deferred`.
 - The function returns without sleeping.
 
-If the count trips on the last channel of the batch, the round is ending anyway, so nothing extra is logged.
+This also applies when the count trips on the last channel of the batch. The line then reads `0 channels deferred`, so a fully refused batch still leaves its signal in the log.
 
 - [ ] **Step 1: Add the test helpers and the constant import**
 
@@ -349,6 +349,47 @@ it("clears the run on a 2xx even when writing its videos fails", async () => {
   expect(notice.mock.calls.map((call) => call[0].length)).toEqual([1]);
   expect(requestedChannels()).toEqual(["UC1", "UC2", "UC3", "UC4", "UC5"]);
 });
+
+it("still logs the stop when the last channel trips it", async () => {
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  fakeChannels(["UC1", "UC2", "UC3"]);
+  mockGet.mockRejectedValue(httpError(404));
+
+  await pollChannelFeeds();
+
+  expect(warn.mock.calls).toEqual([
+    ["Feed poll failed for [UC1]:", "Request failed with status code 404"],
+    ["Feed poll failed for [UC2]:", "Request failed with status code 404"],
+    ["Feed poll failed for [UC3]:", "Request failed with status code 404"],
+    [
+      "Feed poll: stopping round after 3 consecutive HTTP failures, 0 channels deferred",
+    ],
+  ]);
+});
+
+it("starts every round with a fresh count", async () => {
+  jest.spyOn(console, "warn").mockImplementation(() => {});
+  fakeChannels(["UC1", "UC2", "UC3", "UC4", "UC5"]);
+  mockGet
+    .mockRejectedValueOnce(httpError(404))
+    .mockRejectedValueOnce(httpError(404))
+    .mockRejectedValueOnce(httpError(404))
+    .mockResolvedValue({ data: feedXml("UC5", []) });
+  jest.spyOn(VideoModel, "noticeUnknownVideos").mockResolvedValue(undefined);
+  // First round: two channels, both refused, so it ends with the count at two.
+  jest.spyOn(ChannelModel, "findFeedPollCandidates").mockResolvedValueOnce([
+    { id: "UC1", name: "Channel UC1" },
+    { id: "UC2", name: "Channel UC2" },
+  ] as never);
+
+  await pollChannelFeeds();
+  mockGet.mockClear();
+  // Second round: one more refusal, then feeds. A count carried over from the
+  // first round would reach three here and stop after UC3.
+  await pollChannelFeeds();
+
+  expect(requestedChannels()).toEqual(["UC3", "UC4", "UC5"]);
+});
 ```
 
 - [ ] **Step 3: Run the tests against the unchanged implementation**
@@ -361,15 +402,17 @@ Expected: FAIL. These four tests fail because every channel in the batch is stil
 - `"does not wait for the spacing once the round is stopped"`: `mockSleep.mock.calls` has 3 entries instead of 2.
 - `"hands the deferred channels to the next round first"`: the second round requests `[]`, because all five were stamped.
 - `"neither counts nor clears the run on a timeout"`: 5 requests instead of 4.
+- `"still logs the stop when the last channel trips it"`: the warn list has 3 entries and lacks the `0 channels deferred` line.
 
-These four tests PASS already, and that is expected:
+These five tests PASS already, and that is expected:
 
 - `"does not count timeouts toward the stop"`
 - `"clears the run when a feed is served in between"`
 - `"clears the run on a 2xx body that is not a feed"`
 - `"clears the run on a 2xx even when writing its videos fails"`
+- `"starts every round with a fresh count"`
 
-They pin the counter rules against over-eager implementations: counting timeouts, resetting only after a parsed feed, or resetting only after a successful write. The unchanged code never stops a round, so it cannot violate them. Each failure message must point at request counts, stamps or log lines, not at a missing module or a type error. Record the actual failure output in the task report.
+They pin the counter rules against implementations that stop too eagerly: counting timeouts, resetting only after a parsed feed or only after a successful write, or keeping the count in module scope so it carries across rounds. The unchanged code never stops a round, so it cannot violate them. Each failure message must point at request counts, stamps or log lines, not at a missing module or a type error. Record the actual failure output in the task report.
 
 - [ ] **Step 4: Implement the counter and the stop**
 
@@ -471,16 +514,17 @@ for (let index = 0; index < candidates.length; index++) {
   }
 
   const remaining = candidates.length - index - 1;
-  if (remaining === 0) {
-    break;
-  }
+  // Checked before the last-channel exit, so a batch that is refused all the
+  // way through still says so rather than ending on its per-channel lines.
   if (consecutiveHttpFailures >= YOUTUBE_FEED_POLL_ABORT_AFTER_FAILURES) {
     console.warn(
       `Feed poll: stopping round after ${consecutiveHttpFailures} consecutive HTTP failures, ${remaining} channels deferred`
     );
     return;
   }
-  await sleep(YOUTUBE_DISCOVERY_REQUEST_SPACING_MS);
+  if (remaining > 0) {
+    await sleep(YOUTUBE_DISCOVERY_REQUEST_SPACING_MS);
+  }
 }
 ```
 
@@ -488,7 +532,7 @@ for (let index = 0; index < candidates.length; index++) {
 
 Run: `npm run test -- src/services/crawler/discovery/feed-poll.spec.ts`
 
-Expected: PASS. That covers all eight new tests and every pre-existing test, including `"logs an http failure as one line, not as the whole error object"`: with one channel the stop is never reached, so its warn list stays a single entry.
+Expected: PASS. That covers all ten new tests and every pre-existing test, including `"logs an http failure as one line, not as the whole error object"`: with one channel the count only reaches one, so its warn list stays a single entry.
 
 - [ ] **Step 6: Verify**
 
@@ -597,7 +641,7 @@ Replace:
 with:
 
 ```text
-- oEmbed 與 feed **全部 200，零 429，無任何速率限制 header**。這只驗證了瞬間速率；上線後才觀察到 feed 另有每個出口 IP 約 11000 次/太平洋時間日的上限，超過後回 404/500 直到 PT 午夜（見 `2026-09-27-feed-poll-rate-budget-design.md`）。
+- oEmbed 與 feed **全部 200，零 429，無任何速率限制 header**。這只驗證了瞬間速率；上線後才觀察到 feed 另有每個出口 IP 約 11000 次/太平洋時間日的上限，超過後回 404/500 直到 PT 午夜。
 ```
 
 - [ ] **Step 2: Discovery-latency paragraphs (near lines 197–199)**
@@ -715,15 +759,37 @@ feed 輪詢的吞吐量是常數（420 頻道/小時），而延遲還要加上�
 這不是設計缺陷而是刻意的優先序：批次大小固定正是讓請求量可預測的手段。批次大小也不能再往上調——feed 雖然零配額，但後端對單一出口 IP 有約 11000 次/天的上限（依太平洋時間午夜重置，超過後回 404/500），目前的 10080 次/天已貼近它。頻道成長到 315 以上時只能接受延遲變長，或另行設計（例如第二個出口 IP 或其他發現管道）。
 ```
 
-- [ ] **Step 9: Verify**
+- [ ] **Step 9: Fixed-batch paragraph (near line 175)**
 
-Run: `npm run format:check`
+Replace `頻道從 300 成長到 600，輪詢週期會從 30 分鐘變成 60 分鐘，但配額用量不變。` with `頻道從 300 成長到 600，輪詢週期會從約 43 分鐘變成約 86 分鐘，但配額用量與請求量都不變。`
 
-Expected: all files formatted. If the spec is reported, run `npx prettier --write docs/superpowers/specs/2026-09-18-youtube-official-video-discovery-design.md`.
+(300 ÷ 420 channels/hour ≈ 43 minutes; 600 ÷ 420 ≈ 86 minutes.)
 
-Then run `grep -n "14400\|18144\|450 個\|≤ 450\|3.4 分\|20 筆" docs/superpowers/specs/2026-09-18-youtube-official-video-discovery-design.md`. Expected: no output.
+- [ ] **Step 10: Average request rate (near line 512)**
 
-- [ ] **Step 10: Commit (via the git-master skill)**
+Replace `平均 0.244 req/s` with `平均約 0.194 req/s`.
+
+(The same accounting scope, minus the 4320 requests/day the feed no longer makes: 0.244 − 4320 ÷ 86400 = 0.194.)
+
+- [ ] **Step 11: Window-overflow rationale (near line 584)**
+
+Replace `feed 窗口 15 筆、300 個訂閱頻道時週期約 30 分鐘，等於要「30 分鐘內發布 16 支影片」` with `feed 窗口 15 筆、300 個訂閱頻道時週期約 43 分鐘，等於要「43 分鐘內發布 16 支影片」`.
+
+- [ ] **Step 12: Verify**
+
+Run: `npx prettier --check docs/superpowers/specs/2026-09-18-youtube-official-video-discovery-design.md`
+
+Expected: the file is reported as formatted. If it is not, run `npx prettier --write docs/superpowers/specs/2026-09-18-youtube-official-video-discovery-design.md` and check again. (`npm run format:check` only covers `src/`, so it would not see this file.)
+
+Then run:
+
+```bash
+grep -n "14400\|18144\|450 個\|≤ 450\|\*\*450\*\*\|3\.4 分\|20 筆\|600 頻道/小時\|0\.244\|30 分鐘變成 60 分鐘\|週期約 30 分鐘" docs/superpowers/specs/2026-09-18-youtube-official-video-discovery-design.md
+```
+
+Expected: no output.
+
+- [ ] **Step 13: Commit (via the git-master skill)**
 
 Files: `docs/superpowers/specs/2026-09-18-youtube-official-video-discovery-design.md`
 
