@@ -44,6 +44,7 @@ const { default: VideoModel } = await import("#models/Video.js");
 const { pollChannelFeeds } = await import("./feed-poll.js");
 const {
   YOUTUBE_FEED_POLL_BATCH_SIZE,
+  YOUTUBE_FEED_POLL_ABORT_AFTER_FAILURES,
   YOUTUBE_DISCOVERY_REQUEST_SPACING_MS,
   YOUTUBE_FEED_TIMEOUT_MS,
 } = await import("#constants.js");
@@ -87,6 +88,29 @@ function fakeChannels(ids: string[]) {
     return Promise.resolve({ acknowledged: true }) as never;
   }) as never);
   return stamped;
+}
+
+// What axios rejects with when the server answered with a non-2xx status: the
+// response is attached.
+function httpError(status: number) {
+  return Object.assign(new Error(`Request failed with status code ${status}`), {
+    isAxiosError: true,
+    response: { status },
+  });
+}
+
+// What axios rejects with when the request timed out: there is no response,
+// and the code is ECONNABORTED under axios's default transitional settings.
+function timeoutError() {
+  return Object.assign(
+    new Error(`timeout of ${YOUTUBE_FEED_TIMEOUT_MS}ms exceeded`),
+    { isAxiosError: true, code: "ECONNABORTED" }
+  );
+}
+
+// The channel ids this test's rounds requested, in order.
+function requestedChannels(): string[] {
+  return mockGet.mock.calls.map(([url]) => url.slice(url.indexOf("=") + 1));
 }
 
 describe("pollChannelFeeds", () => {
@@ -292,5 +316,203 @@ describe("pollChannelFeeds", () => {
 
     expect(mockGet).not.toHaveBeenCalled();
     expect(mockSleep).not.toHaveBeenCalled();
+  });
+
+  it("stops the round after three http failures in a row", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const stamped = fakeChannels(["UC1", "UC2", "UC3", "UC4", "UC5"]);
+    mockGet
+      .mockRejectedValueOnce(httpError(404))
+      .mockRejectedValueOnce(httpError(500))
+      .mockRejectedValueOnce(httpError(404))
+      .mockResolvedValue({ data: feedXml("UC4", []) });
+    jest.spyOn(VideoModel, "noticeUnknownVideos").mockResolvedValue(undefined);
+
+    await pollChannelFeeds();
+
+    expect(YOUTUBE_FEED_POLL_ABORT_AFTER_FAILURES).toBe(3);
+    expect(requestedChannels()).toEqual(["UC1", "UC2", "UC3"]);
+    // The three that were tried are stamped like any failure; the two behind
+    // them keep their old stamp and so stay at the front of the rotation.
+    expect(stamped.map((write) => write.id)).toEqual(["UC1", "UC2", "UC3"]);
+    expect(warn.mock.calls).toEqual([
+      ["Feed poll failed for [UC1]:", "Request failed with status code 404"],
+      ["Feed poll failed for [UC2]:", "Request failed with status code 500"],
+      ["Feed poll failed for [UC3]:", "Request failed with status code 404"],
+      [
+        "Feed poll: stopping round after 3 consecutive HTTP failures, 2 channels deferred",
+      ],
+    ]);
+  });
+
+  it("does not wait for the spacing once the round is stopped", async () => {
+    jest.spyOn(console, "warn").mockImplementation(() => {});
+    fakeChannels(["UC1", "UC2", "UC3", "UC4"]);
+    mockGet.mockRejectedValue(httpError(404));
+
+    await pollChannelFeeds();
+
+    // One gap after each of the first two requests, none after the third.
+    expect(mockSleep.mock.calls).toEqual([
+      [YOUTUBE_DISCOVERY_REQUEST_SPACING_MS],
+      [YOUTUBE_DISCOVERY_REQUEST_SPACING_MS],
+    ]);
+  });
+
+  it("hands the deferred channels to the next round first", async () => {
+    jest.spyOn(console, "warn").mockImplementation(() => {});
+    fakeChannels(["UC1", "UC2", "UC3", "UC4", "UC5"]);
+    mockGet
+      .mockRejectedValueOnce(httpError(404))
+      .mockRejectedValueOnce(httpError(404))
+      .mockRejectedValueOnce(httpError(404))
+      .mockResolvedValue({ data: feedXml("UC4", []) });
+    jest.spyOn(VideoModel, "noticeUnknownVideos").mockResolvedValue(undefined);
+
+    await pollChannelFeeds();
+    mockGet.mockClear();
+    await pollChannelFeeds();
+
+    // The fake drops stamped channels, standing in for the real sort putting
+    // them last, so the second round sees exactly the two left unstamped.
+    expect(requestedChannels()).toEqual(["UC4", "UC5"]);
+  });
+
+  it("neither counts nor clears the run on a timeout", async () => {
+    jest.spyOn(console, "warn").mockImplementation(() => {});
+    fakeChannels(["UC1", "UC2", "UC3", "UC4", "UC5"]);
+    mockGet
+      .mockRejectedValueOnce(httpError(404))
+      .mockRejectedValueOnce(timeoutError())
+      .mockRejectedValueOnce(httpError(404))
+      .mockRejectedValueOnce(httpError(404))
+      .mockResolvedValue({ data: feedXml("UC5", []) });
+    jest.spyOn(VideoModel, "noticeUnknownVideos").mockResolvedValue(undefined);
+
+    await pollChannelFeeds();
+
+    // The timeout left the count at one, so the next two http failures make
+    // three and the round stops before UC5.
+    expect(requestedChannels()).toEqual(["UC1", "UC2", "UC3", "UC4"]);
+  });
+
+  it("does not count timeouts toward the stop", async () => {
+    jest.spyOn(console, "warn").mockImplementation(() => {});
+    const stamped = fakeChannels(["UC1", "UC2", "UC3", "UC4"]);
+    mockGet
+      .mockRejectedValueOnce(timeoutError())
+      .mockRejectedValueOnce(timeoutError())
+      .mockRejectedValueOnce(timeoutError())
+      .mockResolvedValue({ data: feedXml("UC4", []) });
+    jest.spyOn(VideoModel, "noticeUnknownVideos").mockResolvedValue(undefined);
+
+    await pollChannelFeeds();
+
+    expect(requestedChannels()).toEqual(["UC1", "UC2", "UC3", "UC4"]);
+    expect(stamped.map((write) => write.id)).toEqual([
+      "UC1",
+      "UC2",
+      "UC3",
+      "UC4",
+    ]);
+  });
+
+  it("clears the run when a feed is served in between", async () => {
+    jest.spyOn(console, "warn").mockImplementation(() => {});
+    const stamped = fakeChannels(["UC1", "UC2", "UC3", "UC4", "UC5"]);
+    mockGet
+      .mockRejectedValueOnce(httpError(404))
+      .mockRejectedValueOnce(httpError(404))
+      .mockResolvedValueOnce({ data: feedXml("UC3", []) })
+      .mockRejectedValueOnce(httpError(404))
+      .mockRejectedValueOnce(httpError(404));
+    jest.spyOn(VideoModel, "noticeUnknownVideos").mockResolvedValue(undefined);
+
+    await pollChannelFeeds();
+
+    expect(requestedChannels()).toEqual(["UC1", "UC2", "UC3", "UC4", "UC5"]);
+    expect(stamped.map((write) => write.id)).toEqual([
+      "UC1",
+      "UC2",
+      "UC3",
+      "UC4",
+      "UC5",
+    ]);
+  });
+
+  it("clears the run on a 2xx body that is not a feed", async () => {
+    jest.spyOn(console, "warn").mockImplementation(() => {});
+    fakeChannels(["UC1", "UC2", "UC3", "UC4", "UC5"]);
+    mockGet
+      .mockRejectedValueOnce(httpError(404))
+      .mockRejectedValueOnce(httpError(404))
+      .mockResolvedValueOnce({ data: "<html>nope</html>" })
+      .mockRejectedValueOnce(httpError(404))
+      .mockRejectedValueOnce(httpError(404));
+
+    await pollChannelFeeds();
+
+    expect(requestedChannels()).toEqual(["UC1", "UC2", "UC3", "UC4", "UC5"]);
+  });
+
+  it("clears the run on a 2xx even when writing its videos fails", async () => {
+    jest.spyOn(console, "warn").mockImplementation(() => {});
+    fakeChannels(["UC1", "UC2", "UC3", "UC4", "UC5"]);
+    mockGet
+      .mockRejectedValueOnce(httpError(404))
+      .mockRejectedValueOnce(httpError(404))
+      .mockResolvedValueOnce({ data: feedXml("UC3", ["v1"]) })
+      .mockRejectedValueOnce(httpError(404))
+      .mockRejectedValueOnce(httpError(404));
+    const notice = jest
+      .spyOn(VideoModel, "noticeUnknownVideos")
+      .mockRejectedValue(new Error("write concern error"));
+
+    await pollChannelFeeds();
+
+    // The write did run and fail; the backend had still served the feed.
+    expect(notice.mock.calls.map((call) => call[0].length)).toEqual([1]);
+    expect(requestedChannels()).toEqual(["UC1", "UC2", "UC3", "UC4", "UC5"]);
+  });
+
+  it("still logs the stop when the last channel trips it", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    fakeChannels(["UC1", "UC2", "UC3"]);
+    mockGet.mockRejectedValue(httpError(404));
+
+    await pollChannelFeeds();
+
+    expect(warn.mock.calls).toEqual([
+      ["Feed poll failed for [UC1]:", "Request failed with status code 404"],
+      ["Feed poll failed for [UC2]:", "Request failed with status code 404"],
+      ["Feed poll failed for [UC3]:", "Request failed with status code 404"],
+      [
+        "Feed poll: stopping round after 3 consecutive HTTP failures, 0 channels deferred",
+      ],
+    ]);
+  });
+
+  it("starts every round with a fresh count", async () => {
+    jest.spyOn(console, "warn").mockImplementation(() => {});
+    fakeChannels(["UC1", "UC2", "UC3", "UC4", "UC5"]);
+    mockGet
+      .mockRejectedValueOnce(httpError(404))
+      .mockRejectedValueOnce(httpError(404))
+      .mockRejectedValueOnce(httpError(404))
+      .mockResolvedValue({ data: feedXml("UC5", []) });
+    jest.spyOn(VideoModel, "noticeUnknownVideos").mockResolvedValue(undefined);
+    // First round: two channels, both refused, so it ends with the count at two.
+    jest.spyOn(ChannelModel, "findFeedPollCandidates").mockResolvedValueOnce([
+      { id: "UC1", name: "Channel UC1" },
+      { id: "UC2", name: "Channel UC2" },
+    ] as never);
+
+    await pollChannelFeeds();
+    mockGet.mockClear();
+    // Second round: one more refusal, then feeds. A count carried over from the
+    // first round would reach three here and stop after UC3.
+    await pollChannelFeeds();
+
+    expect(requestedChannels()).toEqual(["UC3", "UC4", "UC5"]);
   });
 });
