@@ -396,7 +396,7 @@ it("starts every round with a fresh count", async () => {
 
 Run: `npm run test -- src/services/crawler/discovery/feed-poll.spec.ts`
 
-Expected: FAIL. These four tests fail because every channel in the batch is still requested and stamped:
+Expected: FAIL. These five tests fail because every channel in the batch is still requested and stamped:
 
 - `"stops the round after three http failures in a row"`: `requestedChannels()` receives `["UC1","UC2","UC3","UC4","UC5"]` but expected 3 entries, and the warn list lacks the stop line.
 - `"does not wait for the spacing once the round is stopped"`: `mockSleep.mock.calls` has 3 entries instead of 2.
@@ -729,15 +729,19 @@ Replace `把一輪 20 個頻道從 5 秒拖到 20 秒` with `把一輪 14 個頻
 
 - [ ] **Step 6: Error-handling paragraph (near line 522)**
 
-Directly after the paragraph that starts `**單筆失敗不中斷整輪**，唯一例外是配額耗盡。`, insert this new paragraph:
+In the paragraph that starts `**單筆失敗不中斷整輪**，唯一例外是配額耗盡。`, replace that opening sentence with `**單筆失敗不中斷整輪**，例外有二，第一個是配額耗盡。` and leave the rest of the paragraph unchanged.
+
+Directly after that paragraph, insert this new paragraph:
 
 ```text
-feed 輪詢另有一個中止條件：同一輪連續 3 次 HTTP 失敗（伺服器有回狀態碼；timeout 與連線錯誤不計也不歸零，任何 2xx 歸零）即視為撞上 feed 後端的每日上限，記一行 warn 後中止本輪。已嘗試的頻道照常推進時間戳，其餘不寫時間戳，留給下一輪優先處理。這個判斷不保存跨輪狀態，限流解除後的第一輪自然恢復。
+第二個例外屬於 feed 輪詢：同一輪連續 3 次 HTTP 失敗（伺服器有回狀態碼；timeout 與連線錯誤不計也不歸零，任何 2xx 歸零）即視為撞上 feed 後端的每日上限，記一行 warn 後中止本輪。已嘗試的頻道照常推進時間戳，其餘不寫時間戳，留給下一輪優先處理。這個判斷不保存跨輪狀態，限流解除後的第一輪自然恢復。
 ```
 
 - [ ] **Step 7: Timeout table (near line 528)**
 
 Replace the feed row `| feed     | 20       | 10 秒 + 250 ms | 3.4 分   |` with `| feed     | 14       | 10 秒 + 250 ms | 2.4 分   |`.
+
+In the paragraph below the table that starts `feed 的週期是 2 分鐘`, replace `正常一輪約 5 秒` with `正常一輪約 3.5 秒`. The rest of that paragraph still holds, because the 2.4-minute worst case still exceeds the 2-minute period.
 
 - [ ] **Step 8: Non-goals section on the one-hour target (near lines 608–612)**
 
