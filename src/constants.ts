@@ -196,16 +196,31 @@ export const YOUTUBE_API_TIMEOUT_MS = 15 * 1000;
 
 // --- YouTube official video discovery (src/services/crawler/discovery/) ---
 
-// Channels fetched in one feed-poll round. On the 2-minute schedule that is 600
-// channels/hour. Discovery latency is one rotation plus the feed's 15-minute
-// edge cache, so the one-hour target holds up to 450 subscribed channels; 300
-// channels land around 45 minutes. Raise this if the subscription list grows
-// past that — the feed costs no quota, only outbound requests.
-export const YOUTUBE_FEED_POLL_BATCH_SIZE = 20;
+// Channels fetched in one feed-poll round. On the 2-minute schedule that is 420
+// channels/hour and about 10080 requests/day, and the daily figure is the one
+// that binds: the feed backend stops serving an outbound address after roughly
+// 11000 requests in a Pacific-time day and answers 404 or 500 until midnight
+// PT. That ceiling was read off production logs rather than any documentation,
+// so this keeps about a tenth in hand instead of sitting on it. Discovery
+// latency is one rotation plus the feed's 15-minute edge cache, so the one-hour
+// target holds up to 315 subscribed channels. Do not raise this to cover more
+// channels: past 315 the latency grows, because a bigger batch would cross the
+// daily ceiling.
+export const YOUTUBE_FEED_POLL_BATCH_SIZE = 14;
+
+// Consecutive http failures that end a feed-poll round early. Outside the
+// daily-ceiling window the feed failed zero times across three days of logs, so
+// three in a row does not happen by chance, while one channel that genuinely
+// answers 404 never takes the count past one. Once the ceiling is hit nearly
+// every request fails, so a round then costs three requests instead of a whole
+// batch.
+export const YOUTUBE_FEED_POLL_ABORT_AFTER_FAILURES = 3;
 
 // Gap between two outbound requests inside any discovery round. Both endpoints
 // served 10 req/s for 10 seconds and 120-concurrent bursts without a single
-// 429, so 4 req/s keeps a 2.5x margin below what was actually verified.
+// 429, so 4 req/s keeps a 2.5x margin below what was actually verified. That
+// measurement covers the instantaneous rate only; the feed also has a daily
+// request ceiling, which YOUTUBE_FEED_POLL_BATCH_SIZE is budgeted against.
 export const YOUTUBE_DISCOVERY_REQUEST_SPACING_MS = 250;
 
 // Per-request timeout for the channel RSS feed. A healthy response takes about
