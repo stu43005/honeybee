@@ -85,8 +85,8 @@ with:
 // channels land around 45 minutes. Raise this if the subscription list grows
 // past that — the feed costs no quota, only outbound requests. Its outages
 // follow the clock, not our volume: every day around 01:00-07:00 UTC its origin
-// answers most requests with 404 or 500 whatever address they come from, and
-// only edge cache hits still succeed. Polling less does not shorten that.
+// answers most requests with 404 or 500 whatever address they come from; edge
+// cache hits stay reliable. Polling less does not shorten that.
 export const YOUTUBE_FEED_POLL_BATCH_SIZE = 20;
 
 // Requests one channel's feed may take in a round, the first one included. Only
@@ -863,7 +863,7 @@ function isHttpFailure(error: unknown): boolean {
  * Every day around 01:00-07:00 UTC the feed's origin answers most requests with
  * 404 or 500, whoever sends them, and it fails request by request rather than
  * channel by channel, so asking again has a fair chance. The url stays as it is:
- * an edge cache hit is the one answer that still works during the outage. A
+ * an edge cache hit is the one answer that stays reliable during the outage. A
  * timeout or a dropped connection is not asked again; it may already have taken
  * the whole timeout, and it is not what the outage looks like.
  */
@@ -1149,7 +1149,7 @@ Replace:
 with:
 
 ```text
-- oEmbed 與 feed **全部 200，零 429，無任何速率限制 header**。這只驗證了瞬間速率。上線後觀察到 feed 源站每天約 01:00–07:00 UTC 對任何來源 IP 都大量回 404/500（逐次請求隨機失敗、與請求量無關），這段時間只有 edge 快取命中能拿到資料。
+- oEmbed 與 feed **全部 200，零 429，無任何速率限制 header**。這只驗證了瞬間速率。上線後觀察到 feed 源站每天約 01:00–07:00 UTC 對任何來源 IP 都大量回 404/500（逐次請求隨機失敗、與請求量無關），這段時間回源只偶爾成功（實測約 27%），edge 快取命中則穩定可用。
 ```
 
 - [ ] **Step 3: Constants code block (near lines 397–407)**
@@ -1179,8 +1179,8 @@ with the four blocks from Task 1 Step 1 followed by the block from Task 1 Step 2
 // channels land around 45 minutes. Raise this if the subscription list grows
 // past that — the feed costs no quota, only outbound requests. Its outages
 // follow the clock, not our volume: every day around 01:00-07:00 UTC its origin
-// answers most requests with 404 or 500 whatever address they come from, and
-// only edge cache hits still succeed. Polling less does not shorten that.
+// answers most requests with 404 or 500 whatever address they come from; edge
+// cache hits stay reliable. Polling less does not shorten that.
 export const YOUTUBE_FEED_POLL_BATCH_SIZE = 20;
 
 // Requests one channel's feed may take in a round, the first one included. Only
