@@ -118,7 +118,7 @@
   - feed poll 的 `agenda.define` handler 改為 `await pollChannelFeeds(job)`。
   - 排程註解的 420 頻道/小時改回 600，並刪除「per-address daily ceiling」的說法。
 - `docs/superpowers/specs/2026-09-18-youtube-official-video-discovery-design.md`：
-  - 2026-09-27 那次 commit（`7cc82d4`）改過的段落，數字改回以 20 為準：600 頻道/小時、450 門檻、14400 與 18144、平均 0.244 req/s、3.4 分改為 3.6 分（含重試）、週期 30/60 分、正常一輪約 5 秒。
+  - 2026-09-27 那次 commit（`7cc82d4`）改過的段落，數字改回以 20 為準：600 頻道/小時、450 門檻、14400 與 18144、平均 0.244 req/s、週期 30/60 分、正常一輪約 5 秒。逾時表中 feed 那一列目前是「14 筆、2.4 分」，改為「20 筆、3.6 分（快速 HTTP 失敗下的估計，含重試）」；同一節「關掉重試」與 lock 段落補充 feed 會重試 HTTP 失敗，並以每分鐘 touch 維持 lock。
   - 「每 IP 每日上限」的描述改為故障視窗的事實。
   - 「第二個例外」那段改寫為以頻道最終結果計數，並加上重試的說明。
 - `docs/superpowers/specs/2026-09-27-feed-poll-rate-budget-design.md`：在標題下加一段說明，指出其根因假設已被推翻、降頻已撤回，並指向本文件。其餘內容保留作為歷史紀錄，不改寫。
@@ -154,6 +154,10 @@
 - **不在固定時段跳過輪詢。** 故障時段是從 log 推論的，Google 隨時可能改變，寫死在程式裡只會讓它過期。
 - **不加 cache-busting 參數。** 快取命中是視窗內唯一穩定能拿到資料的途徑。
 - **視窗內 feed 仍會漏掉約 39% 的頻道**（每輪抽樣的機率估計）。這段時間的發現仍要靠 pubsub 與 Holodex，與前一版相同。
+- **回應 body 慢速傳送超過 lock 期限。**
+  - Concern：axios 的 `timeout` 在收到 header 之後只管 socket 閒置時間。若回應 header 很快送達、body 卻持續慢速一點一點送來，單一請求可能拖過 10 分鐘，而 touch 只在頻道與頻道之間執行。
+  - Decision：不處理，不加 `AbortSignal` 絕對期限。
+  - Rationale：feed 約 70 KB，從未觀察到慢速傳送；這個風險在本次改動之前就存在，不是重試帶進來的。
 - **單次 DB 操作卡住超過 lock 期限。**
   - Concern：touch 只在處理每個頻道之前檢查。若 `noticeUnknownVideos()` 或寫入 `feedCrawledAt` 的 Mongo 操作卡住超過 10 分鐘，下一次 touch 會來不及，lock 可能在執行中過期而被重疊執行。
   - Decision：不處理，不改用獨立計時器 touch。
