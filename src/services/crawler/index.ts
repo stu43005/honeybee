@@ -350,19 +350,22 @@ export async function runCrawler() {
   );
   void agenda.every("5 minute", JOB_YOUTUBE_UPDATE_CHANNELS);
 
-  // None of these three set a lockLifetime or call job.touch(). Their worst
-  // cases are 2.4, 4.3 and 1.7 minutes — every request carries a timeout and
-  // retries are off — which stays well inside agenda's 10 minute default, the
-  // same reasoning the pubsub renewal job relies on.
+  // The members poll and the existence probe set no lockLifetime and never
+  // call job.touch(). Their worst cases are 4.3 and 1.7 minutes — every request
+  // carries a timeout and retries are off — which stays well inside agenda's 10
+  // minute default, the same reasoning the pubsub renewal job relies on. The
+  // feed poll is different: it retries http failures, so its length depends on
+  // how quickly they come back. About 3.6 minutes when they come back fast, as
+  // observed, but nothing bounds that, so it renews its own lock once a minute,
+  // checked between channels.
 
   const JOB_YOUTUBE_FEED_POLL = "crawler youtube feed poll";
-  agenda.define(JOB_YOUTUBE_FEED_POLL, async (_job: Job): Promise<void> => {
-    await pollChannelFeeds();
+  agenda.define(JOB_YOUTUBE_FEED_POLL, async (job: Job): Promise<void> => {
+    await pollChannelFeeds(job);
   });
-  // Two minutes at the feed batch size covers 420 channels an hour, which keeps
-  // the day's requests under the feed's per-address daily ceiling. The feed's
-  // own 15 minute edge cache means polling any single channel faster than that
-  // would return the same bytes anyway.
+  // Two minutes covers 600 channels an hour, and the feed's own 15 minute edge
+  // cache means polling any single channel faster than that would return the
+  // same bytes anyway.
   void agenda.every("2 minutes", JOB_YOUTUBE_FEED_POLL);
 
   const JOB_YOUTUBE_MEMBERS_POLL = "crawler youtube members poll";
