@@ -196,31 +196,41 @@ export const YOUTUBE_API_TIMEOUT_MS = 15 * 1000;
 
 // --- YouTube official video discovery (src/services/crawler/discovery/) ---
 
-// Channels fetched in one feed-poll round. On the 2-minute schedule that is 420
-// channels/hour and about 10080 requests/day, and the daily figure is the one
-// that binds: the feed backend stops serving an outbound address after roughly
-// 11000 requests in a Pacific-time day and answers 404 or 500 until midnight
-// PT. That ceiling was read off production logs rather than any documentation,
-// so this keeps about a tenth in hand instead of sitting on it. Discovery
-// latency is one rotation plus the feed's 15-minute edge cache, so the one-hour
-// target holds up to 315 subscribed channels. Do not raise this to cover more
-// channels: past 315 the latency grows, because a bigger batch would cross the
-// daily ceiling.
-export const YOUTUBE_FEED_POLL_BATCH_SIZE = 14;
+// Channels fetched in one feed-poll round. On the 2-minute schedule that is 600
+// channels/hour. Discovery latency is one rotation plus the feed's 15-minute
+// edge cache, so the one-hour target holds up to 450 subscribed channels; 300
+// channels land around 45 minutes. Raise this if the subscription list grows
+// past that — the feed costs no quota, only outbound requests. Its outages
+// follow the clock, not our volume: every day around 01:00-07:00 UTC its origin
+// answers most requests with 404 or 500 whatever address they come from; edge
+// cache hits stay reliable. Polling less does not shorten that.
+export const YOUTUBE_FEED_POLL_BATCH_SIZE = 20;
 
-// Consecutive http failures that end a feed-poll round early. Outside the
-// daily-ceiling window the feed failed zero times across three days of logs, so
-// three in a row does not happen by chance, while one channel that genuinely
-// answers 404 never takes the count past one. Once the ceiling is hit nearly
-// every request fails, so a round then costs three requests instead of a whole
-// batch.
+// Requests one channel's feed may take in a round, the first one included. Only
+// an http failure is tried again: inside the daily outage window a single
+// origin fetch succeeded about 27% of the time (12 of 45), so three tries reach
+// about 61%. Each extra try is one more request at an origin that is already
+// failing, which is why it stops at three.
+export const YOUTUBE_FEED_POLL_ATTEMPTS = 3;
+
+// Channels in a row that end a feed-poll round early, each having used every
+// attempt and still got an http failure. Outside the outage window the feed
+// failed zero times across three days of logs, so this does not trip by chance.
+// Inside it about 39% of channels run out of attempts, so a round stops part-way
+// about half the time; when the origin refuses everything a round costs three
+// channels' attempts, nine requests, instead of a whole batch.
 export const YOUTUBE_FEED_POLL_ABORT_AFTER_FAILURES = 3;
 
-// Gap between two outbound requests inside any discovery round. Both endpoints
-// served 10 req/s for 10 seconds and 120-concurrent bursts without a single
-// 429, so 4 req/s keeps a 2.5x margin below what was actually verified. That
-// measurement covers the instantaneous rate only; the feed also has a daily
-// request ceiling, which YOUTUBE_FEED_POLL_BATCH_SIZE is budgeted against.
+// How often a feed-poll round renews its agenda lock. It is checked between
+// channels, and one channel takes at most three timeouts' worth, about 31
+// seconds, so renewals land within about a minute and a half of each other —
+// well inside agenda's 10 minute lock, at a cost of a few writes per round.
+export const YOUTUBE_FEED_POLL_TOUCH_INTERVAL_MS = 60 * 1000;
+
+// Gap between two outbound requests inside any discovery round, and between two
+// attempts at the same feed. Both endpoints served 10 req/s for 10 seconds and
+// 120-concurrent bursts without a single 429, so 4 req/s keeps a 2.5x margin
+// below what was actually verified.
 export const YOUTUBE_DISCOVERY_REQUEST_SPACING_MS = 250;
 
 // Per-request timeout for the channel RSS feed. A healthy response takes about
