@@ -154,3 +154,7 @@
 - **不在固定時段跳過輪詢。** 故障時段是從 log 推論的，Google 隨時可能改變，寫死在程式裡只會讓它過期。
 - **不加 cache-busting 參數。** 快取命中是視窗內唯一穩定能拿到資料的途徑。
 - **視窗內 feed 仍會漏掉約 39% 的頻道**（每輪抽樣的機率估計）。這段時間的發現仍要靠 pubsub 與 Holodex，與前一版相同。
+- **單次 DB 操作卡住超過 lock 期限。**
+  - Concern：touch 只在處理每個頻道之前檢查。若 `noticeUnknownVideos()` 或寫入 `feedCrawledAt` 的 Mongo 操作卡住超過 10 分鐘，下一次 touch 會來不及，lock 可能在執行中過期而被重疊執行。
+  - Decision：不處理，不改用獨立計時器 touch。
+  - Rationale：Mongo 單次操作卡住 10 分鐘以上極為罕見，而且專案裡所有 agenda job 都有相同的風險，不是這次改動帶進來的。為此加上計時器、清理與錯誤回傳的成本，與風險不成比例。
