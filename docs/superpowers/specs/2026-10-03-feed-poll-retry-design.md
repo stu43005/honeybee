@@ -43,8 +43,9 @@
 - `YOUTUBE_FEED_POLL_ABORT_AFTER_FAILURES = 3`：數值不變，註解改寫。
   - 計數單位是「用完所有嘗試仍以 HTTP 失敗結束的頻道」。
   - 視窗外 72 小時內失敗數為 0，所以不會誤觸。
-  - 在視窗內，單一頻道用完嘗試仍失敗的機率約 39%，連續 3 個約 6%，所以多數輪次會跑完整個批次。源站全面拒絕時，一輪最多 3 個頻道 × 3 次 = 9 次請求。
+  - 在視窗內，單一頻道用完嘗試仍失敗的機率約 39%（0.73³），任意連續 3 個約 6%。以 20 個頻道、各頻道獨立估算，一輪中出現連續 3 個失敗而中止的機率約 55%；中止前通常已處理了一部分頻道。源站全面拒絕時，一輪最多 3 個頻道 × 3 次 = 9 次請求。
 - `YOUTUBE_DISCOVERY_REQUEST_SPACING_MS = 250`：數值不變，註解刪除「每日上限」的說法。這個常數同時用作重試間隔，註解要一併說明。
+- 新增 `YOUTUBE_FEED_POLL_TOUCH_INTERVAL_MS = 60 * 1000`，用途見「四、耗時與 agenda lock」。
 
 ### 二、單一頻道的處理（`src/services/crawler/discovery/feed-poll.ts`）
 
@@ -86,9 +87,19 @@
 
 ### 四、耗時與 agenda lock
 
-只重試 HTTP 失敗，而 timeout 不重試，所以單一頻道最壞的情況是：前兩次很快回 HTTP 失敗，第三次 timeout。耗時約 10 秒 + 2 × 250 ms。整輪最壞約 20 × (10 s + 0.5 s + 0.25 s) ≈ **3.6 分**，在 agenda 預設的 10 分鐘 lock 之內。
+只重試 HTTP 失敗，timeout 不重試。在「HTTP 失敗都很快就回來」的前提下，單一頻道最壞的情況是：前兩次很快回 HTTP 失敗，第三次 timeout，耗時約 10 秒 + 2 × 250 ms。整輪約 20 × (10 s + 0.5 s + 0.25 s) ≈ **3.6 分**。這個前提有觀測依據：視窗內每輪 3 次失敗只要 1–4 秒。
 
-這個上限的前提是 HTTP 失敗會很快回來：視窗內每輪 3 次失敗只要 1–4 秒。理論上每次嘗試都在接近 10 秒時才回 HTTP 錯誤，整輪會到 20 × 30.75 秒 ≈ 10.3 分，超過 lock。這種情況沒有觀察到，列為 Accepted limitation。
+但這個前提沒有保證。若每次嘗試都在接近 10 秒時才回 HTTP 錯誤（例如每個頻道都是兩次慢速失敗後才成功，此時計數一再歸零，中止機制也擋不住），整輪會到 20 × 30.75 秒 ≈ 10.3 分，超過 agenda 預設的 10 分鐘 lock。lock 過期後，同一個 job 可能被再次取得而重疊執行。
+
+**處理方式：執行期間定期 touch job。**
+
+- `pollChannelFeeds(job?: Job)` 接受可省略的 agenda `Job`，與 `genRealtimeAndUpcomingFiles(job?: Job)` 等既有函式的慣例相同。crawler 的 `agenda.define` handler 把自己的 `job` 傳進來。
+- 函式開始時記下時間。每處理一個頻道之前，若距離上次 touch（或函式開始）已達 `YOUTUBE_FEED_POLL_TOUCH_INTERVAL_MS`，就呼叫 `await job?.touch()` 並更新時間。
+- `YOUTUBE_FEED_POLL_TOUCH_INTERVAL_MS = 60 * 1000`：每分鐘一次。
+  - 單一頻道最長約 31 秒，所以兩次 touch 之間最長約 1.5 分鐘，遠小於 10 分鐘的 lock。
+  - 每輪通常只需 0–4 次 touch，對 DB 的額外寫入可以忽略。
+  - 頻道與頻道之間檢查一次就夠了，不需要另開計時器。
+- `job.touch()` 會刷新 `lockedAt`。agenda 6.2.4 中，job 已被 cancel 時 touch 會丟錯。這個錯誤**不捕捉**，讓它結束本輪：失去 lock 之後不應該再繼續處理。已處理的頻道已經寫入時間戳，未處理的留給下一輪，與中止機制的結果相同。
 
 請求量：
 
@@ -103,7 +114,8 @@
   - catch 區塊的註解也做同樣的更正。
   - 補上重試的說明。
 - `src/services/crawler/index.ts`：
-  - lock 註解的 feed 最壞耗時 2.4 分改為 3.6 分。
+  - lock 註解說三個 job 都不設 lockLifetime、也不呼叫 `job.touch()`，並且「retries are off」，這些都已經不適用於 feed poll。改寫為：feed poll 在 HTTP 失敗時會重試，以每分鐘 touch 維持 lock，快速失敗下的估計耗時約 3.6 分；另外兩個 job 的說明不變。
+  - feed poll 的 `agenda.define` handler 改為 `await pollChannelFeeds(job)`。
   - 排程註解的 420 頻道/小時改回 600，並刪除「per-address daily ceiling」的說法。
 - `docs/superpowers/specs/2026-09-18-youtube-official-video-discovery-design.md`：
   - 2026-09-27 那次 commit（`7cc82d4`）改過的段落，數字改回以 20 為準：600 頻道/小時、450 門檻、14400 與 18144、平均 0.244 req/s、3.4 分改為 3.6 分（含重試）、週期 30/60 分、正常一輪約 5 秒。
@@ -117,15 +129,18 @@
 
 新增：
 
-| 情境                                | 斷言                                                                                                        |
-| ----------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| HTTP 失敗、HTTP 失敗、2xx           | 同一個頻道被請求 3 次；有寫入影片；沒有失敗 log；`mockSleep` 依序有 2 次重試間隔                            |
-| 3 次都是 HTTP 失敗（404、500、404） | 請求 3 次；warn 只有一行 `Feed poll failed for [UC1] after 3 attempts: Request failed with status code 404` |
-| 第一次就 timeout                    | 只請求 1 次；warn 為 `... after 1 attempts: timeout of ...`                                                 |
-| 2xx 但 body 不是 feed               | 只請求 1 次，不重試                                                                                         |
-| HTTP 失敗後 timeout                 | 請求 2 次；這個頻道不計入中止計數（以後續頻道的行為驗證）                                                   |
-| 連續 3 個頻道各 3 次 HTTP 失敗      | 請求 9 次後中止；剩下的頻道不請求、不寫時間戳；記錄中止那一行                                               |
-| 頻道在第 3 次才成功                 | 計數歸零：前面的頻道失敗 2 個，這個成功，後面再失敗 2 個，整輪不中止                                        |
+| 情境                                | 斷言                                                                                                                     |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| HTTP 失敗、HTTP 失敗、2xx           | 同一個頻道被請求 3 次；有寫入影片；沒有失敗 log；`mockSleep` 依序有 2 次重試間隔                                         |
+| 3 次都是 HTTP 失敗（404、500、404） | 請求 3 次；warn 只有一行 `Feed poll failed for [UC1] after 3 attempts: Request failed with status code 404`              |
+| 第一次就 timeout                    | 只請求 1 次；warn 為 `... after 1 attempts: timeout of ...`                                                              |
+| 2xx 但 body 不是 feed               | 只請求 1 次，不重試                                                                                                      |
+| HTTP 失敗後 timeout                 | 請求 2 次；這個頻道不計入中止計數（以後續頻道的行為驗證）                                                                |
+| 連續 3 個頻道各 3 次 HTTP 失敗      | 請求 9 次後中止；剩下的頻道不請求、不寫時間戳；記錄中止那一行                                                            |
+| 頻道在第 3 次才成功                 | 計數歸零：前面的頻道失敗 2 個，這個成功，後面再失敗 2 個，整輪不中止                                                     |
+| 時間推進跨過 touch 間隔             | 以 `jest.spyOn(Date, "now")` 控制時間：處理第 2 個頻道前已過 60 秒 → `job.touch` 被呼叫 1 次；未滿 60 秒的頻道之間不呼叫 |
+| `job.touch` 丟錯（job 已被 cancel） | `pollChannelFeeds` 以該錯誤 reject；觸發時之後的頻道不請求、不寫時間戳                                                   |
+| 不傳 `job`                          | 行為與傳入時相同，不丟錯（既有測試全部以不傳 `job` 的方式繼續通過）                                                      |
 
 既有測試配合調整：
 
@@ -138,8 +153,4 @@
 
 - **不在固定時段跳過輪詢。** 故障時段是從 log 推論的，Google 隨時可能改變，寫死在程式裡只會讓它過期。
 - **不加 cache-busting 參數。** 快取命中是視窗內唯一穩定能拿到資料的途徑。
-- **HTTP 失敗回得很慢時的 lock 風險。**
-  - Concern：若每次嘗試都在接近 timeout 時才回 HTTP 錯誤，整輪最壞約 10.3 分，會超過 agenda 預設的 10 分鐘 lock。
-  - Decision：不處理。
-  - Rationale：視窗內觀察到每輪 3 次失敗只要 1–4 秒，HTTP 失敗實際上很快就回來。加上連續 3 個頻道失敗就中止，最多 9 次請求，進一步壓低了實際耗時。
 - **視窗內 feed 仍會漏掉約 39% 的頻道**（每輪抽樣的機率估計）。這段時間的發現仍要靠 pubsub 與 Holodex，與前一版相同。
