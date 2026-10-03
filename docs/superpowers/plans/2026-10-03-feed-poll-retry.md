@@ -759,6 +759,29 @@ it("ends the round when renewing the lock fails", async () => {
   expect(requestedChannels()).toEqual(["UC1", "UC2"]);
   expect(stamped.map((write) => write.id)).toEqual(["UC1", "UC2"]);
 });
+
+it("counts the candidate query toward the first renewal", async () => {
+  fakeChannels(["UC1"]);
+  scripted({ UC1: [served("UC1")] });
+  jest.spyOn(VideoModel, "noticeUnknownVideos").mockResolvedValue(undefined);
+  let clock = 0;
+  jest.spyOn(Date, "now").mockImplementation(() => clock);
+  // A query slow enough to use up more than a minute of the lock on its own.
+  jest.spyOn(ChannelModel, "findFeedPollCandidates").mockImplementation((() => {
+    clock += 70 * 1000;
+    return Promise.resolve([{ id: "UC1", name: "Channel UC1" }]);
+  }) as never);
+  const touch = jest.fn<() => Promise<void>>().mockResolvedValue(undefined);
+
+  await pollChannelFeeds({ touch } as never);
+
+  const renewedAt = touch.mock.invocationCallOrder;
+  expect(renewedAt).toHaveLength(1);
+  // Renewed before the first request, not a minute after it.
+  expect(
+    mockGet.mock.invocationCallOrder.map((order) => order < renewedAt[0])
+  ).toEqual([false]);
+});
 ```
 
 - [ ] **Step 3: Run the tests against the unchanged implementation**
@@ -786,6 +809,7 @@ These tests fail:
 - `"starts every round with a fresh count"`: one request for UC3.
 - `"renews the agenda lock once a minute has passed between channels"`: `touch` is never called.
 - `"ends the round when renewing the lock fails"`: the promise resolves.
+- `"counts the candidate query toward the first renewal"`: `touch` is never called.
 
 These tests PASS already, and that is expected:
 
@@ -897,6 +921,9 @@ function warnFailure(channelId: string, attempts: number, error: unknown) {
  * minute has passed.
  */
 export async function pollChannelFeeds(job?: Job): Promise<void> {
+  // Taken before the candidate query: agenda's lock has been running since the
+  // job started, and the query's time counts against it too.
+  let touchedAt = Date.now();
   const candidates = await ChannelModel.findFeedPollCandidates(
     YOUTUBE_FEED_POLL_BATCH_SIZE
   );
@@ -905,7 +932,6 @@ export async function pollChannelFeeds(job?: Job): Promise<void> {
   // status says the feed's origin itself is refusing; a timeout or a dropped
   // connection says nothing about it, so those leave the count where it was.
   let consecutiveHttpFailures = 0;
-  let touchedAt = Date.now();
 
   for (let index = 0; index < candidates.length; index++) {
     const channel = candidates[index];
@@ -987,7 +1013,7 @@ export async function pollChannelFeeds(job?: Job): Promise<void> {
 
 Run: `npm run test -- src/services/crawler/discovery/feed-poll.spec.ts`
 
-Expected: PASS. That covers all 19 new tests and the nine kept tests:
+Expected: PASS. That covers all 20 new tests and the nine kept tests:
 
 - `"requests the real channel feed url with a timeout"`
 - `"asks for one batch of the configured size"`
@@ -1060,7 +1086,8 @@ with:
 // minute default, the same reasoning the pubsub renewal job relies on. The
 // feed poll is different: it retries http failures, so its length depends on
 // how quickly they come back. About 3.6 minutes when they come back fast, as
-// observed, but nothing bounds that, so it renews its own lock.
+// observed, but nothing bounds that, so it renews its own lock once a minute,
+// checked between channels.
 
 const JOB_YOUTUBE_FEED_POLL = "crawler youtube feed poll";
 agenda.define(JOB_YOUTUBE_FEED_POLL, async (job: Job): Promise<void> => {
@@ -1101,7 +1128,7 @@ fix(crawler): hand the feed poll its job so it can renew the lock
 
 These are spec documents, so the prose stays in 繁體中文.
 
-Commit `7cc82d4` is the only change to the 09-18 document since it was first written, and it carried the wrong per-IP-ceiling figures. Revert it first, then layer the corrected facts on top.
+Commit `7cc82d4` is the most recent change to the 09-18 document, it touched only that file, and it carried the wrong per-IP-ceiling figures. Revert it first, then layer the corrected facts on top.
 
 - [ ] **Step 1: Revert the budget edit without committing**
 
@@ -1200,7 +1227,13 @@ Replace `**逾時與 agenda lock。** 每輪最壞耗時（每筆一次請求，
 
 Replace the feed row `| feed     | 20       | 10 秒 + 250 ms | 3.4 分   |` with `| feed     | 20       | 10 秒 + 3 × 250 ms | 3.6 分（HTTP 失敗回得快時的估計） |`.
 
-In the paragraph that starts `feed 的週期是 2 分鐘`, append this sentence at its end: `feed 的耗時取決於 HTTP 失敗回來的速度，沒有硬上限，因此執行期間在頻道與頻道之間每分鐘呼叫一次 job.touch() 維持 lock。`
+Replace `這張表建立在 `retry: false` 之上。` with `UUMO 與復活探測兩列建立在 `retry: false` 之上。` (only this sentence; the rest of that paragraph stays).
+
+In the paragraph that starts `feed 的週期是 2 分鐘`, replace its last sentence `agenda 的 `lockLifetime` 預設值與重疊時的實際行為屬第三方套件行為，實作計畫階段須以 research 確認後再決定是否需要顯式設定，本設計不對其做假設。` with:
+
+```text
+agenda 6.2.4 的 `lockLifetime` 預設為 10 分鐘。feed 的耗時取決於 HTTP 失敗回來的速度，沒有硬上限，因此執行期間在頻道與頻道之間每分鐘呼叫一次 `job.touch()` 維持 lock。
+```
 
 - [ ] **Step 6: Superseded notice on the 09-27 document**
 
